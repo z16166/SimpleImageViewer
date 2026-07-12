@@ -441,13 +441,18 @@ mod tests {
         // a=1 * mask=1 / 255 = 0 -> RGB cleared.
         assert_eq!(&group[8..12], &[0, 0, 0, 0]);
 
-        // f32 round-trip of every u8 matches CPU (v*255).round() and WGSL floor+0.5.
+        // f32 round-trip of every u8 matches CPU `f32_to_u8_round` and WGSL floor+0.5.
         for v in 0u16..=255 {
             let f = v as f32 / 255.0;
-            let cpu = (f.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let cpu = crate::psb_layer_blend_simd::f32_to_u8_round(f);
             let gpu_like = (f * 255.0 + 0.5).floor() as u8;
             assert_eq!(cpu, v as u8, "cpu round trip for {v}");
             assert_eq!(gpu_like, v as u8, "gpu-like round trip for {v}");
+            assert_eq!(
+                cpu, gpu_like,
+                "CPU/GPU quantize diverge at {v} (contract {})",
+                crate::psb_layer_blend_simd::UNIT_TO_U8_WGSL_FLOOR_BIAS
+            );
         }
     }
 

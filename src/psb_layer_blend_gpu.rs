@@ -107,6 +107,9 @@ pub(crate) fn is_gpu_separable_blend(blend: &[u8; 4]) -> bool {
     matches!(blend, b"norm" | b"scrn" | b"lddg" | b"mul ")
 }
 
+/// Anchor: shader `floor(x * 255.0 + 0.5)` must match this CPU contract string.
+const _: &str = crate::psb_layer_blend_simd::UNIT_TO_U8_WGSL_FLOOR_BIAS;
+
 pub(crate) const PSD_SEPARABLE_BLEND_SHADER: &str = r#"
 struct BlendParams {
     canvas_w: u32,
@@ -308,7 +311,9 @@ fn cs_apply_base_alpha_mask(@builtin(global_invocation_id) gid: vec3<u32>) {
     // subsequent separable blend already weights by `sa` (incl. Screen /
     // Multiply / Linear Dodge base modes).
     // Match CPU's u8 alpha math (round-half-away-from-zero) before deciding
-    // whether RGB survives. WGSL `round` is ties-to-even; use floor(x+0.5).
+    // whether RGB survives. WGSL `round` is ties-to-even; use floor(x+0.5)
+    // so quantization matches Rust `psb_layer_blend_simd::f32_to_u8_round`
+    // (`UNIT_TO_U8_WGSL_FLOOR_BIAS`).
     // a_u/m_u are quantized from [0,1] alphas into u8 range [0,255], so
     // a_u * m_u <= 255*255 = 65025 and fits in u32 without overflow.
     let a_u = u32(floor(group.a * 255.0 + 0.5));
@@ -1600,10 +1605,15 @@ mod tests {
 
     #[test]
     fn clip_shader_quantizes_masked_alpha_like_cpu() {
+        // Must stay aligned with `psb_layer_blend_simd::UNIT_TO_U8_WGSL_FLOOR_BIAS`
+        // / `f32_to_u8_round` (round-half-away-from-zero, not WGSL ties-to-even).
         assert!(
             PSD_SEPARABLE_BLEND_SHADER.contains("let a_u = u32(floor(group.a * 255.0 + 0.5));")
         );
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("let m_u = u32(floor(mask * 255.0 + 0.5));"));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("floor("));
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("255.0 + 0.5"));
+        assert!(crate::psb_layer_blend_simd::UNIT_TO_U8_WGSL_FLOOR_BIAS.contains("floor"));
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("let out_a_u = (a_u * m_u) / 255u;"));
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("if (out_a_u == 0u)"));
     }

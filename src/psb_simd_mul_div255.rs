@@ -212,3 +212,16 @@ mod tests {
         }
     }
 }
+
+/// Arch-agnostic coverage for the shared scalar helper used by every SIMD path.
+#[cfg(test)]
+mod arch_agnostic_tests {
+    use super::div255_u16_exact;
+
+    #[test]
+    fn div255_u16_exact_matches_integer_div_full_domain() {
+        for x in 0u16..=65025 {
+            assert_eq!(div255_u16_exact(x), (x / 255) as u8, "x={x}");
+        }
+    }
+}

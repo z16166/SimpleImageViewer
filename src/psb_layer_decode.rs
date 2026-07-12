@@ -280,6 +280,9 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
         };
 
         let base_alpha = args.alpha.and_then(|a| a.get(i)).copied().unwrap_or(255) as u32;
+        // PSD convention: apply layer opacity first, then user/vector mask
+        // (two truncated integer divides; do not fuse). Matches Adobe's order
+        // so partial opacity + mask stays bit-identical to Photoshop.
         let mut a = base_alpha * opacity / 255;
         if let Some(m) = args.mask {
             let mv = m.get(i).copied().unwrap_or(255) as u32;

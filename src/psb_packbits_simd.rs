@@ -117,6 +117,8 @@ unsafe fn fill_bytes_neon(dst: &mut [u8], val: u8) {
 mod tests {
     use super::fill_bytes;
 
+    /// Arch-agnostic: public `fill_bytes` vs `slice::fill` on every CI host
+    /// (x64 exercises SSE/AVX2; aarch64 exercises NEON via the same entry).
     #[test]
     fn fill_bytes_matches_slice_fill() {
         for len in [0usize, 1, 15, 16, 17, 31, 32, 33, 64, 1000] {

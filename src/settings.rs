@@ -148,13 +148,18 @@ pub enum RawDemosaicMode {
 }
 
 /// P2.5b strategy when PSD/PSB strict visibility has nothing drawable.
+///
+/// Both variants intentionally reveal designer-hidden layers so a preview can
+/// still be produced; that may differ from the file's authored visibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PsdHiddenLayerStrategy {
     /// Top-N max-bbox reveal (up to [`crate::psb_p25_reveal::P25B_MAX_CANDIDATES`]).
+    /// May show layers/groups the designer left hidden.
     #[default]
     Heuristic,
     /// Force-open every drawable leaf and composite the full stack (slow fallback).
+    /// Shows all designer-hidden layers; may diverge from design intent.
     ShowAllLayers,
 }
 

@@ -61,10 +61,20 @@ fn u8_to_f32(v: u8) -> f32 {
     (v as f32) / 255.0
 }
 
+/// Quantize a unit-interval float to `u8` with round-half-away-from-zero.
+///
+/// Contract shared with GPU `cs_apply_base_alpha_mask` / separable blend store:
+/// Rust `f32::round` on non-negative values matches WGSL `floor(x * 255.0 + 0.5)`
+/// (WGSL `round` is ties-to-even and must not be used for this path).
+/// See [`UNIT_TO_U8_WGSL_FLOOR_BIAS`].
 #[inline]
-fn f32_to_u8_round(v: f32) -> u8 {
+pub(crate) fn f32_to_u8_round(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
+
+/// WGSL expression that must stay bit-aligned with [`f32_to_u8_round`] for
+/// non-negative clamped inputs (shader string / review checklist 22).
+pub(crate) const UNIT_TO_U8_WGSL_FLOOR_BIAS: &str = "floor(x * 255.0 + 0.5)";
 
 #[inline]
 fn blend_b(kind: SeparableBlendKind, cb: f32, cs: f32) -> f32 {
@@ -599,6 +609,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn f32_to_u8_round_matches_wgsl_floor_bias() {
+        // Half-ties and dense sweep: must match floor(x*255+0.5), not ties-to-even.
+        for scaled in [0.0f32, 0.5, 1.0, 1.5, 2.5, 126.5, 127.5, 128.5, 254.5, 255.0] {
+            let unit = scaled / 255.0;
+            let cpu = f32_to_u8_round(unit);
+            let gpu_like = (unit.clamp(0.0, 1.0) * 255.0 + 0.5).floor() as u8;
+            assert_eq!(cpu, gpu_like, "scaled={scaled}");
+        }
+        for v in 0u16..=255 {
+            let f = v as f32 / 255.0;
+            assert_eq!(f32_to_u8_round(f), v as u8, "v={v}");
+        }
+        // Confirm the documented WGSL snippet stays the reviewed contract.
+        assert!(UNIT_TO_U8_WGSL_FLOOR_BIAS.contains("floor"));
+        assert!(UNIT_TO_U8_WGSL_FLOOR_BIAS.contains("255.0"));
+        assert!(UNIT_TO_U8_WGSL_FLOOR_BIAS.contains("+ 0.5"));
+    }
+
+    #[test]
     fn normal_semi_transparent_matches_scalar_reference() {
         let mut dst_simd = [
             20u8, 20, 20, 255, 40, 40, 40, 255, 0, 0, 0, 0, 10, 10, 10, 128,
@@ -629,6 +658,38 @@ mod tests {
             blend_separable_span(&mut dst_simd, &src, kind);
             blend_separable_span_scalar(&mut dst_ref, &src, kind);
             assert_eq!(dst_simd, dst_ref, "mismatch for {kind:?}");
+        }
+    }
+
+    /// Arch-agnostic bit-identical check over a span long enough to exercise
+    /// AVX2 (8 px), SSE/NEON (4 px), and scalar tail on every CI host.
+    #[test]
+    fn long_span_all_modes_match_scalar_bit_identical() {
+        let n = 37usize; // 8+8+8+8+4+1 covers AVX2 / SSE / NEON / tail
+        let mut dst_base = vec![0u8; n * 4];
+        let mut src = vec![0u8; n * 4];
+        for i in 0..n {
+            let o = i * 4;
+            dst_base[o] = (i * 3) as u8;
+            dst_base[o + 1] = (i * 5) as u8;
+            dst_base[o + 2] = (i * 7) as u8;
+            dst_base[o + 3] = (40 + (i % 200)) as u8;
+            src[o] = (255u8).wrapping_sub((i * 11) as u8);
+            src[o + 1] = (i * 13) as u8;
+            src[o + 2] = (i * 17) as u8;
+            src[o + 3] = (10 + (i % 240)) as u8;
+        }
+        for kind in [
+            SeparableBlendKind::Normal,
+            SeparableBlendKind::Screen,
+            SeparableBlendKind::Multiply,
+            SeparableBlendKind::LinearDodge,
+        ] {
+            let mut simd = dst_base.clone();
+            let mut scalar = dst_base.clone();
+            blend_separable_span(&mut simd, &src, kind);
+            blend_separable_span_scalar(&mut scalar, &src, kind);
+            assert_eq!(simd, scalar, "public SIMD vs scalar mismatch for {kind:?}");
         }
     }
 }

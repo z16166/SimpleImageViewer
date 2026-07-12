@@ -19,6 +19,8 @@
 //! Semantics match the former scalar loop in `psb_layer_decode`:
 //! `a = a * opacity / 255`, then if mask present `a = a * mask[i] / 255`
 //! (two truncated integer divides; do not fuse into one multiply).
+//!
+//! Order is the PSD/Photoshop convention: opacity first, then mask.
 
 #[cfg(target_arch = "x86_64")]
 const SSE_PIXELS: usize = 8;

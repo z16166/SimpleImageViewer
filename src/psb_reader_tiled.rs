@@ -45,6 +45,9 @@ const TILED_ROW_CACHE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 /// After each raw-row TLS use, shrink capacity above this retain size so extreme
 /// wide 16/32-bit rows do not pin huge buffers for the thread lifetime.
 const PSB_RAW_ROW_SCRATCH_RETAIN_BYTES: usize = 256 * 1024;
+/// Cap retained `extract_tile` row-grid slots (Option cells) so a huge one-off
+/// tile does not pin Arc slots for the thread lifetime.
+const PSB_TILE_ROW_GRID_RETAIN_SLOTS: usize = 64 * 1024;
 
 /// Tiled source for PSD/PSB files that decodes regions on demand from a memory-mapped file.
 /// Row cache is a moka LRU keyed by (channel, row); cached rows are already converted to 8-bit.
@@ -64,13 +67,6 @@ pub struct PsbTiledSource {
     /// Absolute file offsets for the start of each row's data.
     /// Index: ch_idx * height + row_idx
     row_offsets: Vec<u64>,
-    /// Always `None` on this SDR disk-tiled path. ZIP / ZIP+prediction Image
-    /// Data is a single zlib stream without per-row offsets, so
-    /// [`crate::psb_reader::tiled_compression_supported`] rejects compression
-    /// 2|3 before construction. The `2 | 3` arm in [`Self::decode_row`] is a
-    /// defensive dead path that fails closed if a caller ever bypasses that
-    /// gate -- it must not silently zero-fill.
-    zip_planar: Option<Arc<Vec<u8>>>,
     /// Concurrent LRU cache for decompressed 8-bit rows.
     /// Only successful rows are inserted; failed rows are never cached as zeros.
     row_cache: moka::sync::Cache<(u32, u32), Arc<Vec<u8>>>,
@@ -199,24 +195,15 @@ impl PsbTiledSource {
                     })?;
                 }
             }
+            // ZIP / ZIP+prediction is a single zlib stream without per-row
+            // offsets, so [`crate::psb_reader::tiled_compression_supported`]
+            // rejects 2|3 before construction. This arm is fail-closed only.
             2 | 3 => {
-                let Some(planar) = self.zip_planar.as_ref() else {
-                    buf.fill(0);
-                    return Err("PSD/PSB tiled ZIP planar data is unavailable".to_string());
-                };
-                let Some(offset) = self.row_file_offset(idx) else {
-                    buf.fill(0);
-                    return Err("PSD/PSB tiled ZIP row offset is missing".to_string());
-                };
-                let Some(end) = offset.checked_add(raw_len) else {
-                    buf.fill(0);
-                    return Err("PSD/PSB tiled ZIP row end overflow".to_string());
-                };
-                if end > planar.len() {
-                    buf.fill(0);
-                    return Err("PSD/PSB tiled ZIP row is out of bounds".to_string());
-                }
-                downconvert_samples_to_u8(buf, &planar[offset..end], bps);
+                buf.fill(0);
+                return Err(
+                    "PSD/PSB tiled ZIP is unsupported (no per-row offsets in Image Data)"
+                        .to_string(),
+                );
             }
             _ => {
                 buf.fill(0);
@@ -299,46 +286,57 @@ impl PsbTiledSource {
             .ok_or_else(|| "PSD/PSB tiled RGBA length overflow".to_string())?;
         let mut rgba = vec![0u8; rgba_len];
 
-        let mut row_grid = vec![vec![None; self.channels as usize]; h as usize];
-        for ch in 0..self.channels {
-            if !channel_is_used(self.color_mode, ch, self.channels) {
-                continue;
-            }
-            let rows = self.get_rows_batch(ch, y, h)?;
-            for (rel_y, data) in rows {
-                if (rel_y as usize) < h as usize {
-                    row_grid[rel_y as usize][ch as usize] = Some(data);
-                }
-            }
-        }
-
+        let ch_count = self.channels as usize;
+        let h_usize = h as usize;
+        let grid_len = h_usize
+            .checked_mul(ch_count)
+            .ok_or_else(|| "PSD/PSB tiled row-grid size overflow".to_string())?;
         let start = x as usize;
         let end = (x + w) as usize;
 
-        for (rel_y, src_channels) in row_grid.iter().enumerate().take(h as usize) {
-            let Some(dst_start) = (rel_y as u64)
-                .checked_mul(w as u64)
-                .and_then(|n| n.checked_mul(4))
-                .and_then(|n| usize::try_from(n).ok())
-            else {
-                continue;
-            };
-            let Some(dst_end) = dst_start.checked_add((w as usize).saturating_mul(4)) else {
-                continue;
-            };
-            let Some(dst_row) = rgba.get_mut(dst_start..dst_end) else {
-                continue;
-            };
-            interleave_tile_row_rgba8(
-                dst_row,
-                src_channels,
-                self.color_mode,
-                self.channels,
-                start,
-                end,
-                self.cmyk_icc.as_ref(),
-            );
-        }
+        // Flat TLS grid: one allocation reused across tiles (avoids `h` inner Vecs).
+        with_psb_tile_row_grid(grid_len, |row_grid| {
+            for ch in 0..self.channels {
+                if !channel_is_used(self.color_mode, ch, self.channels) {
+                    continue;
+                }
+                let rows = self.get_rows_batch(ch, y, h)?;
+                for (rel_y, data) in rows {
+                    let rel = rel_y as usize;
+                    if rel < h_usize {
+                        let idx = rel * ch_count + ch as usize;
+                        row_grid[idx] = Some(data);
+                    }
+                }
+            }
+
+            for rel_y in 0..h_usize {
+                let Some(dst_start) = (rel_y as u64)
+                    .checked_mul(w as u64)
+                    .and_then(|n| n.checked_mul(4))
+                    .and_then(|n| usize::try_from(n).ok())
+                else {
+                    continue;
+                };
+                let Some(dst_end) = dst_start.checked_add((w as usize).saturating_mul(4)) else {
+                    continue;
+                };
+                let Some(dst_row) = rgba.get_mut(dst_start..dst_end) else {
+                    continue;
+                };
+                let row_off = rel_y * ch_count;
+                interleave_tile_row_rgba8(
+                    dst_row,
+                    &row_grid[row_off..row_off + ch_count],
+                    self.color_mode,
+                    self.channels,
+                    start,
+                    end,
+                    self.cmyk_icc.as_ref(),
+                );
+            }
+            Ok::<(), String>(())
+        })?;
         Ok(rgba)
     }
 
@@ -472,9 +470,6 @@ pub fn open_tiled_source_from_mmap(path: &Path, mmap: Arc<Mmap>) -> Result<PsbTi
     let row_counts_start = cursor.position();
 
     let mut row_offsets = Vec::with_capacity(channels as usize * height as usize);
-    // ZIP (2|3) never reaches here: `tiled_compression_supported` rejected it.
-    // Keep the field as `None` so the defensive decode_row arm stays fail-closed.
-    let zip_planar: Option<Arc<Vec<u8>>> = None;
 
     match compression {
         0 => {
@@ -557,7 +552,6 @@ pub fn open_tiled_source_from_mmap(path: &Path, mmap: Arc<Mmap>) -> Result<PsbTi
         is_psb,
         compression,
         row_offsets,
-        zip_planar,
         row_cache,
         row_decode_error: OnceLock::new(),
         cmyk_icc,
@@ -591,6 +585,9 @@ thread_local! {
     static PSB_ROW_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     // Intermediate BE samples for RLE+16/32-bit rows (must not share PSB_ROW_SCRATCH).
     static PSB_RAW_ROW_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    // Flat channel x height Option grid for extract_tile (avoids nested Vec allocs).
+    static PSB_TILE_ROW_GRID: RefCell<Vec<Option<Arc<Vec<u8>>>>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 #[inline]
@@ -612,6 +609,33 @@ fn with_psb_raw_row_scratch<R>(raw_len: usize, f: impl FnOnce(&mut Vec<u8>) -> R
         if scratch.capacity() > PSB_RAW_ROW_SCRATCH_RETAIN_BYTES {
             scratch.clear();
             scratch.shrink_to(PSB_RAW_ROW_SCRATCH_RETAIN_BYTES);
+        }
+        result
+    })
+}
+
+/// Reuse a flat `h * channels` Option grid across `extract_tile` calls on this thread.
+fn with_psb_tile_row_grid<R>(
+    cells: usize,
+    f: impl FnOnce(&mut [Option<Arc<Vec<u8>>>]) -> R,
+) -> R {
+    PSB_TILE_ROW_GRID.with(|grid| {
+        let mut grid = grid.borrow_mut();
+        if grid.len() < cells {
+            grid.resize(cells, None);
+        } else {
+            for slot in &mut grid[..cells] {
+                *slot = None;
+            }
+        }
+        let result = f(&mut grid[..cells]);
+        // Drop Arc refs promptly so cached rows are not pinned by the TLS grid.
+        for slot in &mut grid[..cells] {
+            *slot = None;
+        }
+        if grid.capacity() > PSB_TILE_ROW_GRID_RETAIN_SLOTS {
+            grid.clear();
+            grid.shrink_to(PSB_TILE_ROW_GRID_RETAIN_SLOTS);
         }
         result
     })
