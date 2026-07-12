@@ -45,6 +45,12 @@ const RGBA_BYTES_PER_PIXEL: usize = 4;
 /// Photoshop Image Resource IDs for embedded JPEG thumbnails.
 const IR_THUMBNAIL_PS4: u16 = 1033;
 const IR_THUMBNAIL_PS5: u16 = 1036;
+/// Photoshop IR 1033/1036 thumbnail resource header length (bytes before JPEG payload).
+/// Layout: format(4) + width(4) + height(4) + widthbytes(4) + size(4) + compressed(4)
+/// + bits/pixel(2) + planes(2) = 28.
+const IR_JPEG_THUMBNAIL_HEADER_LEN: usize = 28;
+/// Offset of "Size after compression" (u32 BE) in the IR 1033/1036 thumbnail header.
+const IR_JPEG_THUMBNAIL_COMPRESSED_SIZE_OFFSET: usize = 20;
 /// Photoshop Image Resource: ICC Profile Settings (raw ICC bytes).
 const IR_ICC_PROFILE: u16 = 1039;
 /// Pixel-index mask for cancel polling in RGBA8 full-buffer scans (~every 256 KiB).
@@ -225,6 +231,8 @@ pub fn read_composite_from_index(
                             r.read_exact(&mut compressed)
                                 .map_err(|e| format!("Read RLE: {e}"))?;
                             unpack_bits_into(&mut row_raw, &compressed, row_raw_bytes)?;
+                            // Safe: `checked_pixel_count` already proved width*height fits
+                            // in usize, and row < height here.
                             let dst_start = row * width as usize;
                             let dst_end = dst_start + width as usize;
                             downconvert_samples_to_u8(
@@ -298,9 +306,11 @@ pub fn read_composite_from_index(
             if row & 0x3F == 0 {
                 check_decode_cancel(cancel)?;
             }
+            // `row * width` is safe: `checked_pixel_count` already proved width*height
+            // fits in usize, and row < height. Reuse start/end for the RGBA byte range.
             let start = row * width as usize;
             let end = start + width as usize;
-            let dst_row = &mut rgba[row * width as usize * 4..(row + 1) * width as usize * 4];
+            let dst_row = &mut rgba[start * RGBA_BYTES_PER_PIXEL..end * RGBA_BYTES_PER_PIXEL];
             interleave_row_rgba8(dst_row, &planar_channels, color_mode, channels, start, end);
         }
     }
@@ -830,7 +840,9 @@ pub(crate) fn extract_photoshop_thumbnail_from_ir(
     ir_end: u64,
 ) -> Option<PsbComposite> {
     for_each_image_resource(bytes, ir_start, ir_end, |rid, data| {
-        if (rid == IR_THUMBNAIL_PS4 || rid == IR_THUMBNAIL_PS5) && data.len() >= 28 {
+        if (rid == IR_THUMBNAIL_PS4 || rid == IR_THUMBNAIL_PS5)
+            && data.len() >= IR_JPEG_THUMBNAIL_HEADER_LEN
+        {
             decode_photoshop_thumbnail_resource(data)
         } else {
             None
@@ -890,7 +902,7 @@ fn for_each_image_resource<T>(
 }
 
 fn decode_photoshop_thumbnail_resource(data: &[u8]) -> Option<PsbComposite> {
-    if data.len() < 28 {
+    if data.len() < IR_JPEG_THUMBNAIL_HEADER_LEN {
         return None;
     }
     let format = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
@@ -900,11 +912,17 @@ fn decode_photoshop_thumbnail_resource(data: &[u8]) -> Option<PsbComposite> {
     }
     let width = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
     let height = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-    let compressed = u32::from_be_bytes([data[20], data[21], data[22], data[23]]) as usize;
+    let compressed_off = IR_JPEG_THUMBNAIL_COMPRESSED_SIZE_OFFSET;
+    let compressed = u32::from_be_bytes([
+        data[compressed_off],
+        data[compressed_off + 1],
+        data[compressed_off + 2],
+        data[compressed_off + 3],
+    ]) as usize;
     if width == 0 || height == 0 || compressed == 0 {
         return None;
     }
-    let jpeg_start: usize = 28;
+    let jpeg_start = IR_JPEG_THUMBNAIL_HEADER_LEN;
     let jpeg_end = jpeg_start.saturating_add(compressed).min(data.len());
     if jpeg_end <= jpeg_start {
         return None;
@@ -1137,6 +1155,11 @@ pub(crate) fn validate_psd_dimensions(
     Ok(())
 }
 
+/// Returns `width * height` as `usize`, or an error on overflow.
+///
+/// On success, any `row * width` with `row < height` also fits in `usize`
+/// (including on 32-bit targets). Callers may rely on that instead of
+/// repeating `checked_mul` in row loops.
 fn checked_pixel_count(width: u32, height: u32) -> Result<usize, String> {
     (width as u64)
         .checked_mul(height as u64)
