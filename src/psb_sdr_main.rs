@@ -24,6 +24,12 @@
 //! sections on its own. Layer-record parsing is likewise done once and shared
 //! by P2/P2.5a/P2.5b.
 //!
+//! 8-bit documents use the u8 GPU/CPU compositor. 16/32-bit documents (common
+//! print RGB/CMYK, and float PSD when the display env is SDR-only) reuse the
+//! linear-light f32 layer compositor, then tone-map to RGBA8 at the SDR
+//! output boundary so layers-only files are still viewable without an HDR
+//! display or IR thumbnail.
+//!
 //! A structural index-parse failure skips P1 and P2 (there is no verified
 //! `image_data_pos`/`lm_start`/`lm_end` to use) and falls back to P3 only via
 //! the self-contained (re-walking) thumbnail extractor. Image Data truncation
@@ -215,13 +221,7 @@ fn decode_psd_sdr_main_with_index(
     // P2: strict visibility layer composite, then zero-information barrier.
     let mut p2_no_drawable_visible = false;
     if let Some(ref layer_info) = layer_info {
-        match crate::psb_layer_composite::composite_layers_from_info(
-            layer_info,
-            parse_ms,
-            composite_total_t0(parse_ms),
-            cancel,
-            gpu,
-        ) {
+        match composite_sdr_layers_from_info(index, bytes, layer_info, parse_ms, cancel, gpu) {
             Ok(composite) => {
                 // Timing log includes parse_ms; do not re-attribute on later stages.
                 parse_ms = 0.0;
@@ -276,16 +276,26 @@ fn decode_psd_sdr_main_with_index(
         }
         match psd_hidden_layer_strategy {
             crate::settings::PsdHiddenLayerStrategy::Heuristic => {
-                if let Some(main) =
-                    decode_psd_sdr_main_p25b_heuristic(layer_info, &mut parse_ms, cancel, gpu)?
-                {
+                if let Some(main) = decode_psd_sdr_main_p25b_heuristic(
+                    index,
+                    bytes,
+                    layer_info,
+                    &mut parse_ms,
+                    cancel,
+                    gpu,
+                )? {
                     return Ok(main);
                 }
             }
             crate::settings::PsdHiddenLayerStrategy::ShowAllLayers => {
-                if let Some(main) =
-                    decode_psd_sdr_main_p25b_show_all(layer_info, &mut parse_ms, cancel, gpu)?
-                {
+                if let Some(main) = decode_psd_sdr_main_p25b_show_all(
+                    index,
+                    bytes,
+                    layer_info,
+                    &mut parse_ms,
+                    cancel,
+                    gpu,
+                )? {
                     return Ok(main);
                 }
             }
@@ -443,7 +453,7 @@ fn decode_psd_sdr_main_p25a(
 
     let visible = crate::psb_layer_comps::visibility_from_layer_comp(&layer_info.records, comp_id);
 
-    match composite_p25_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+    match composite_p25_pass(index, bytes, layer_info, &visible, parse_ms, cancel, gpu) {
         Ok(composite) => {
             let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                 &composite.pixels,
@@ -489,6 +499,8 @@ fn decode_psd_sdr_main_p25a(
 }
 
 fn decode_psd_sdr_main_p25b_heuristic(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
     layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
     parse_ms: &mut f64,
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -526,7 +538,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
             &layer_info.records,
             &selection.member_indices,
         );
-        match composite_p25_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+        match composite_p25_pass(index, bytes, layer_info, &visible, parse_ms, cancel, gpu) {
             Ok(composite) => {
                 let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                     &composite.pixels,
@@ -568,7 +580,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
             &layer_info.records,
             &selection.member_indices,
         );
-        match composite_p25_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+        match composite_p25_pass(index, bytes, layer_info, &visible, parse_ms, cancel, gpu) {
             Ok(composite) => {
                 let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                     &composite.pixels,
@@ -616,6 +628,8 @@ fn decode_psd_sdr_main_p25b_heuristic(
 }
 
 fn decode_psd_sdr_main_p25b_show_all(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
     layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
     parse_ms: &mut f64,
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -632,7 +646,7 @@ fn decode_psd_sdr_main_p25b_show_all(
         visible.iter().filter(|v| **v).count()
     );
 
-    match composite_p25_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+    match composite_p25_pass(index, bytes, layer_info, &visible, parse_ms, cancel, gpu) {
         Ok(composite) => {
             let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                 &composite.pixels,
@@ -680,7 +694,66 @@ fn composite_total_t0(parse_ms: f64) -> std::time::Instant {
         .unwrap_or_else(std::time::Instant::now)
 }
 
+/// Strict-visibility composite for the SDR main state machine.
+///
+/// Depth 8 keeps the existing u8 compositor (optional GPU). Depth 16/32 reuses
+/// the HDR f32 layer compositor and tone-maps to RGBA8 so SDR displays can
+/// still show layers-only high-bit-depth documents.
+fn composite_sdr_layers_from_info(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
+    parse_ms: f64,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
+    let visible = crate::psb_layer_composite::compute_effective_visibility(&layer_info.records);
+    composite_sdr_layers_with_visibility(index, bytes, layer_info, &visible, parse_ms, cancel, gpu)
+}
+
+fn composite_sdr_layers_with_visibility(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
+    layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
+    visible: &[bool],
+    parse_ms: f64,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
+    if layer_info.depth == 8 {
+        return crate::psb_layer_composite::composite_layers_with_visibility_from_info(
+            layer_info,
+            visible,
+            parse_ms,
+            composite_total_t0(parse_ms),
+            cancel,
+            gpu,
+        );
+    }
+    if layer_info.depth != 16 && layer_info.depth != 32 {
+        return Err(format!(
+            "PSD/PSB SDR layer composite unsupported depth (found {}-bit)",
+            layer_info.depth
+        )
+        .into());
+    }
+
+    let sdr_white = crate::hdr::types::DEFAULT_SDR_WHITE_NITS;
+    let hdr = crate::psb_hdr_composite::composite_layers_hdr_with_visibility_from_info(
+        layer_info, bytes, index, visible, cancel, sdr_white,
+    )?;
+    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)
+        .map_err(|e| format!("PSD SDR deep-bit tone-map failed: {e}"))?;
+    Ok(crate::psb_reader::PsbComposite {
+        width: hdr.width,
+        height: hdr.height,
+        pixels,
+    })
+}
+
 fn composite_p25_pass(
+    index: &PsdSectionIndex,
+    bytes: &[u8],
     layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
     visible: &[bool],
     parse_ms: &mut f64,
@@ -688,11 +761,12 @@ fn composite_p25_pass(
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
     let attributed_parse_ms = *parse_ms;
-    let result = crate::psb_layer_composite::composite_layers_with_visibility_from_info(
+    let result = composite_sdr_layers_with_visibility(
+        index,
+        bytes,
         layer_info,
         visible,
         attributed_parse_ms,
-        composite_total_t0(attributed_parse_ms),
         cancel,
         gpu,
     );
@@ -706,7 +780,10 @@ fn composite_p25_pass(
 
 #[cfg(test)]
 mod tests {
-    use super::{PsdSectionIndex, decode_psd_sdr_main_from_bytes_with_cancel};
+    use super::{
+        PsdSectionIndex, decode_psd_sdr_main_from_bytes_with_cancel,
+        decode_psd_sdr_main_skip_flattened_with_cancel,
+    };
     use crate::settings::PsdHiddenLayerStrategy;
     use std::path::Path;
 
@@ -1130,5 +1207,236 @@ mod tests {
             (flat.width, flat.height)
         );
         assert_eq!(main.composite.pixels, flat.pixels);
+    }
+
+    /// Visible RGB layer + blank flat Image Data at the given bit depth.
+    ///
+    /// The layer covers only a sub-rect so the blank canvas hinterland keeps
+    /// RGB/alpha variance (full-canvas solid colour is rejected by the
+    /// zero-information barrier, same as 8-bit P2).
+    fn visible_rgb_layers_only_psd(width: u32, height: u32, depth: u16) -> Vec<u8> {
+        assert!(matches!(depth, 8 | 16 | 32));
+        assert!(width >= 2 && height >= 2);
+        let canvas_pixels = (width * height) as usize;
+        let bps = (depth / 8) as usize;
+
+        let left = 0i32;
+        let top = 0i32;
+        let right = 1i32; // 1x1 layer at origin
+        let bottom = 1i32;
+        let lw = (right - left) as u32;
+        let lh = (bottom - top) as u32;
+        let layer_pixels = (lw * lh) as usize;
+
+        let plane = |sample_bytes: &[u8]| {
+            let mut ch = vec![0u8, 0u8]; // Raw compression
+            for _ in 0..layer_pixels {
+                ch.extend_from_slice(sample_bytes);
+            }
+            ch
+        };
+
+        let (r_plane, g_plane, b_plane, a_plane) = match depth {
+            8 => (plane(&[220]), plane(&[40]), plane(&[40]), plane(&[255])),
+            16 => (
+                plane(&220u16.wrapping_mul(257).to_be_bytes()),
+                plane(&40u16.wrapping_mul(257).to_be_bytes()),
+                plane(&40u16.wrapping_mul(257).to_be_bytes()),
+                plane(&u16::MAX.to_be_bytes()),
+            ),
+            32 => (
+                plane(&1.0f32.to_be_bytes()),
+                plane(&(40.0f32 / 255.0).to_be_bytes()),
+                plane(&(40.0f32 / 255.0).to_be_bytes()),
+                plane(&1.0f32.to_be_bytes()),
+            ),
+            _ => unreachable!(),
+        };
+
+        // Channel order in Photoshop layer data: alpha (-1), R (0), G (1), B (2).
+        let channels = [
+            (-1i16, a_plane),
+            (0i16, r_plane),
+            (1i16, g_plane),
+            (2i16, b_plane),
+        ];
+        let extra = layer_extra_with_name(b"Layer0");
+
+        let mut layer_record = Vec::new();
+        layer_record.extend_from_slice(&top.to_be_bytes());
+        layer_record.extend_from_slice(&left.to_be_bytes());
+        layer_record.extend_from_slice(&bottom.to_be_bytes());
+        layer_record.extend_from_slice(&right.to_be_bytes());
+        layer_record.extend_from_slice(&(channels.len() as u16).to_be_bytes());
+        for (id, data) in &channels {
+            layer_record.extend_from_slice(&id.to_be_bytes());
+            layer_record.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        }
+        layer_record.extend_from_slice(b"8BIM");
+        layer_record.extend_from_slice(b"norm");
+        layer_record.extend_from_slice(&[255, 0, 0, 0]); // visible
+        layer_record.extend_from_slice(&(extra.len() as u32).to_be_bytes());
+        layer_record.extend_from_slice(&extra);
+
+        let mut layer_info = Vec::new();
+        layer_info.extend_from_slice(&1i16.to_be_bytes());
+        layer_info.extend_from_slice(&layer_record);
+        for (_, data) in &channels {
+            layer_info.extend_from_slice(data);
+        }
+
+        let mut layer_mask_info = Vec::new();
+        layer_mask_info.extend_from_slice(&(layer_info.len() as u32).to_be_bytes());
+        layer_mask_info.extend_from_slice(&layer_info);
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 6]);
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&depth.to_be_bytes());
+        bytes.extend_from_slice(&3u16.to_be_bytes()); // RGB
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&(layer_mask_info.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&layer_mask_info);
+        bytes.extend_from_slice(&0u16.to_be_bytes()); // Raw Image Data
+        bytes.extend(std::iter::repeat_n(0u8, canvas_pixels * 3 * bps)); // blank flat
+        bytes
+    }
+
+    #[test]
+    fn decode_psd_sdr_main_p2_16bit_rgb_layers_only() {
+        let bytes = visible_rgb_layers_only_psd(2, 2, 16);
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(
+            &bytes,
+            None,
+            None,
+            PsdHiddenLayerStrategy::Heuristic,
+        )
+        .expect("16-bit RGB layers-only must decode via SDR P2 (f32 composite + tone-map)");
+        assert_eq!((main.composite.width, main.composite.height), (2, 2));
+        assert_eq!(main.osd, crate::loader::PsdOsdInfo::p2_strict());
+        // Red-dominant opaque pixel after linear->sRGB tone-map.
+        let px = &main.composite.pixels[0..4];
+        assert!(px[0] > px[1] && px[0] > px[2] && px[3] == 255, "got {px:?}");
+        // Hinterland stays transparent (layer is only 1x1 at origin).
+        assert_eq!(&main.composite.pixels[4..8], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn decode_psd_sdr_main_p2_32bit_rgb_layers_only() {
+        let bytes = visible_rgb_layers_only_psd(2, 2, 32);
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(
+            &bytes,
+            None,
+            None,
+            PsdHiddenLayerStrategy::Heuristic,
+        )
+        .expect("32-bit RGB layers-only must decode via SDR P2 even without HDR env");
+        assert_eq!((main.composite.width, main.composite.height), (2, 2));
+        assert_eq!(main.osd, crate::loader::PsdOsdInfo::p2_strict());
+        let px = &main.composite.pixels[0..4];
+        assert!(px[0] > px[1] && px[0] > px[2] && px[3] == 255, "got {px:?}");
+        assert_eq!(&main.composite.pixels[4..8], &[0, 0, 0, 0]);
+    }
+
+    /// Visible CMYK layer (1x1) + blank flat at 16-bit -- common print layers-only case.
+    fn visible_cmyk16_layers_only_psd(width: u32, height: u32) -> Vec<u8> {
+        assert!(width >= 2 && height >= 2);
+        let canvas_pixels = (width * height) as usize;
+        let left = 0i32;
+        let top = 0i32;
+        let right = 1i32;
+        let bottom = 1i32;
+        let layer_pixels = 1usize;
+
+        let plane = |v: u16| {
+            let mut ch = vec![0u8, 0u8];
+            for _ in 0..layer_pixels {
+                ch.extend_from_slice(&v.to_be_bytes());
+            }
+            ch
+        };
+        // Adobe polarity: 0 = full ink. Strong cyan, little M/Y/K.
+        let channels = [
+            (0i16, plane(0)),                  // C full
+            (1i16, plane(u16::MAX)),           // M none
+            (2i16, plane(u16::MAX)),           // Y none
+            (3i16, plane((u16::MAX / 4) * 3)), // K light
+        ];
+        let extra = layer_extra_with_name(b"Cyan");
+
+        let mut layer_record = Vec::new();
+        layer_record.extend_from_slice(&top.to_be_bytes());
+        layer_record.extend_from_slice(&left.to_be_bytes());
+        layer_record.extend_from_slice(&bottom.to_be_bytes());
+        layer_record.extend_from_slice(&right.to_be_bytes());
+        layer_record.extend_from_slice(&(channels.len() as u16).to_be_bytes());
+        for (id, data) in &channels {
+            layer_record.extend_from_slice(&id.to_be_bytes());
+            layer_record.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        }
+        layer_record.extend_from_slice(b"8BIM");
+        layer_record.extend_from_slice(b"norm");
+        layer_record.extend_from_slice(&[255, 0, 0, 0]);
+        layer_record.extend_from_slice(&(extra.len() as u32).to_be_bytes());
+        layer_record.extend_from_slice(&extra);
+
+        let mut layer_info = Vec::new();
+        layer_info.extend_from_slice(&1i16.to_be_bytes());
+        layer_info.extend_from_slice(&layer_record);
+        for (_, data) in &channels {
+            layer_info.extend_from_slice(data);
+        }
+
+        let mut layer_mask_info = Vec::new();
+        layer_mask_info.extend_from_slice(&(layer_info.len() as u32).to_be_bytes());
+        layer_mask_info.extend_from_slice(&layer_info);
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"8BPS");
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 6]);
+        bytes.extend_from_slice(&4u16.to_be_bytes()); // CMYK channels
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&16u16.to_be_bytes());
+        bytes.extend_from_slice(&4u16.to_be_bytes()); // CMYK
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&(layer_mask_info.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&layer_mask_info);
+        bytes.extend_from_slice(&0u16.to_be_bytes());
+        // Blank CMYK flat: 0 ink (255-equivalent = max = no ink) as zeros still
+        // downconverts to black RGB which P1 treats as absolute blank for...
+        // actually color_mode 4 may differ. Use all-zero planes (full ink black).
+        bytes.extend(std::iter::repeat_n(0u8, canvas_pixels * 4 * 2));
+        bytes
+    }
+
+    #[test]
+    fn decode_psd_sdr_main_p2_16bit_cmyk_layers_only() {
+        // CMYK flats are rarely "absolute blank" (no RGB-0 rule), so skip P1
+        // to exercise the layers-only deep-bit P2 path directly.
+        let bytes = visible_cmyk16_layers_only_psd(2, 2);
+        let main = decode_psd_sdr_main_skip_flattened_with_cancel(
+            &bytes,
+            None,
+            None,
+            PsdHiddenLayerStrategy::Heuristic,
+        )
+        .expect("16-bit CMYK layers-only must decode via SDR P2");
+        assert_eq!((main.composite.width, main.composite.height), (2, 2));
+        assert_eq!(main.osd, crate::loader::PsdOsdInfo::p2_strict());
+        // Cyan-ish: G and B should dominate R after the device approximation.
+        let px = &main.composite.pixels[0..4];
+        assert!(px[3] == 255, "got {px:?}");
+        assert!(
+            px[1] > 32 || px[2] > 32,
+            "expected cyan-ish/non-black pixel, got {px:?}"
+        );
     }
 }

@@ -743,8 +743,10 @@ fn decode_layer_to_f32(args: LayerF32DecodeArgs<'_>) -> Result<Option<Vec<f32>>,
 /// suitable for HDR display.
 ///
 /// Does NOT fail on depth != 8: this is the HDR entry point for 16-bit
-/// (PQ/HLG ICC-marked) and 32-bit documents.  The SDR path in
-/// `composite_layers_from_info` keeps its depth==8 guard unchanged.
+/// (PQ/HLG ICC-marked) and 32-bit documents.  The 8-bit u8 compositor in
+/// `composite_layers_from_info` keeps its depth==8 guard; SDR main routes
+/// 16/32-bit through this f32 path and tone-maps to RGBA8 when the display
+/// environment is SDR-only.
 ///
 /// Transfer function comes from `probe_icc_hdr` on the embedded ICC in the
 /// image-resource section.  32-bit float PSD is always linear (no transfer).

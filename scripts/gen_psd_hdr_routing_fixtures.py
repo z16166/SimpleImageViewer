@@ -474,6 +474,110 @@ def hidden_rgb_layer(canvas_w: int, canvas_h: int) -> bytes:
     return build_layer_and_mask(rec, payload, 1)
 
 
+def layer_channel_payload_cmyk(
+    w: int, h: int, c: int, m: int, y: int, k: int, depth: int = 16
+) -> bytes:
+    """CMYK channel payload without transparency (ids 0..3)."""
+    return (
+        solid_channel_raw(w, h, c, depth)
+        + solid_channel_raw(w, h, m, depth)
+        + solid_channel_raw(w, h, y, depth)
+        + solid_channel_raw(w, h, k, depth)
+    )
+
+
+def layer_record_cmyk(
+    top: int,
+    left: int,
+    bottom: int,
+    right: int,
+    *,
+    opacity: int,
+    name: str,
+    channel_data_lens: list[int],
+    hidden: bool = False,
+) -> bytes:
+    out = bytearray()
+    out += i32(top) + i32(left) + i32(bottom) + i32(right)
+    out += u16(4)
+    for ch_id, data_len in zip((0, 1, 2, 3), channel_data_lens):
+        out += i16(ch_id)
+        out += u32(data_len)
+    out += b"8BIM"
+    out += b"norm"
+    out += u8(opacity)
+    out += u8(0)
+    flags = 0x02 if hidden else 0x00
+    out += u8(flags)
+    out += u8(0)
+
+    name_bytes = pascal_name_layer(name)
+    extra = u32(0) + u32(0) + name_bytes
+    out += u32(len(extra))
+    out += extra
+    return bytes(out)
+
+
+def one_visible_cmyk_layer(
+    canvas_w: int,
+    canvas_h: int,
+    *,
+    depth: int,
+    color: tuple[int, int, int, int],
+) -> bytes:
+    """Single visible CMYK layer covering a small rect."""
+    left, top = 1, 1
+    right, bottom = min(canvas_w, 5), min(canvas_h, 3)
+    w = right - left
+    h = bottom - top
+    c, m, y, k = color
+    if depth == 16:
+
+        def s16(v: int) -> int:
+            return v if v > 255 else (v * 257)
+
+        payload = layer_channel_payload_cmyk(
+            w, h, s16(c), s16(m), s16(y), s16(k), depth=16
+        )
+    else:
+        payload = layer_channel_payload_cmyk(w, h, c, m, y, k, depth=depth)
+
+    n = len(payload) // 4
+    lenses = [n, n, n, n]
+    rec = layer_record_cmyk(
+        top,
+        left,
+        bottom,
+        right,
+        opacity=255,
+        name="CyanLayer",
+        channel_data_lens=lenses,
+        hidden=False,
+    )
+    return build_layer_and_mask(rec, payload, 1)
+
+
+def planar_cmyk16(width: int, height: int, *, blank: bool = False) -> bytes:
+    """Big-endian u16 CMYK planar. blank=True writes full-ink zeros."""
+    n = width * height
+    planes = [bytearray(n * 2) for _ in range(4)]
+    for y in range(height):
+        for x in range(width):
+            i = y * width + x
+            if blank:
+                c = m = yv = k = 0
+            else:
+                c = (x * 4000) & 0xFFFF
+                m = (y * 3000) & 0xFFFF
+                yv = (x * 2000 + y * 1000) & 0xFFFF
+                k = 0x2000
+            planes[0][i * 2 : i * 2 + 2] = u16(c)
+            planes[1][i * 2 : i * 2 + 2] = u16(m)
+            planes[2][i * 2 : i * 2 + 2] = u16(yv)
+            planes[3][i * 2 : i * 2 + 2] = u16(k)
+    return bytes(planes[0] + planes[1] + planes[2] + planes[3])
+
+
 # ---------------------------------------------------------------------------
 # PSD/PSB file assembly
 # ---------------------------------------------------------------------------
@@ -795,6 +899,63 @@ def build_fixtures() -> list[dict]:
         "sdr_p1",
         8,
         "8-bit CMYK flat control",
+    )
+
+    # 14. rgb16_blank_p1_layers.psd -- SDR env layers-only (no HDR ICC)
+    layers16 = one_visible_rgb_layer(W, H, depth=16, color=(220, 40, 40, 255))
+    data = assemble_psd(
+        channels=3,
+        height=H,
+        width=W,
+        depth=16,
+        color_mode=3,
+        layer_and_mask=layers16,
+        image_data=image_data_raw(planar_rgb16(W, H, pattern=False)),
+    )
+    write(
+        "rgb16_blank_p1_layers.psd",
+        data,
+        "sdr_p2",
+        16,
+        "16-bit RGB blank flat + visible layer (SDR P2 via f32 composite)",
+    )
+
+    # 15. cmyk16_blank_p1_layers.psd -- print layers-only on SDR
+    layers_cmyk16 = one_visible_cmyk_layer(W, H, depth=16, color=(0, 255, 255, 64))
+    data = assemble_psd(
+        channels=4,
+        height=H,
+        width=W,
+        depth=16,
+        color_mode=4,
+        layer_and_mask=layers_cmyk16,
+        image_data=image_data_raw(planar_cmyk16(W, H, blank=True)),
+    )
+    write(
+        "cmyk16_blank_p1_layers.psd",
+        data,
+        "sdr_env_p2",
+        16,
+        "16-bit CMYK blank flat + visible layer (force SDR main P2)",
+    )
+
+    # 16. rgb32_blank_p1_layers_sdr.psd -- 32-bit layers-only when env is SDR
+    layers32_sdr = one_visible_rgb_layer(W, H, depth=32, color=(2, 1, 1, 1))
+    data = assemble_psd(
+        channels=3,
+        height=H,
+        width=W,
+        depth=32,
+        color_mode=3,
+        layer_and_mask=layers32_sdr,
+        image_data=image_data_raw(planar_rgb32(W, H, blank=True)),
+    )
+    write(
+        "rgb32_blank_p1_layers_sdr.psd",
+        data,
+        "sdr_env_p2",
+        32,
+        "32-bit blank flat + visible layer decoded via SDR main (env capacity 1.0)",
     )
 
     return manifest

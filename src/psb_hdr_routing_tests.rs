@@ -119,6 +119,42 @@ mod tests {
                         "{file}: empty SDR dims"
                     );
                 }
+                // Content may want HDR (e.g. 32-bit) or CMYK flats may not
+                // trip the absolute-blank barrier; still require SDR main P2
+                // (skip-flattened when needed) to produce viewable pixels when
+                // the display environment is SDR-only.
+                "sdr_env_p2" => {
+                    assert!(
+                        !psd_should_try_hdr(index.depth, icc.as_deref(), 1.0),
+                        "{file}: SDR capacity must not select HDR"
+                    );
+                    let sdr = if index.color_mode == 4 {
+                        crate::psb_sdr_main::decode_psd_sdr_main_skip_flattened_with_cancel(
+                            &bytes,
+                            None,
+                            None,
+                            crate::settings::PsdHiddenLayerStrategy::Heuristic,
+                        )
+                    } else {
+                        decode_psd_sdr_main_from_bytes_with_cancel(
+                            &bytes,
+                            None,
+                            None,
+                            crate::settings::PsdHiddenLayerStrategy::Heuristic,
+                        )
+                    }
+                    .unwrap_or_else(|e| panic!("{file}: SDR env P2 decode failed: {e}"));
+                    assert!(
+                        sdr.composite.width > 0 && sdr.composite.height > 0,
+                        "{file}: empty SDR dims"
+                    );
+                    assert!(!sdr.composite.pixels.is_empty(), "{file}: empty SDR pixels");
+                    assert_eq!(
+                        sdr.osd,
+                        crate::loader::PsdOsdInfo::p2_strict(),
+                        "{file}: expected P2 strict OSD"
+                    );
+                }
                 other => panic!("{file}: unknown expected_branch {other}"),
             }
         }

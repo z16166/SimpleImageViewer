@@ -22,6 +22,10 @@
 //! Normal / Screen / Linear Dodge / Multiply blend + opacity + user mask +
 //! clipping groups, respecting strict Photoshop layer/group visibility only
 //! (no viewer heuristics that open hidden layers).
+//!
+//! For 16/32-bit documents the SDR main state machine routes through the
+//! f32 compositor in `psb_hdr_composite` and tone-maps to RGBA8; this module's
+//! u8 entry points keep the depth==8 guard.
 
 use std::io::Read;
 
