@@ -37,8 +37,8 @@ use crate::hdr::types::{
 use crate::psb_icc_hdr::probe_icc_hdr;
 use crate::psb_reader::{
     bytes_per_sample, channel_is_used, check_decode_cancel, downconvert_samples_to_u8,
-    extract_icc_profile_from_ir, read_u16, read_u32, seek_forward_within, unpack_bits_into,
-    validate_rle_total_bytes,
+    extract_icc_profile_from_ir, max_rle_compressed_row_bytes, read_u16, read_u32,
+    seek_forward_within, unpack_bits_into, validate_rle_row_counts,
 };
 use crate::psb_section_index::PsdSectionIndex;
 
@@ -127,7 +127,11 @@ pub fn read_composite_hdr_from_index(
             r.stream_position()
                 .map_err(|e| format!("Stream position error: {e}"))?,
         );
-        validate_rle_total_bytes(&row_counts, remaining)?;
+        validate_rle_row_counts(
+            &row_counts,
+            remaining,
+            max_rle_compressed_row_bytes(row_raw_bytes)?,
+        )?;
     }
 
     // Read planar channels, keeping raw native-depth bytes (no downconversion here).

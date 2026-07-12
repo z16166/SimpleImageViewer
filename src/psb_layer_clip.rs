@@ -39,16 +39,6 @@ pub(crate) fn any_layer_clipped(layers: &[ClipLayerRef<'_>]) -> bool {
     layers.iter().any(|l| l.clipping != 0)
 }
 
-fn separable_kind(blend: &[u8; 4]) -> SeparableBlendKind {
-    match blend {
-        b"norm" => SeparableBlendKind::Normal,
-        b"scrn" => SeparableBlendKind::Screen,
-        b"lddg" => SeparableBlendKind::LinearDodge,
-        b"mul " => SeparableBlendKind::Multiply,
-        _ => SeparableBlendKind::Normal,
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn blend_onto(
     canvas: &mut [u8],
@@ -173,6 +163,11 @@ fn capture_base_alpha(
 }
 
 /// Multiply every pixel's alpha in `group` by the corresponding base-alpha sample.
+///
+/// RGB is left unchanged unless the resulting alpha is 0 (then cleared). This is
+/// intentional straight-alpha masking: the group later blends with the base mode
+/// via the PDF separable formula, which already weights by source alpha -- so
+/// premultiplying RGB here would double-attenuate Screen / Multiply / Linear Dodge.
 fn apply_base_alpha_mask(group: &mut [u8], base_alpha: &[u8]) {
     if group.len() != base_alpha.len().saturating_mul(4) {
         return;
@@ -280,7 +275,7 @@ impl OpenClipGroup {
             clip.top,
             clip.width,
             clip.height,
-            separable_kind(&clip.blend),
+            SeparableBlendKind::from_psd_key_or_normal(&clip.blend),
         );
         Ok(())
     }
@@ -309,7 +304,7 @@ impl OpenClipGroup {
                     base_top,
                     base_width,
                     base_height,
-                    separable_kind(&base_blend),
+                    SeparableBlendKind::from_psd_key_or_normal(&base_blend),
                 );
             }
             Some(mut temp) => {
@@ -324,7 +319,7 @@ impl OpenClipGroup {
                     0,
                     canvas_w,
                     canvas_h,
-                    separable_kind(&base_blend),
+                    SeparableBlendKind::from_psd_key_or_normal(&base_blend),
                 );
             }
         }

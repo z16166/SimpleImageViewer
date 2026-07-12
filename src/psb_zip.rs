@@ -112,25 +112,47 @@ fn undo_zip_prediction_32(buf: &mut [u8], width: usize) -> Result<(), String> {
     if row_bytes <= STACK_CAP {
         let mut scratch = [0u8; STACK_CAP];
         for row in buf.chunks_exact_mut(row_bytes) {
-            undo_zip_prediction_32_row(row, &mut scratch[..row_bytes], width);
+            undo_zip_prediction_32_row(row, &mut scratch[..row_bytes], width)?;
         }
     } else {
         let mut scratch = vec![0u8; row_bytes];
         for row in buf.chunks_exact_mut(row_bytes) {
-            undo_zip_prediction_32_row(row, &mut scratch, width);
+            undo_zip_prediction_32_row(row, &mut scratch, width)?;
         }
     }
     Ok(())
 }
 
-fn undo_zip_prediction_32_row(row: &mut [u8], scratch: &mut [u8], width: usize) {
-    for plane in 0..4 {
-        let start = plane * width;
-        let end = start + width;
-        prefix_sum_u8_inplace(&mut row[start..end]);
+fn undo_zip_prediction_32_row(
+    row: &mut [u8],
+    scratch: &mut [u8],
+    width: usize,
+) -> Result<(), String> {
+    let expected = width
+        .checked_mul(4)
+        .ok_or_else(|| "PSD/PSB ZIP prediction 32-bit row size overflow".to_string())?;
+    if row.len() != expected || scratch.len() != expected {
+        return Err(format!(
+            "PSD/PSB ZIP prediction 32-bit row length mismatch (row={}, scratch={}, expected={expected})",
+            row.len(),
+            scratch.len()
+        ));
+    }
+    for plane in 0..4usize {
+        let start = plane
+            .checked_mul(width)
+            .ok_or_else(|| "PSD/PSB ZIP prediction plane offset overflow".to_string())?;
+        let end = start
+            .checked_add(width)
+            .ok_or_else(|| "PSD/PSB ZIP prediction plane end overflow".to_string())?;
+        let plane_slice = row
+            .get_mut(start..end)
+            .ok_or_else(|| "PSD/PSB ZIP prediction plane slice out of bounds".to_string())?;
+        prefix_sum_u8_inplace(plane_slice);
     }
     interleave_byte_planes(scratch, row, width);
     row.copy_from_slice(scratch);
+    Ok(())
 }
 
 /// Re-interleave 4 packed byte planes into sample-major BE float bytes.
@@ -241,7 +263,10 @@ unsafe fn interleave_byte_planes_neon(dst: &mut [u8], planar: &[u8], width: usiz
 
 /// Inclusive wrapping prefix-sum on a big-endian u16 scanline (Adobe 16-bit ZIP prediction).
 fn prefix_sum_u16be_inplace(row: &mut [u8]) {
-    debug_assert!(row.len().is_multiple_of(2));
+    assert!(
+        row.len().is_multiple_of(2),
+        "PSD/PSB 16-bit ZIP prediction row length must be even"
+    );
     if row.is_empty() {
         return;
     }
@@ -275,8 +300,12 @@ fn prefix_sum_u16be_inplace(row: &mut [u8]) {
 
 #[inline]
 fn prefix_sum_u16be_scalar(row: &mut [u8]) {
+    assert!(
+        row.len().is_multiple_of(2),
+        "PSD/PSB 16-bit ZIP prediction row length must be even"
+    );
     let mut acc = 0u16;
-    for sample in row.chunks_exact_mut(2) {
+    for sample in row.as_chunks_mut::<2>().0 {
         let delta = u16::from_be_bytes([sample[0], sample[1]]);
         acc = acc.wrapping_add(delta);
         let be = acc.to_be_bytes();

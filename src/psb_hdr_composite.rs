@@ -46,18 +46,6 @@ use crate::psb_layer_decode::{
 };
 use crate::psb_section_index::PsdSectionIndex;
 
-// -- blend-mode key dispatch --------------------------------------------------
-
-fn separable_kind(blend: &[u8; 4]) -> SeparableBlendKind {
-    match blend {
-        b"norm" => SeparableBlendKind::Normal,
-        b"scrn" => SeparableBlendKind::Screen,
-        b"lddg" => SeparableBlendKind::LinearDodge,
-        b"mul " => SeparableBlendKind::Multiply,
-        _ => SeparableBlendKind::Normal,
-    }
-}
-
 // -- f32 canvas blend ---------------------------------------------------------
 
 /// Blend a decoded layer's straight-alpha RGBA f32 rect onto the f32 canvas.
@@ -205,6 +193,8 @@ fn apply_base_alpha_mask_f32_scalar(group: &mut [f32], base_alpha: &[f32]) {
 
 #[inline]
 fn apply_one_base_alpha_mask(px: &mut [f32], mask: f32) {
+    // Straight-alpha silhouette: scale alpha only (clear RGB iff a becomes 0).
+    // Same contract as SDR `apply_base_alpha_mask` / GPU `cs_apply_base_alpha_mask`.
     if mask <= 0.0 {
         px[0] = 0.0;
         px[1] = 0.0;
@@ -490,7 +480,7 @@ impl OpenClipGroupF32 {
             clip.top,
             clip.width,
             clip.height,
-            separable_kind(&clip.blend),
+            SeparableBlendKind::from_psd_key_or_normal(&clip.blend),
         );
         Ok(())
     }
@@ -519,7 +509,7 @@ impl OpenClipGroupF32 {
                     base_top,
                     base_width,
                     base_height,
-                    separable_kind(&base_blend),
+                    SeparableBlendKind::from_psd_key_or_normal(&base_blend),
                 );
             }
             Some(mut temp) => {
@@ -534,7 +524,7 @@ impl OpenClipGroupF32 {
                     0,
                     canvas_w,
                     canvas_h,
-                    separable_kind(&base_blend),
+                    SeparableBlendKind::from_psd_key_or_normal(&base_blend),
                 );
             }
         }
@@ -667,7 +657,7 @@ fn decode_layer_to_f32(args: LayerF32DecodeArgs<'_>) -> Result<Option<Vec<f32>>,
                 // Alpha channel: linear, no transfer decode.
                 match decode_channel_image(slice, width, height, depth, is_psb, cancel) {
                     Ok(raw) => {
-                        alpha = Some(channel_samples_to_f32(&raw, depth, linear, sdr_white_nits))
+                        alpha = Some(channel_samples_to_f32(&raw, depth, linear, sdr_white_nits)?)
                     }
                     Err(e) if e.is_cancelled() => return Err(e),
                     Err(e) => log::debug!("PSD/PSB HDR layer alpha decode failed: {e}"),
@@ -722,7 +712,7 @@ fn decode_layer_to_f32(args: LayerF32DecodeArgs<'_>) -> Result<Option<Vec<f32>>,
                             depth,
                             transfer,
                             sdr_white_nits,
-                        ));
+                        )?);
                     }
                     Err(e) if e.is_cancelled() => return Err(e),
                     Err(e) => {

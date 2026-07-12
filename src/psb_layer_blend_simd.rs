@@ -29,6 +29,28 @@ pub enum SeparableBlendKind {
     Multiply,
 }
 
+impl SeparableBlendKind {
+    /// Map a Photoshop 4-byte blend-mode key to a supported separable kind.
+    /// Unsupported keys return `None` (callers that only need a fallback can use
+    /// [`Self::from_psd_key_or_normal`]).
+    #[inline]
+    pub fn from_psd_key(blend: &[u8; 4]) -> Option<Self> {
+        match blend {
+            b"norm" => Some(Self::Normal),
+            b"scrn" => Some(Self::Screen),
+            b"lddg" => Some(Self::LinearDodge),
+            b"mul " => Some(Self::Multiply),
+            _ => None,
+        }
+    }
+
+    /// Like [`Self::from_psd_key`], falling back to [`Self::Normal`] for unknown keys.
+    #[inline]
+    pub fn from_psd_key_or_normal(blend: &[u8; 4]) -> Self {
+        Self::from_psd_key(blend).unwrap_or(Self::Normal)
+    }
+}
+
 #[inline]
 fn u8_to_f32(v: u8) -> f32 {
     // Match former LUT formula `(i as f32) / 255.0` (not `* (1/255)`).

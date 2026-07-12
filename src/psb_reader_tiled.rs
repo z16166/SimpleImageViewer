@@ -32,9 +32,9 @@ use simple_image_viewer::simd_swizzle;
 
 use crate::psb_reader::{
     bytes_per_sample, channel_is_used, checked_section_end, cmyk_to_rgb, downconvert_samples_to_u8,
-    extract_icc_profile_from_ir, read_u16, read_u32, read_u64, seek_forward_within,
-    tiled_compression_supported, unpack_bits_into, validate_psd_dimensions,
-    validate_rle_total_bytes,
+    extract_icc_profile_from_ir, max_rle_compressed_row_bytes, read_u16, read_u32, read_u64,
+    seek_forward_within, tiled_compression_supported, unpack_bits_into, validate_psd_dimensions,
+    validate_rle_row_counts,
 };
 
 /// Tiled source for PSD/PSB files that decodes regions on demand from a memory-mapped file.
@@ -249,12 +249,18 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
                 .checked_mul(height as u64)
                 .ok_or_else(|| "PSD/PSB channel byte count overflow".to_string())?;
             for ch in 0..channels {
+                let ch_base = (ch as u64)
+                    .checked_mul(channel_bytes)
+                    .ok_or_else(|| "PSD/PSB channel offset overflow".to_string())?;
                 for row in 0..height {
-                    row_offsets.push(
-                        row_counts_start
-                            + (ch as u64 * channel_bytes)
-                            + (row as u64 * row_raw_bytes),
-                    );
+                    let row_off = (row as u64)
+                        .checked_mul(row_raw_bytes)
+                        .ok_or_else(|| "PSD/PSB row offset overflow".to_string())?;
+                    let offset = row_counts_start
+                        .checked_add(ch_base)
+                        .and_then(|v| v.checked_add(row_off))
+                        .ok_or_else(|| "PSD/PSB raw row offset overflow".to_string())?;
+                    row_offsets.push(offset);
                 }
             }
         }
@@ -273,7 +279,11 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
             }
             let remaining = mmap.len().saturating_sub(cursor.position() as usize) as u64;
             let row_counts_usize: Vec<usize> = counts.iter().map(|&c| c as usize).collect();
-            validate_rle_total_bytes(&row_counts_usize, remaining)?;
+            let max_row = max_rle_compressed_row_bytes(
+                usize::try_from(row_raw_bytes)
+                    .map_err(|_| "PSD/PSB RLE row byte count overflow".to_string())?,
+            )?;
+            validate_rle_row_counts(&row_counts_usize, remaining, max_row)?;
             let data_start = cursor.position();
             let mut running_offset = data_start;
             for cnt in counts {
@@ -359,7 +369,19 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
         let end = (x + w) as usize;
 
         for rel_y in 0..h as usize {
-            let dst_row = &mut rgba[rel_y * w as usize * 4..(rel_y + 1) * w as usize * 4];
+            let Some(dst_start) = (rel_y as u64)
+                .checked_mul(w as u64)
+                .and_then(|n| n.checked_mul(4))
+                .and_then(|n| usize::try_from(n).ok())
+            else {
+                continue;
+            };
+            let Some(dst_end) = dst_start.checked_add((w as usize).saturating_mul(4)) else {
+                continue;
+            };
+            let Some(dst_row) = rgba.get_mut(dst_start..dst_end) else {
+                continue;
+            };
             let src_channels = &row_grid[rel_y];
             interleave_tile_row_rgba8(
                 dst_row,
@@ -398,7 +420,9 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
         let mut channel_rows: Vec<Option<Arc<Vec<u8>>>> = vec![None; self.channels as usize];
         for out_y in 0..out_h {
             let src_y = ((out_y as f64 / scale) as u32).min(self.height - 1);
-            let row_start_idx = out_y as usize * out_w as usize;
+            let Some(row_start_idx) = (out_y as usize).checked_mul(out_w as usize) else {
+                continue;
+            };
 
             // Fetch one full-width row of each used channel, then sample columns.
             for ch_idx in 0..self.channels {
@@ -408,7 +432,12 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
             }
 
             for (out_x, &src_x) in x_map.iter().enumerate().take(out_w as usize) {
-                let dst_off = (row_start_idx + out_x) * 4;
+                let Some(dst_off) = row_start_idx
+                    .checked_add(out_x)
+                    .and_then(|idx| idx.checked_mul(4))
+                else {
+                    continue;
+                };
                 if dst_off + 3 >= pixels.len() {
                     continue;
                 }

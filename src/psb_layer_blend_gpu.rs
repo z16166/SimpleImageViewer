@@ -31,7 +31,14 @@
 //!    `OpenClipGroup`). Sequential clip groups reuse one document-scoped
 //!    scratch texture pair cleared via `cs_clear_storage` (O(1) VRAM).
 //!    Vector masks / knockout / clip-to-folder remain out of scope.
-//! 3. **Admission fallback:** if any decoded layer is not GPU-separable, the
+//! 3. **Clip base-alpha mask is alpha-only (intentional):**
+//!    `cs_apply_base_alpha_mask` scales group alpha (and clears RGB only when
+//!    the quantized alpha becomes 0), matching CPU `apply_base_alpha_mask` /
+//!    HDR `apply_one_base_alpha_mask`. Group RGB stays straight (unassociated).
+//!    That is correct for the PDF separable formula used when flushing with
+//!    the base blend (`scrn` / `mul ` / `lddg` / `norm`): coverage is applied
+//!    via `sa`, so premultiplying RGB by the mask would double-attenuate.
+//! 4. **Admission fallback:** if any decoded layer is not GPU-separable, the
 //!    whole stack falls back to CPU `blend_layers_with_clipping` (all-or-
 //!    nothing per document). Same full-CPU fallback on device/OpenGL/size
 //!    gate, OOM, cancel, or readback failure.
@@ -267,6 +274,10 @@ fn cs_apply_base_alpha_mask(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let group = textureLoad(target, coord);
+    // Alpha-only silhouette mask (straight alpha): scale coverage, keep RGB.
+    // Matches CPU `apply_base_alpha_mask`. Do NOT premultiply RGB by `mask` --
+    // subsequent separable blend already weights by `sa` (incl. Screen /
+    // Multiply / Linear Dodge base modes).
     // Match CPU's u8 alpha math (round-half-away-from-zero) before deciding
     // whether RGB survives. WGSL `round` is ties-to-even; use floor(x+0.5).
     // a_u/m_u are quantized from [0,1] alphas into u8 range [0,255], so
@@ -1486,6 +1497,17 @@ mod tests {
     #[test]
     fn separable_shader_guards_div_by_tiny_out_a() {
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("co / max(out_a, 1e-20)"));
+    }
+
+    #[test]
+    fn clip_shader_preserves_straight_rgb_when_masking_alpha() {
+        // Partial mask writes `group.rgb` unchanged with scaled alpha -- not
+        // `group.rgb * mask` (would double-attenuate separable base blends).
+        assert!(
+            PSD_SEPARABLE_BLEND_SHADER.contains(
+                "textureStore(target, coord, vec4<f32>(group.rgb, f32(out_a_u) / 255.0));"
+            )
+        );
     }
 
     #[test]

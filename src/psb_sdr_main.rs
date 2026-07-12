@@ -196,6 +196,8 @@ fn decode_psd_sdr_main_with_index(
 
     // One layer-record walk shared by P2 / P2.5a / P2.5b. Parse failure skips
     // all three (same outcome as each stage failing its own parse independently).
+    // `parse_ms` is attributed once to the first composite pass that logs timing
+    // (Ok path); later P2.5a/P2.5b attempts pass 0 so preload_debug stays accurate.
     let parse_t0 = std::time::Instant::now();
     let layer_info = match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes)
     {
@@ -206,7 +208,7 @@ fn decode_psd_sdr_main_with_index(
             None
         }
     };
-    let parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
+    let mut parse_ms = parse_t0.elapsed().as_secs_f64() * 1000.0;
 
     // P2: strict visibility layer composite, then zero-information barrier.
     let mut p2_no_drawable_visible = false;
@@ -214,11 +216,13 @@ fn decode_psd_sdr_main_with_index(
         match crate::psb_layer_composite::composite_layers_from_info(
             layer_info,
             parse_ms,
-            std::time::Instant::now(),
+            composite_total_t0(parse_ms),
             cancel,
             gpu,
         ) {
             Ok(composite) => {
+                // Timing log includes parse_ms; do not re-attribute on later stages.
+                parse_ms = 0.0;
                 let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                     &composite.pixels,
                     cancel,
@@ -264,21 +268,21 @@ fn decode_psd_sdr_main_with_index(
         }
 
         if let Some(main) =
-            decode_psd_sdr_main_p25a(index, bytes, layer_info, parse_ms, cancel, gpu)?
+            decode_psd_sdr_main_p25a(index, bytes, layer_info, &mut parse_ms, cancel, gpu)?
         {
             return Ok(main);
         }
         match psd_hidden_layer_strategy {
             crate::settings::PsdHiddenLayerStrategy::Heuristic => {
                 if let Some(main) =
-                    decode_psd_sdr_main_p25b_heuristic(layer_info, parse_ms, cancel, gpu)?
+                    decode_psd_sdr_main_p25b_heuristic(layer_info, &mut parse_ms, cancel, gpu)?
                 {
                     return Ok(main);
                 }
             }
             crate::settings::PsdHiddenLayerStrategy::ShowAllLayers => {
                 if let Some(main) =
-                    decode_psd_sdr_main_p25b_show_all(layer_info, parse_ms, cancel, gpu)?
+                    decode_psd_sdr_main_p25b_show_all(layer_info, &mut parse_ms, cancel, gpu)?
                 {
                     return Ok(main);
                 }
@@ -410,7 +414,7 @@ fn decode_psd_sdr_main_p25a(
     index: &PsdSectionIndex,
     bytes: &[u8],
     layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
-    parse_ms: f64,
+    parse_ms: &mut f64,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<Option<PsdMainDecode>, crate::loader::DecodeError> {
@@ -437,7 +441,7 @@ fn decode_psd_sdr_main_p25a(
 
     let visible = crate::psb_layer_comps::visibility_from_layer_comp(&layer_info.records, comp_id);
 
-    match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+    match composite_p25_pass(layer_info, &visible, parse_ms, cancel, gpu) {
         Ok(composite) => {
             let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                 &composite.pixels,
@@ -484,7 +488,7 @@ fn decode_psd_sdr_main_p25a(
 
 fn decode_psd_sdr_main_p25b_heuristic(
     layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
-    parse_ms: f64,
+    parse_ms: &mut f64,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<Option<PsdMainDecode>, crate::loader::DecodeError> {
@@ -520,7 +524,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
             &layer_info.records,
             &selection.member_indices,
         );
-        match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+        match composite_p25_pass(layer_info, &visible, parse_ms, cancel, gpu) {
             Ok(composite) => {
                 let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                     &composite.pixels,
@@ -562,7 +566,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
             &layer_info.records,
             &selection.member_indices,
         );
-        match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+        match composite_p25_pass(layer_info, &visible, parse_ms, cancel, gpu) {
             Ok(composite) => {
                 let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                     &composite.pixels,
@@ -611,7 +615,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
 
 fn decode_psd_sdr_main_p25b_show_all(
     layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
-    parse_ms: f64,
+    parse_ms: &mut f64,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<Option<PsdMainDecode>, crate::loader::DecodeError> {
@@ -626,7 +630,7 @@ fn decode_psd_sdr_main_p25b_show_all(
         visible.iter().filter(|v| **v).count()
     );
 
-    match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+    match composite_p25_pass(layer_info, &visible, parse_ms, cancel, gpu) {
         Ok(composite) => {
             let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                 &composite.pixels,
@@ -665,21 +669,37 @@ fn decode_psd_sdr_main_p25b_show_all(
     }
 }
 
-fn composite_p25b_pass(
+/// Backdate `total_t0` so `total_ms` includes a shared `parse_ms` measured before
+/// this composite pass started (matches `composite_layers_from_bytes` timing).
+fn composite_total_t0(parse_ms: f64) -> std::time::Instant {
+    let parse_dur = std::time::Duration::from_secs_f64((parse_ms / 1000.0).max(0.0));
+    std::time::Instant::now()
+        .checked_sub(parse_dur)
+        .unwrap_or_else(std::time::Instant::now)
+}
+
+fn composite_p25_pass(
     layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
     visible: &[bool],
-    parse_ms: f64,
+    parse_ms: &mut f64,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
-    crate::psb_layer_composite::composite_layers_with_visibility_from_info(
+    let attributed_parse_ms = *parse_ms;
+    let result = crate::psb_layer_composite::composite_layers_with_visibility_from_info(
         layer_info,
         visible,
-        parse_ms,
-        std::time::Instant::now(),
+        attributed_parse_ms,
+        composite_total_t0(attributed_parse_ms),
         cancel,
         gpu,
-    )
+    );
+    // Ok paths emit the PsdComposite timing line; clear so later P2.5b candidates
+    // do not re-report the shared layer-record parse.
+    if result.is_ok() {
+        *parse_ms = 0.0;
+    }
+    result
 }
 
 #[cfg(test)]

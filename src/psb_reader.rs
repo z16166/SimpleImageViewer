@@ -55,6 +55,10 @@ const IR_JPEG_THUMBNAIL_COMPRESSED_SIZE_OFFSET: usize = 20;
 const IR_ICC_PROFILE: u16 = 1039;
 /// Pixel-index mask for cancel polling in RGBA8 full-buffer scans (~every 256 KiB).
 const RGBA8_CANCEL_POLL_MASK: usize = 0x3_FFFF;
+/// Row-count index mask for cancel polling while reading RLE byte counts (~every 1024 rows).
+const RLE_ROW_COUNT_CANCEL_POLL_INTERVAL: usize = 0x3FF;
+/// Row-index mask for cancel polling during RLE per-row decode / skip / interleave (~every 64 rows).
+const RLE_ROW_DECODE_CANCEL_POLL_INTERVAL: usize = 0x3F;
 
 // User-facing PSD empty-composite messages live in `locales/*.yaml`
 // (`error.psd_all_layers_hidden`, `error.psd_no_displayable_image`).
@@ -151,7 +155,7 @@ pub fn read_composite_from_index(
     if compression == 1 {
         row_counts.reserve(total_rows);
         for i in 0..total_rows {
-            if i & 0x3FF == 0 {
+            if i & RLE_ROW_COUNT_CANCEL_POLL_INTERVAL == 0 {
                 check_decode_cancel(cancel)?;
             }
             let count = if is_psb {
@@ -165,7 +169,11 @@ pub fn read_composite_from_index(
             r.stream_position()
                 .map_err(|e| format!("Stream position error: {e}"))?,
         );
-        validate_rle_total_bytes(&row_counts, remaining)?;
+        validate_rle_row_counts(
+            &row_counts,
+            remaining,
+            max_rle_compressed_row_bytes(row_raw_bytes)?,
+        )?;
     }
 
     // Step 1: Read planar channels and down-convert to 8-bit samples.
@@ -221,7 +229,7 @@ pub fn read_composite_from_index(
                     }
                     1 => {
                         for row in 0..height as usize {
-                            if row & 0x3F == 0 {
+                            if row & RLE_ROW_DECODE_CANCEL_POLL_INTERVAL == 0 {
                                 check_decode_cancel(cancel)?;
                             }
                             let idx = ch_idx as usize * height as usize + row;
@@ -257,11 +265,11 @@ pub fn read_composite_from_index(
                         )?;
                     }
                     1 => {
-                        for row in 0..height {
-                            if row & 0x3F == 0 {
+                        for row in 0..height as usize {
+                            if row & RLE_ROW_DECODE_CANCEL_POLL_INTERVAL == 0 {
                                 check_decode_cancel(cancel)?;
                             }
-                            let idx = ch_idx as usize * height as usize + row as usize;
+                            let idx = ch_idx as usize * height as usize + row;
                             let len = *row_counts
                                 .get(idx)
                                 .ok_or_else(|| format!("Row count index {idx} out of range"))?;
@@ -304,14 +312,22 @@ pub fn read_composite_from_index(
         };
     if !cmyk_cms_ok {
         for row in 0..height as usize {
-            if row & 0x3F == 0 {
+            if row & RLE_ROW_DECODE_CANCEL_POLL_INTERVAL == 0 {
                 check_decode_cancel(cancel)?;
             }
             // `row * width` is safe: `checked_pixel_count` already proved width*height
             // fits in usize, and row < height. Reuse start/end for the RGBA byte range.
             let start = row * width as usize;
             let end = start + width as usize;
-            let dst_row = &mut rgba[start * RGBA_BYTES_PER_PIXEL..end * RGBA_BYTES_PER_PIXEL];
+            let dst_start = start
+                .checked_mul(RGBA_BYTES_PER_PIXEL)
+                .ok_or_else(|| "PSD/PSB RGBA row offset overflow".to_string())?;
+            let dst_end = end
+                .checked_mul(RGBA_BYTES_PER_PIXEL)
+                .ok_or_else(|| "PSD/PSB RGBA row end overflow".to_string())?;
+            let dst_row = rgba.get_mut(dst_start..dst_end).ok_or_else(|| {
+                format!("PSD/PSB RGBA row slice out of bounds ({dst_start}..{dst_end})")
+            })?;
             interleave_row_rgba8(dst_row, &planar_channels, color_mode, channels, start, end);
         }
     }
@@ -800,7 +816,7 @@ pub fn extract_embedded_icc_from_psd(bytes: &[u8]) -> Option<Vec<u8>> {
     let _depth = read_u16(&mut r).ok()?;
     let _color_mode = read_u16(&mut r).ok()?;
     let cm_len = read_u32(&mut r).ok()? as u64;
-    seek_forward(&mut r, cm_len).ok()?;
+    seek_forward_within(&mut r, cm_len, bytes.len() as u64, "color mode data").ok()?;
     let ir_len = read_u32(&mut r).ok()? as u64;
     let ir_start = r.stream_position().ok()?;
     let ir_end = ir_start.saturating_add(ir_len).min(bytes.len() as u64);
@@ -827,7 +843,7 @@ pub fn try_extract_photoshop_thumbnail(bytes: &[u8]) -> Option<PsbComposite> {
     let _depth = read_u16(&mut r).ok()?;
     let _color_mode = read_u16(&mut r).ok()?;
     let cm_len = read_u32(&mut r).ok()? as u64;
-    seek_forward(&mut r, cm_len).ok()?;
+    seek_forward_within(&mut r, cm_len, file_size, "color mode data").ok()?;
     let ir_len = read_u32(&mut r).ok()? as u64;
     let ir_start = r.stream_position().ok()?;
     let ir_end = ir_start.saturating_add(ir_len).min(file_size);
@@ -877,9 +893,9 @@ fn for_each_image_resource<T>(
         }
         let name_len = bytes[pos] as usize;
         pos += 1;
-        pos += name_len;
+        pos = pos.checked_add(name_len)?;
         if (name_len + 1) % 2 == 1 {
-            pos += 1;
+            pos = pos.checked_add(1)?;
         }
         if pos + 4 > end {
             break;
@@ -887,7 +903,7 @@ fn for_each_image_resource<T>(
         let size = u32::from_be_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
             as usize;
         pos += 4;
-        let data_end = pos.saturating_add(size);
+        let data_end = pos.checked_add(size)?;
         if data_end > end {
             break;
         }
@@ -896,7 +912,7 @@ fn for_each_image_resource<T>(
         }
         pos = data_end;
         if size % 2 == 1 {
-            pos += 1;
+            pos = pos.checked_add(1)?;
         }
     }
     None
@@ -1080,15 +1096,27 @@ fn interleave_row_rgba8(
 ) {
     match color_mode {
         4 if channels >= 4 => {
-            let c = planar[0].as_ref().map(|d| &d[start..end]);
-            let m = planar[1].as_ref().map(|d| &d[start..end]);
-            let y = planar[2].as_ref().map(|d| &d[start..end]);
-            let k = planar[3].as_ref().map(|d| &d[start..end]);
+            let c = planar
+                .get(0)
+                .and_then(|ch| ch.as_ref())
+                .and_then(|d| d.get(start..end));
+            let m = planar
+                .get(1)
+                .and_then(|ch| ch.as_ref())
+                .and_then(|d| d.get(start..end));
+            let y = planar
+                .get(2)
+                .and_then(|ch| ch.as_ref())
+                .and_then(|d| d.get(start..end));
+            let k = planar
+                .get(3)
+                .and_then(|ch| ch.as_ref())
+                .and_then(|d| d.get(start..end));
             let a = if channels >= 5 {
                 planar
                     .get(4)
-                    .and_then(|c| c.as_ref())
-                    .map(|d| &d[start..end])
+                    .and_then(|ch| ch.as_ref())
+                    .and_then(|d| d.get(start..end))
             } else {
                 None
             };
@@ -1097,12 +1125,18 @@ fn interleave_row_rgba8(
             }
         }
         1 => {
-            if let Some(gray) = planar.first().and_then(|c| c.as_ref()) {
-                let g_row = &gray[start..end];
+            if let Some(g_row) = planar
+                .first()
+                .and_then(|ch| ch.as_ref())
+                .and_then(|d| d.get(start..end))
+            {
                 if channels >= 2
-                    && let Some(a) = planar.get(1).and_then(|c| c.as_ref())
+                    && let Some(a_row) = planar
+                        .get(1)
+                        .and_then(|ch| ch.as_ref())
+                        .and_then(|d| d.get(start..end))
                 {
-                    simd_swizzle::interleave_rgba(g_row, g_row, g_row, &a[start..end], dst_row);
+                    simd_swizzle::interleave_rgba(g_row, g_row, g_row, a_row, dst_row);
                 } else {
                     simd_swizzle::interleave_rgb_with_alpha(g_row, g_row, g_row, 255, dst_row);
                 }
@@ -1112,21 +1146,24 @@ fn interleave_row_rgba8(
             // RGB (mode 3) and generic 3/4-channel fallback
             let r = planar
                 .first()
-                .and_then(|c| c.as_ref())
-                .map(|d| &d[start..end]);
+                .and_then(|ch| ch.as_ref())
+                .and_then(|d| d.get(start..end));
             let g = planar
                 .get(1)
-                .and_then(|c| c.as_ref())
-                .map(|d| &d[start..end]);
+                .and_then(|ch| ch.as_ref())
+                .and_then(|d| d.get(start..end));
             let b = planar
                 .get(2)
-                .and_then(|c| c.as_ref())
-                .map(|d| &d[start..end]);
+                .and_then(|ch| ch.as_ref())
+                .and_then(|d| d.get(start..end));
             if let (Some(r), Some(g), Some(b)) = (r, g, b) {
                 if channels >= 4
-                    && let Some(a) = planar.get(3).and_then(|c| c.as_ref())
+                    && let Some(a_row) = planar
+                        .get(3)
+                        .and_then(|ch| ch.as_ref())
+                        .and_then(|d| d.get(start..end))
                 {
-                    simd_swizzle::interleave_rgba(r, g, b, &a[start..end], dst_row);
+                    simd_swizzle::interleave_rgba(r, g, b, a_row, dst_row);
                 } else {
                     simd_swizzle::interleave_rgb_with_alpha(r, g, b, 255, dst_row);
                 }
@@ -1232,6 +1269,29 @@ pub(crate) fn validate_rle_total_bytes(row_counts: &[usize], remaining: u64) -> 
     Ok(())
 }
 
+/// PackBits can expand slightly above the raw row size; cap at 2x as a hard DoS bound.
+pub(crate) fn max_rle_compressed_row_bytes(row_raw_bytes: usize) -> Result<usize, String> {
+    row_raw_bytes
+        .checked_mul(2)
+        .ok_or_else(|| "PSD/PSB RLE row size limit overflow".to_string())
+}
+
+/// Validate each RLE row count against a per-row cap, then the total vs remaining bytes.
+pub(crate) fn validate_rle_row_counts(
+    row_counts: &[usize],
+    remaining: u64,
+    max_compressed_row_bytes: usize,
+) -> Result<(), String> {
+    for (i, &len) in row_counts.iter().enumerate() {
+        if len > max_compressed_row_bytes {
+            return Err(format!(
+                "PSD/PSB RLE row {i} compressed length ({len}) exceeds limit ({max_compressed_row_bytes})"
+            ));
+        }
+    }
+    validate_rle_total_bytes(row_counts, remaining)
+}
+
 pub(crate) fn read_u16(r: &mut impl Read) -> Result<u16, String> {
     let mut buf = [0u8; 2];
     r.read_exact(&mut buf)
@@ -1297,7 +1357,8 @@ pub fn estimate_memory_from_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, u64), 
 mod tests {
     use super::{
         PACKBITS_MAX_NOOPS_PER_ROW, PACKBITS_TOO_MANY_NOOPS, cmyk_to_rgb,
-        downconvert_samples_to_u8, read_composite_from_bytes_with_cancel, unpack_bits_into,
+        downconvert_samples_to_u8, max_rle_compressed_row_bytes,
+        read_composite_from_bytes_with_cancel, unpack_bits_into, validate_rle_row_counts,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1320,6 +1381,21 @@ mod tests {
         let mut out = Vec::new();
         unpack_bits_into(&mut out, &data, 4).unwrap();
         assert_eq!(out, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn validate_rle_row_counts_rejects_oversized_single_row() {
+        let row_raw = 16usize;
+        let max_row = max_rle_compressed_row_bytes(row_raw).unwrap();
+        let err = validate_rle_row_counts(&[max_row + 1], 1_000_000, max_row).unwrap_err();
+        assert!(err.contains("exceeds limit"), "{err}");
+    }
+
+    #[test]
+    fn validate_rle_row_counts_accepts_at_limit() {
+        let row_raw = 16usize;
+        let max_row = max_rle_compressed_row_bytes(row_raw).unwrap();
+        validate_rle_row_counts(&[max_row, max_row], (max_row * 2) as u64, max_row).unwrap();
     }
 
     #[test]

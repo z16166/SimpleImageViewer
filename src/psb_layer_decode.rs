@@ -68,6 +68,7 @@ pub(crate) fn decode_channel_image(
         }
         1 => {
             let mut row_counts = Vec::with_capacity(height as usize);
+            let max_row = crate::psb_reader::max_rle_compressed_row_bytes(row_raw_bytes)?;
             for row in 0..height as usize {
                 if row % RLE_ROW_CANCEL_POLL_INTERVAL == 0 {
                     crate::psb_reader::check_decode_cancel(cancel)?;
@@ -77,6 +78,12 @@ pub(crate) fn decode_channel_image(
                 } else {
                     crate::psb_reader::read_u16(&mut r)? as usize
                 };
+                if count > max_row {
+                    return Err(format!(
+                        "PSD/PSB layer channel RLE row {row} compressed length ({count}) exceeds limit ({max_row})"
+                    )
+                    .into());
+                }
                 row_counts.push(count);
             }
 
@@ -294,25 +301,47 @@ pub(crate) fn channel_samples_to_f32(
     depth: u16,
     transfer: crate::hdr::types::HdrTransferFunction,
     sdr_white_nits: f32,
-) -> Vec<f32> {
+) -> Result<Vec<f32>, String> {
     match depth {
-        8 => raw.iter().map(|&b| b as f32 / 255.0).collect(),
-        16 => raw
-            .chunks_exact(2)
-            .map(|c| {
-                let v = u16::from_be_bytes([c[0], c[1]]) as f32 / 65535.0;
-                crate::hdr::decode::decode_transfer_to_display_linear(
-                    [v, v, v],
-                    transfer,
-                    sdr_white_nits,
-                )[0]
-            })
-            .collect(),
-        32 => raw
-            .chunks_exact(4)
-            .map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]]))
-            .collect(),
-        _ => Vec::new(),
+        8 => Ok(raw.iter().map(|&b| b as f32 / 255.0).collect()),
+        16 => {
+            if !raw.len().is_multiple_of(2) {
+                return Err(format!(
+                    "PSD/PSB 16-bit channel byte length ({}) is not a multiple of 2",
+                    raw.len()
+                ));
+            }
+            Ok(raw
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| {
+                    let v = u16::from_be_bytes([c[0], c[1]]) as f32 / 65535.0;
+                    crate::hdr::decode::decode_transfer_to_display_linear(
+                        [v, v, v],
+                        transfer,
+                        sdr_white_nits,
+                    )[0]
+                })
+                .collect())
+        }
+        32 => {
+            if !raw.len().is_multiple_of(4) {
+                return Err(format!(
+                    "PSD/PSB 32-bit channel byte length ({}) is not a multiple of 4",
+                    raw.len()
+                ));
+            }
+            Ok(raw
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+                .collect())
+        }
+        _ => Err(format!(
+            "PSD/PSB unsupported channel depth for f32 convert: {depth}"
+        )),
     }
 }
 
@@ -470,12 +499,19 @@ pub(crate) fn build_layer_sized_mask(
 
     for dy in dst_y0..dst_y1 {
         let sy = (dy - off_y) as usize;
-        let dst_row_start = dy as usize * layer_w as usize;
-        let src_row_start = sy * mask_w as usize;
+        let Some(dst_row_start) = (dy as usize).checked_mul(layer_w as usize) else {
+            continue;
+        };
+        let Some(src_row_start) = sy.checked_mul(mask_w as usize) else {
+            continue;
+        };
         for dx in dst_x0..dst_x1 {
             let sx = (dx - off_x) as usize;
-            out[dst_row_start + dx as usize] = mask_pixels
-                .get(src_row_start + sx)
+            let Some(dst) = out.get_mut(dst_row_start.saturating_add(dx as usize)) else {
+                continue;
+            };
+            *dst = mask_pixels
+                .get(src_row_start.saturating_add(sx))
                 .copied()
                 .unwrap_or(mask_info.default_color);
         }
@@ -486,21 +522,8 @@ pub(crate) fn build_layer_sized_mask(
 
 // -- Blend modes -----------------------------------------------------------
 
-fn separable_blend_kind(
-    blend: &[u8; 4],
-) -> Option<crate::psb_layer_blend_simd::SeparableBlendKind> {
-    use crate::psb_layer_blend_simd::SeparableBlendKind;
-    match blend {
-        b"norm" => Some(SeparableBlendKind::Normal),
-        b"scrn" => Some(SeparableBlendKind::Screen),
-        b"lddg" => Some(SeparableBlendKind::LinearDodge),
-        b"mul " => Some(SeparableBlendKind::Multiply),
-        _ => None,
-    }
-}
-
 pub(crate) fn blend_mode_supported(blend: &[u8; 4]) -> bool {
-    separable_blend_kind(blend).is_some()
+    crate::psb_layer_blend_simd::SeparableBlendKind::from_psd_key(blend).is_some()
 }
 
 /// Straight-alpha separable blend of `layer_rgba` onto `canvas` (PDF formula).
@@ -591,7 +614,7 @@ fn blend_layer_onto(
     lh: u32,
     blend: &[u8; 4],
 ) {
-    let kind = match separable_blend_kind(blend) {
+    let kind = match crate::psb_layer_blend_simd::SeparableBlendKind::from_psd_key(blend) {
         Some(k) => k,
         None => {
             log_unsupported_blend_once(blend);
@@ -1194,8 +1217,8 @@ impl StreamingPeakTracker {
 mod tests {
     use super::{
         DecodedLayer, LayerDecodeParams, LayerRgbaArgs, blend_layer_onto, blend_normal_onto,
-        blend_separable_onto, build_layer_sized_mask, decode_channel_image, decode_one_layer,
-        layer_to_rgba8,
+        blend_separable_onto, build_layer_sized_mask, channel_samples_to_f32, decode_channel_image,
+        decode_one_layer, layer_to_rgba8,
     };
     use crate::psb_layer_blend_simd::SeparableBlendKind;
     use crate::psb_layer_composite::{LayerChannel, LayerMaskInfo, LayerRecord};
@@ -1234,6 +1257,15 @@ mod tests {
             err.as_str().contains("exceeds limit"),
             "unexpected err: {err}"
         );
+    }
+
+    #[test]
+    fn channel_samples_to_f32_rejects_truncated_samples() {
+        let transfer = crate::hdr::types::HdrTransferFunction::Linear;
+        let err16 = channel_samples_to_f32(&[0u8], 16, transfer, 80.0).unwrap_err();
+        assert!(err16.contains("multiple of 2"), "{err16}");
+        let err32 = channel_samples_to_f32(&[0u8; 3], 32, transfer, 80.0).unwrap_err();
+        assert!(err32.contains("multiple of 4"), "{err32}");
     }
 
     #[test]
