@@ -192,6 +192,8 @@ unsafe fn f32be_to_u8_sse41(dst: &mut [u8], src: &[u8]) {
     let zero = _mm_setzero_ps();
     let one = _mm_set1_ps(1.0);
     let scale = _mm_set1_ps(255.0);
+    // floor(x+0.5) via +0.5 then truncate: matches scalar `.round()` on [0,255].
+    let half = _mm_set1_ps(0.5);
     while i + SSE_F32_SAMPLES <= n {
         unsafe {
             let be = _mm_loadu_si128(src.as_ptr().add(i * F32_BYTES).cast());
@@ -199,7 +201,7 @@ unsafe fn f32be_to_u8_sse41(dst: &mut [u8], src: &[u8]) {
             let f = _mm_castsi128_ps(le);
             let clamped = _mm_min_ps(_mm_max_ps(f, zero), one);
             let scaled = _mm_mul_ps(clamped, scale);
-            let i32s = _mm_cvtps_epi32(scaled);
+            let i32s = _mm_cvttps_epi32(_mm_add_ps(scaled, half));
             let u16s = _mm_packus_epi32(i32s, _mm_setzero_si128());
             let u8s = _mm_packus_epi16(u16s, _mm_setzero_si128());
             let bits = _mm_cvtsi128_si32(u8s) as u32;
@@ -225,6 +227,8 @@ unsafe fn f32be_to_u8_avx2(dst: &mut [u8], src: &[u8]) {
     let zero = _mm256_setzero_ps();
     let one = _mm256_set1_ps(1.0);
     let scale = _mm256_set1_ps(255.0);
+    // floor(x+0.5) via +0.5 then truncate: matches scalar `.round()` on [0,255].
+    let half = _mm256_set1_ps(0.5);
     while i + AVX2_F32_SAMPLES <= n {
         unsafe {
             let be = _mm256_loadu_si256(src.as_ptr().add(i * F32_BYTES).cast());
@@ -232,7 +236,7 @@ unsafe fn f32be_to_u8_avx2(dst: &mut [u8], src: &[u8]) {
             let f = _mm256_castsi256_ps(le);
             let clamped = _mm256_min_ps(_mm256_max_ps(f, zero), one);
             let scaled = _mm256_mul_ps(clamped, scale);
-            let i32s = _mm256_cvtps_epi32(scaled);
+            let i32s = _mm256_cvttps_epi32(_mm256_add_ps(scaled, half));
             // Pack 8 i32 -> 8 u8 across lanes.
             let u16s = _mm256_packus_epi32(i32s, _mm256_setzero_si256());
             let ordered = _mm256_permute4x64_epi64::<0xD8>(u16s);
@@ -286,7 +290,8 @@ unsafe fn f32be_to_u8_neon(dst: &mut [u8], src: &[u8]) {
             let f = vreinterpretq_f32_u8(le_bytes);
             let clamped = vminq_f32(vmaxq_f32(f, zero), one);
             let scaled = vmulq_f32(clamped, scale);
-            let i32s = vcvtnq_s32_f32(scaled);
+            // Ties away from zero: matches scalar `.round()` (not ties-to-even).
+            let i32s = vcvtaq_s32_f32(scaled);
             let u16s = vqmovun_s32(i32s);
             let u8s = vqmovn_u16(vcombine_u16(u16s, u16s));
             let mut tmp = [0u8; 8];
@@ -369,5 +374,23 @@ mod tests {
             *out = (f32::from_bits(bits).clamp(0.0, 1.0) * 255.0).round() as u8;
         }
         assert_eq!(simd, scalar);
+    }
+
+    #[test]
+    fn f32be_half_ties_match_scalar_round_away() {
+        // Values that scale to *.5 where ties-to-even differs from `.round()`.
+        let halves = [2.5f32, 4.5, 126.5, 128.5, 254.5];
+        let mut src = Vec::with_capacity(halves.len() * 4);
+        for scaled in halves {
+            src.extend_from_slice(&(scaled / 255.0).to_be_bytes());
+        }
+        let mut simd = vec![0u8; halves.len()];
+        let mut scalar = vec![0u8; halves.len()];
+        f32be_to_u8(&mut simd, &src);
+        for (i, out) in scalar.iter_mut().enumerate() {
+            *out = halves[i].round() as u8;
+        }
+        assert_eq!(simd, scalar);
+        assert_eq!(simd, [3, 5, 127, 129, 255]);
     }
 }

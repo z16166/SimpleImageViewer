@@ -73,6 +73,7 @@ mod psb_reader;
 mod psb_reader_tiled;
 mod psb_sdr_main;
 mod psb_section_index;
+mod psb_simd_mul_div255;
 mod psb_zip;
 mod raw_processor;
 mod scanner;

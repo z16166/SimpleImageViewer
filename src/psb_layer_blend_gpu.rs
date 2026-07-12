@@ -157,7 +157,8 @@ fn cs_blend_separable(@builtin(global_invocation_id) gid: vec3<u32>) {
     let out_a = sa + da * (1.0 - sa);
     let blended = blend_rgb(params.mode, dst.rgb, src.rgb);
     let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
-    let out_rgb = co / out_a;
+    // Match CPU oa_safe: guard tiny out_a from float error when sa > 0.
+    let out_rgb = co / max(out_a, 1e-20);
     textureStore(target, dst_coord, vec4<f32>(out_rgb, out_a));
 }
 
@@ -196,9 +197,10 @@ fn cs_apply_base_alpha_mask(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let group = textureLoad(target, coord);
-    // Match CPU's u8 alpha math before deciding whether RGB survives.
-    let a_u = u32(round(group.a * 255.0));
-    let m_u = u32(round(mask * 255.0));
+    // Match CPU's u8 alpha math (round-half-away-from-zero) before deciding
+    // whether RGB survives. WGSL `round` is ties-to-even; use floor(x+0.5).
+    let a_u = u32(floor(group.a * 255.0 + 0.5));
+    let m_u = u32(floor(mask * 255.0 + 0.5));
     let out_a_u = (a_u * m_u) / 255u;
     if (out_a_u == 0u) {
         textureStore(target, coord, vec4<f32>(0.0));
@@ -1202,10 +1204,17 @@ mod tests {
 
     #[test]
     fn clip_shader_quantizes_masked_alpha_like_cpu() {
-        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("let a_u = u32(round(group.a * 255.0));"));
-        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("let m_u = u32(round(mask * 255.0));"));
+        assert!(
+            PSD_SEPARABLE_BLEND_SHADER.contains("let a_u = u32(floor(group.a * 255.0 + 0.5));")
+        );
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("let m_u = u32(floor(mask * 255.0 + 0.5));"));
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("let out_a_u = (a_u * m_u) / 255u;"));
         assert!(PSD_SEPARABLE_BLEND_SHADER.contains("if (out_a_u == 0u)"));
+    }
+
+    #[test]
+    fn separable_shader_guards_div_by_tiny_out_a() {
+        assert!(PSD_SEPARABLE_BLEND_SHADER.contains("co / max(out_a, 1e-20)"));
     }
 
     #[test]

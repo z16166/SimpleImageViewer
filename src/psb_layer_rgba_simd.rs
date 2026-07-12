@@ -89,26 +89,8 @@ fn fold_opacity_mask_into_alpha_scalar(rgba: &mut [u8], opacity: u8, mask: Optio
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn mul_div255_u8x8(
-    c: core::arch::x86_64::__m128i,
-    k: core::arch::x86_64::__m128i,
-) -> core::arch::x86_64::__m128i {
-    use core::arch::x86_64::*;
-    let c16 = _mm_cvtepu8_epi16(c);
-    let k16 = _mm_cvtepu8_epi16(k);
-    let prod = _mm_mullo_epi16(c16, k16);
-    let prod_lo = _mm_cvtepu16_epi32(prod);
-    let prod_hi = _mm_cvtepu16_epi32(_mm_srli_si128(prod, 8));
-    let magic = _mm_set1_epi32(0x8081);
-    let q_lo = _mm_srli_epi32(_mm_mullo_epi32(prod_lo, magic), 23);
-    let q_hi = _mm_srli_epi32(_mm_mullo_epi32(prod_hi, magic), 23);
-    let q16 = _mm_packus_epi32(q_lo, q_hi);
-    _mm_packus_epi16(q16, _mm_setzero_si128())
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
 unsafe fn fold_opacity_mask_into_alpha_sse41(rgba: &mut [u8], opacity: u8, mask: Option<&[u8]>) {
+    use crate::psb_simd_mul_div255::mul_div255_u8x8;
     use core::arch::x86_64::*;
     let n = rgba.len() / 4;
     let mut i = 0usize;
@@ -148,29 +130,8 @@ unsafe fn fold_opacity_mask_into_alpha_sse41(rgba: &mut [u8], opacity: u8, mask:
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn mul_div255_u8x16(
-    c: core::arch::x86_64::__m128i,
-    k: core::arch::x86_64::__m128i,
-) -> core::arch::x86_64::__m128i {
-    use core::arch::x86_64::*;
-    let c16 = _mm256_cvtepu8_epi16(c);
-    let k16 = _mm256_cvtepu8_epi16(k);
-    let prod = _mm256_mullo_epi16(c16, k16);
-    let magic = _mm256_set1_epi32(0x8081);
-    let p0 = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(prod));
-    let p1 = _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(prod));
-    let q0 = _mm256_srli_epi32(_mm256_mullo_epi32(p0, magic), 23);
-    let q1 = _mm256_srli_epi32(_mm256_mullo_epi32(p1, magic), 23);
-    let q16 = _mm256_permute4x64_epi64::<0xD8>(_mm256_packus_epi32(q0, q1));
-    _mm_packus_epi16(
-        _mm256_castsi256_si128(q16),
-        _mm256_extracti128_si256::<1>(q16),
-    )
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
 unsafe fn fold_opacity_mask_into_alpha_avx2(rgba: &mut [u8], opacity: u8, mask: Option<&[u8]>) {
+    use crate::psb_simd_mul_div255::mul_div255_u8x16;
     use core::arch::x86_64::*;
     let n = rgba.len() / 4;
     let mut i = 0usize;
