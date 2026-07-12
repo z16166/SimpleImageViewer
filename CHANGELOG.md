@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **More accurate HDR PSD/PSB color**: Wide-gamut and CMYK high bit-depth Photoshop files keep their embedded color profile when opening in HDR, so colors match the document more closely.
 - **PSD layer fill opacity and masks**: Fill opacity and empty layer masks with “show all” defaults are respected, so fewer layered files look washed out or incorrectly blank.
-- **PSD blend modes**: Overlay, Soft Light, and Hard Light blend more correctly instead of silently acting like Normal.
+- **PSD blend modes**: Overlay, Soft Light, Hard Light, and Color blend more correctly instead of silently acting like Normal (Color fills no longer paint opaque blue/brand slabs over the whole page).
 - **Hidden-layer reveal for clipped groups**: When revealing hidden art, clipped layers keep their base layer so clipping relationships stay intact.
 
 ## [2.9.1] - 2026-07-08

@@ -25,8 +25,8 @@
 //! # Current GPU shader limitations (as of separable + clip path)
 //!
 //! 1. **Blend modes:** only the four separable keys (`norm` / `scrn` / `lddg` /
-//!    `mul `). Overlay, Soft Light, and other non-separable modes are not in
-//!    the shader (unknown keys still map to Normal, matching CPU).
+//!    `mul `). Overlay, Soft Light, Hard Light, Color, and other non-separable
+//!    modes stay on the CPU scalar path (GPU admits only the four keys above).
 //! 2. **User mask vs clipping:** user/real mask is folded into layer alpha on
 //!    CPU before upload (not a separate shader pass; acceptable). Clipping
 //!    groups *are* on GPU (`cs_capture_base_alpha` /
@@ -99,14 +99,14 @@ pub(crate) fn separable_blend_mode_u32(blend: &[u8; 4]) -> u32 {
         b"lddg" => BLEND_MODE_LINEAR_DODGE,
         b"mul " => BLEND_MODE_MULTIPLY,
         // Only GPU-implemented keys reach this helper (`is_gpu_separable_blend`).
-        // Overlay / Soft Light / Hard Light / unknown keys fall back to CPU.
+        // Overlay / Soft Light / Hard Light / Color / unknown keys fall back to CPU.
         _ => BLEND_MODE_NORMAL,
     }
 }
 
 pub(crate) fn is_gpu_separable_blend(blend: &[u8; 4]) -> bool {
     // Keep GPU admissions aligned with WGSL entry points (four modes).
-    // Overlay / Soft Light / Hard Light are CPU-scalar supported but not GPU yet.
+    // Overlay / Soft Light / Hard Light / Color are CPU-scalar supported but not GPU yet.
     matches!(blend, b"norm" | b"scrn" | b"lddg" | b"mul ")
 }
 

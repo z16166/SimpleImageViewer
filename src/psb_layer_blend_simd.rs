@@ -39,6 +39,11 @@ pub enum SeparableBlendKind {
     SoftLight,
     /// Photoshop `hLit` (Hard Light). Scalar path only for now.
     HardLight,
+    /// Photoshop `colr` (Color). Non-separable; scalar path only.
+    ///
+    /// Must not fall back to [`Self::Normal`]: a full-canvas solid Color fill
+    /// would otherwise paint opaque blue/brand fills over the whole document.
+    Color,
 }
 
 impl SeparableBlendKind {
@@ -55,6 +60,7 @@ impl SeparableBlendKind {
             b"over" => Some(Self::Overlay),
             b"sLit" => Some(Self::SoftLight),
             b"hLit" => Some(Self::HardLight),
+            b"colr" => Some(Self::Color),
             _ => None,
         }
     }
@@ -149,6 +155,9 @@ fn blend_b(kind: SeparableBlendKind, cb: f32, cs: f32) -> f32 {
                 1.0 - 2.0 * (1.0 - cb) * (1.0 - cs)
             }
         }
+        // Non-separable: handled in `blend_one_pixel` via SetLum; per-channel
+        // callers must not reach here.
+        SeparableBlendKind::Color => cs,
     }
 }
 
@@ -160,8 +169,8 @@ pub fn blend_separable_span(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind
         return;
     }
 
-    // Overlay / Soft Light / Hard Light: scalar only (SIMD kernels cover the
-    // four historically GPU-matched modes).
+    // Overlay / Soft Light / Hard Light / Color: scalar only (SIMD kernels
+    // cover the four historically GPU-matched modes).
     if !kind.has_simd_kernel() {
         blend_separable_span_scalar(dst, src, kind);
         return;
@@ -220,6 +229,23 @@ fn blend_one_pixel(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind, is_norm
     let out_a_f = sa_f + da_f * (1.0 - sa_f);
     if out_a_f <= 0.0 {
         dst.fill(0);
+        return;
+    }
+
+    if kind == SeparableBlendKind::Color {
+        let sr = u8_to_f32(src[0]);
+        let sg = u8_to_f32(src[1]);
+        let sb = u8_to_f32(src[2]);
+        let dr = u8_to_f32(dst[0]);
+        let dg = u8_to_f32(dst[1]);
+        let db = u8_to_f32(dst[2]);
+        let (br, bg, bb) = crate::psb_blend_nonseparable::blend_color_rgb(dr, dg, db, sr, sg, sb);
+        let channels = [(sr, dr, br), (sg, dg, bg), (sb, db, bb)];
+        for (c, (sc, dc, b)) in channels.into_iter().enumerate() {
+            let co = sa_f * (1.0 - da_f) * sc + sa_f * da_f * b + da_f * (1.0 - sa_f) * dc;
+            dst[c] = f32_to_u8_round(co / out_a_f);
+        }
+        dst[3] = f32_to_u8_round(out_a_f);
         return;
     }
 
@@ -373,7 +399,8 @@ unsafe fn blend_plane_sse2(
         // Routed to scalar before SIMD entry; keep exhaustive for the type.
         SeparableBlendKind::Overlay
         | SeparableBlendKind::SoftLight
-        | SeparableBlendKind::HardLight => sc,
+        | SeparableBlendKind::HardLight
+        | SeparableBlendKind::Color => sc,
     };
     let term1 = _mm_mul_ps(_mm_mul_ps(sa, _mm_sub_ps(one, da)), sc);
     let term2 = _mm_mul_ps(_mm_mul_ps(sa, da), v_b);
@@ -487,7 +514,8 @@ unsafe fn blend_plane_avx2(
         SeparableBlendKind::LinearDodge => _mm256_min_ps(_mm256_add_ps(dc, sc), one),
         SeparableBlendKind::Overlay
         | SeparableBlendKind::SoftLight
-        | SeparableBlendKind::HardLight => sc,
+        | SeparableBlendKind::HardLight
+        | SeparableBlendKind::Color => sc,
     };
     let term1 = _mm256_mul_ps(_mm256_mul_ps(sa, _mm256_sub_ps(one, da)), sc);
     let term2 = _mm256_mul_ps(_mm256_mul_ps(sa, da), v_b);
@@ -601,7 +629,8 @@ unsafe fn blend_plane_neon(
         SeparableBlendKind::LinearDodge => vminq_f32(vaddq_f32(dc, sc), one),
         SeparableBlendKind::Overlay
         | SeparableBlendKind::SoftLight
-        | SeparableBlendKind::HardLight => sc,
+        | SeparableBlendKind::HardLight
+        | SeparableBlendKind::Color => sc,
     };
     let term1 = vmulq_f32(vmulq_f32(sa, vsubq_f32(one, da)), sc);
     let term2 = vmulq_f32(vmulq_f32(sa, da), v_b);
@@ -710,6 +739,26 @@ mod tests {
         assert!(UNIT_TO_U8_WGSL_FLOOR_BIAS.contains("floor"));
         assert!(UNIT_TO_U8_WGSL_FLOOR_BIAS.contains("255.0"));
         assert!(UNIT_TO_U8_WGSL_FLOOR_BIAS.contains("+ 0.5"));
+    }
+
+    #[test]
+    fn color_blend_key_maps_and_preserves_luminosity() {
+        assert_eq!(
+            SeparableBlendKind::from_psd_key(b"colr"),
+            Some(SeparableBlendKind::Color)
+        );
+        // Backdrop mid-gray; source solid blue like the brochure fill layer.
+        let mut dst = [128u8, 128, 128, 255];
+        let src = [13u8, 27, 130, 255];
+        let mut as_normal = dst;
+        blend_separable_span_scalar(&mut dst, &src, SeparableBlendKind::Color);
+        blend_separable_span_scalar(&mut as_normal, &src, SeparableBlendKind::Normal);
+        // Normal would replace with solid blue; Color must keep gray luminosity.
+        assert_ne!(dst, as_normal);
+        let lum = |p: [u8; 4]| 0.3 * p[0] as f32 + 0.59 * p[1] as f32 + 0.11 * p[2] as f32;
+        assert!((lum(dst) - lum([128, 128, 128, 255])).abs() < 2.0);
+        // Result should still be bluish (B channel dominant).
+        assert!(dst[2] > dst[0] && dst[2] > dst[1]);
     }
 
     #[test]

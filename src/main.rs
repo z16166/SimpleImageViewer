@@ -49,6 +49,7 @@ mod mmap_util;
 mod path_location;
 mod pixel_inspector;
 pub mod print;
+mod psb_blend_nonseparable;
 mod psb_cmyk_cms;
 mod psb_cmyk_simd;
 mod psb_descriptor;

@@ -60,6 +60,7 @@ fn blend_b_f32(kind: SeparableBlendKind, cb: f32, cs: f32) -> f32 {
                 1.0 - 2.0 * (1.0 - cb) * (1.0 - cs)
             }
         }
+        SeparableBlendKind::Color => cs,
     }
 }
 
@@ -136,6 +137,22 @@ fn blend_one_pixel_f32(dst: &mut [f32], src: &[f32], kind: SeparableBlendKind) {
         return;
     }
     let inv_out_a = 1.0 / out_a;
+    if kind == SeparableBlendKind::Color {
+        let (br, bg, bb) = crate::psb_blend_nonseparable::blend_color_rgb(
+            dst[0], dst[1], dst[2], src[0], src[1], src[2],
+        );
+        let channels = [
+            (src[0], dst[0], br),
+            (src[1], dst[1], bg),
+            (src[2], dst[2], bb),
+        ];
+        for (c, (sc, dc, b)) in channels.into_iter().enumerate() {
+            let co = sa * (1.0 - da) * sc + sa * da * b + da * (1.0 - sa) * dc;
+            dst[c] = co * inv_out_a;
+        }
+        dst[3] = out_a.clamp(0.0, 1.0);
+        return;
+    }
     for c in 0..3 {
         let sc = src[c];
         let dc = dst[c];
@@ -222,7 +239,8 @@ unsafe fn blend_plane_f32_sse41(
         SeparableBlendKind::LinearDodge => _mm_add_ps(dc, sc),
         SeparableBlendKind::Overlay
         | SeparableBlendKind::SoftLight
-        | SeparableBlendKind::HardLight => sc,
+        | SeparableBlendKind::HardLight
+        | SeparableBlendKind::Color => sc,
     };
     let term1 = _mm_mul_ps(_mm_mul_ps(sa, _mm_sub_ps(one, da)), sc);
     let term2 = _mm_mul_ps(_mm_mul_ps(sa, da), v_b);
@@ -353,7 +371,8 @@ unsafe fn blend_plane_f32_avx2(
         SeparableBlendKind::LinearDodge => _mm256_add_ps(dc, sc),
         SeparableBlendKind::Overlay
         | SeparableBlendKind::SoftLight
-        | SeparableBlendKind::HardLight => sc,
+        | SeparableBlendKind::HardLight
+        | SeparableBlendKind::Color => sc,
     };
     let term1 = _mm256_mul_ps(_mm256_mul_ps(sa, _mm256_sub_ps(one, da)), sc);
     let term2 = _mm256_mul_ps(_mm256_mul_ps(sa, da), v_b);
@@ -467,7 +486,8 @@ unsafe fn blend_plane_f32_neon(
         SeparableBlendKind::LinearDodge => vaddq_f32(dc, sc),
         SeparableBlendKind::Overlay
         | SeparableBlendKind::SoftLight
-        | SeparableBlendKind::HardLight => sc,
+        | SeparableBlendKind::HardLight
+        | SeparableBlendKind::Color => sc,
     };
     let term1 = vmulq_f32(vmulq_f32(sa, vsubq_f32(one, da)), sc);
     let term2 = vmulq_f32(vmulq_f32(sa, da), v_b);
