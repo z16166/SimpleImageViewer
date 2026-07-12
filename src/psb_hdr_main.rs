@@ -196,6 +196,7 @@ pub fn decode_psd_hdr_main_from_index_with_layer_info(
     let layer_info = preparsed_layers.or(owned_layers.as_ref());
 
     let mut p2_no_drawable_visible = false;
+    let mut p25_reveal_err: Option<crate::loader::DecodeError> = None;
     if let Some(layer_info) = layer_info {
         let visible = crate::psb_layer_composite::compute_effective_visibility(&layer_info.records);
         match composite_layers_hdr_with_visibility_from_info(
@@ -238,9 +239,14 @@ pub fn decode_psd_hdr_main_from_index_with_layer_info(
         }
         match psd_hidden_layer_strategy {
             crate::settings::PsdHiddenLayerStrategy::Heuristic => {
-                if let Some(main) =
-                    decode_psd_hdr_main_p25b_heuristic(index, bytes, layer_info, cancel, sdr_white)?
-                {
+                if let Some(main) = decode_psd_hdr_main_p25b_heuristic(
+                    index,
+                    bytes,
+                    layer_info,
+                    cancel,
+                    sdr_white,
+                    &mut p25_reveal_err,
+                )? {
                     return Ok(PsdHdrMainDecode {
                         hdr: main.hdr,
                         osd: mark_transfer(main.osd),
@@ -248,9 +254,14 @@ pub fn decode_psd_hdr_main_from_index_with_layer_info(
                 }
             }
             crate::settings::PsdHiddenLayerStrategy::ShowAllLayers => {
-                if let Some(main) =
-                    decode_psd_hdr_main_p25b_show_all(index, bytes, layer_info, cancel, sdr_white)?
-                {
+                if let Some(main) = decode_psd_hdr_main_p25b_show_all(
+                    index,
+                    bytes,
+                    layer_info,
+                    cancel,
+                    sdr_white,
+                    &mut p25_reveal_err,
+                )? {
                     return Ok(PsdHdrMainDecode {
                         hdr: main.hdr,
                         osd: mark_transfer(main.osd),
@@ -260,6 +271,9 @@ pub fn decode_psd_hdr_main_from_index_with_layer_info(
         }
     }
 
+    if let Some(e) = p25_reveal_err {
+        return Err(e);
+    }
     if p2_no_drawable_visible {
         return Err(rust_i18n::t!("error.psd_all_layers_hidden")
             .to_string()
@@ -336,6 +350,7 @@ fn decode_psd_hdr_main_p25b_heuristic(
     layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     sdr_white: f32,
+    reveal_err: &mut Option<crate::loader::DecodeError>,
 ) -> Result<Option<PsdHdrMainDecode>, crate::loader::DecodeError> {
     crate::psb_reader::check_decode_cancel(cancel)?;
     let candidates = crate::psb_p25_reveal::rank_max_bbox_top_level(
@@ -398,6 +413,7 @@ fn decode_psd_hdr_main_p25b_heuristic(
                     cand_i
                 );
                 log::debug!("PSD HDR main P2.5b pass1 fail cand={cand_i}: {e}");
+                remember_p25_reveal_err(reveal_err, e);
             }
         }
 
@@ -436,6 +452,7 @@ fn decode_psd_hdr_main_p25b_heuristic(
                     cand_i
                 );
                 log::debug!("PSD HDR main P2.5b force-open fail cand={cand_i}: {e}");
+                remember_p25_reveal_err(reveal_err, e);
             }
         }
     }
@@ -450,6 +467,7 @@ fn decode_psd_hdr_main_p25b_show_all(
     layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     sdr_white: f32,
+    reveal_err: &mut Option<crate::loader::DecodeError>,
 ) -> Result<Option<PsdHdrMainDecode>, crate::loader::DecodeError> {
     crate::psb_reader::check_decode_cancel(cancel)?;
     let visible = crate::psb_p25_reveal::visibility_force_open_all(&layer_info.records);
@@ -490,8 +508,18 @@ fn decode_psd_hdr_main_p25b_show_all(
                 "[PreloadDebug][PsdHdrMain] stage=P25b_force_open_all_fail err={e}"
             );
             log::debug!("PSD HDR main P2.5b force-open-all unavailable: {e}");
+            remember_p25_reveal_err(reveal_err, e);
             Ok(None)
         }
+    }
+}
+
+fn remember_p25_reveal_err(
+    slot: &mut Option<crate::loader::DecodeError>,
+    err: crate::loader::DecodeError,
+) {
+    if !err.is_no_drawable_visible_layers() {
+        *slot = Some(err);
     }
 }
 

@@ -290,6 +290,9 @@ fn decode_psd_sdr_main_with_index(
 
     // P2: strict visibility layer composite, then zero-information barrier.
     let mut p2_no_drawable_visible = false;
+    // Structural P2.5b failures (e.g. channel length mismatch) must not be
+    // reported as "all layers hidden" after P3 also fails.
+    let mut p25_reveal_err: Option<crate::loader::DecodeError> = None;
     if let Some(layer_info) = layer_info {
         match composite_sdr_layers_from_info(index, bytes, layer_info, parse_ms, cancel, gpu) {
             Ok(composite) => {
@@ -353,6 +356,7 @@ fn decode_psd_sdr_main_with_index(
                     &mut parse_ms,
                     cancel,
                     gpu,
+                    &mut p25_reveal_err,
                 )? {
                     return Ok(main);
                 }
@@ -365,6 +369,7 @@ fn decode_psd_sdr_main_with_index(
                     &mut parse_ms,
                     cancel,
                     gpu,
+                    &mut p25_reveal_err,
                 )? {
                     return Ok(main);
                 }
@@ -392,6 +397,9 @@ fn decode_psd_sdr_main_with_index(
     }
 
     crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=fail no_p1_p2_p3");
+    if let Some(e) = p25_reveal_err {
+        return Err(e);
+    }
     if p2_no_drawable_visible {
         return Err(rust_i18n::t!("error.psd_all_layers_hidden")
             .to_string()
@@ -557,6 +565,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
     parse_ms: &mut f64,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+    reveal_err: &mut Option<crate::loader::DecodeError>,
 ) -> Result<Option<PsdMainDecode>, crate::loader::DecodeError> {
     crate::psb_reader::check_decode_cancel(cancel)?;
     let candidates = crate::psb_p25_reveal::rank_max_bbox_top_level(
@@ -625,6 +634,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
                     cand_i
                 );
                 log::debug!("PSD SDR main P2.5b pass1 fail cand={cand_i}: {e}");
+                remember_p25_reveal_err(reveal_err, e);
             }
         }
 
@@ -671,6 +681,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
                     cand_i
                 );
                 log::debug!("PSD SDR main P2.5b force-open fail cand={cand_i}: {e}");
+                remember_p25_reveal_err(reveal_err, e);
             }
         }
     }
@@ -686,6 +697,7 @@ fn decode_psd_sdr_main_p25b_show_all(
     parse_ms: &mut f64,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
+    reveal_err: &mut Option<crate::loader::DecodeError>,
 ) -> Result<Option<PsdMainDecode>, crate::loader::DecodeError> {
     crate::psb_reader::check_decode_cancel(cancel)?;
     let visible = crate::psb_p25_reveal::visibility_force_open_all(&layer_info.records);
@@ -732,8 +744,20 @@ fn decode_psd_sdr_main_p25b_show_all(
                 "[PreloadDebug][PsdSdrMain] stage=P25b_force_open_all_fail err={e}"
             );
             log::debug!("PSD SDR main P2.5b force-open-all unavailable: {e}");
+            remember_p25_reveal_err(reveal_err, e);
             Ok(None)
         }
+    }
+}
+
+/// Keep a P2.5b structural failure for the final error path; ignore blank-layer
+/// soft failures so "all layers hidden" can still be reported when appropriate.
+fn remember_p25_reveal_err(
+    slot: &mut Option<crate::loader::DecodeError>,
+    err: crate::loader::DecodeError,
+) {
+    if !err.is_no_drawable_visible_layers() {
+        *slot = Some(err);
     }
 }
 
@@ -1199,34 +1223,59 @@ mod tests {
     }
 
     #[test]
-    fn decode_psd_sdr_main_all_hidden_reports_photoshop_hint() {
-        // All layers hidden: P2 fails, P2.5b of this corpus yields
-        // zero-information (or no usable IR thumb), so the designer hint wins.
+    fn decode_psd_sdr_main_1_2_hidden_layers_force_opens_with_trailing_pad() {
+        // 1-2.psd has all layers hidden and a few trailing pad bytes after the
+        // declared channel block. Previously the strict length check aborted
+        // P2.5b and the UI falsely reported "all layers hidden". With pad
+        // tolerance, heuristic force-open must yield a displayable composite.
         let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\18\18\1-2.psd");
         if !path.is_file() {
-            eprintln!("skipping decode_psd_sdr_main_all_hidden...; sample missing");
+            eprintln!("skipping decode_psd_sdr_main_1_2_hidden...; sample missing");
             return;
         }
         let bytes = std::fs::read(path).expect("read");
-        let err = decode_psd_sdr_main_from_bytes_with_cancel(
+        let main = decode_psd_sdr_main_from_bytes_with_cancel(
             &bytes,
             None,
             None,
             PsdHiddenLayerStrategy::Heuristic,
         )
-        .expect_err("expected fail when all layers hidden and P2.5b/P3 are blank");
-        let expected = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
-        assert_eq!(err.as_str(), expected);
+        .expect("hidden layers with trailing channel pad should force-open");
+        assert_eq!((main.composite.width, main.composite.height), (6614, 3307));
+        assert!(!main.composite.pixels.is_empty());
         assert!(
-            err.as_str().contains("designer")
-                || err.as_str().contains("设计师")
-                || err.as_str().contains("設計師"),
-            "error should attribute hidden layers to the designer: {err}"
+            matches!(main.osd.stage, crate::loader::PsdDecodeStage::P25b),
+            "expected P2.5b reveal, got {:?}",
+            main.osd.stage
         );
-        assert!(
-            err.as_str().contains("Photoshop"),
-            "error should point users to Photoshop: {err}"
+    }
+
+    #[test]
+    fn layer_channel_byte_ranges_tolerates_17_psd_trailing_pad() {
+        // 17.psd Layer Info length is even-rounded: declared channel sum is
+        // one byte short of the channel block end (a trailing 0x00 pad).
+        let path = Path::new(r"F:\BaiduNetdiskDownload\素材库\45套 psd企业画册模板\17\17.psd");
+        if !path.is_file() {
+            eprintln!("skipping layer_channel_byte_ranges_tolerates_17...; sample missing");
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read");
+        let index = PsdSectionIndex::parse(&bytes).expect("index");
+        let info = crate::psb_layer_composite::parse_layer_records_from_index(&index, &bytes)
+            .expect("layer records");
+        let declared: usize = info
+            .records
+            .iter()
+            .flat_map(|r| r.channels.iter())
+            .map(|c| c.data_len as usize)
+            .sum();
+        assert_eq!(
+            info.channel_data.len().saturating_sub(declared),
+            1,
+            "fixture expectation: Adobe even-length pad of 1 byte"
         );
+        crate::psb_layer_decode::layer_channel_byte_ranges(&info.records, info.channel_data.len())
+            .expect("channel ranges follow declared lengths; Layer Info pad is unused");
     }
 
     #[test]

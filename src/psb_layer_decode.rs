@@ -834,6 +834,16 @@ pub(crate) fn decode_one_layer(
 /// Precompute each layer's `[start, end)` byte range in the contiguous channel
 /// image data block. Validates bounds once so parallel workers can slice
 /// independently without a shared cursor.
+///
+/// Per Adobe Photoshop File Formats Specification, Layer Info has:
+/// - a section length that is **rounded up to a multiple of 2**
+/// - per-channel lengths in each layer record that define Channel image data
+///
+/// Decode layout follows the per-channel length table. Any bytes remaining
+/// inside the Layer Info length after those declared channels are section
+/// padding (the even-length round-up, or unused bytes still covered by the
+/// length field) and must not be read as channel data. Only an overrun of the
+/// Layer Info channel block is an error.
 pub(crate) fn layer_channel_byte_ranges(
     records: &[LayerRecord],
     channel_data_len: usize,
@@ -851,12 +861,6 @@ pub(crate) fn layer_channel_byte_ranges(
             return Err("PSD/PSB layer channel data out of bounds".into());
         }
         ranges.push((start, cursor));
-    }
-    if cursor != channel_data_len {
-        return Err(format!(
-            "PSD/PSB layer channel data length mismatch: declared {cursor} bytes, actual {channel_data_len} bytes"
-        )
-        .into());
     }
     Ok(ranges)
 }
@@ -1370,14 +1374,38 @@ mod tests {
     }
 
     #[test]
-    fn layer_channel_byte_ranges_rejects_unclaimed_trailing_bytes() {
+    fn layer_channel_byte_ranges_rejects_channel_overrun() {
+        let mut record = mk_layer(false, false, None);
+        record.channels = vec![LayerChannel { id: 0, data_len: 5 }];
+
+        let err = layer_channel_byte_ranges(&[record], 4)
+            .expect_err("declared channel lengths must not overrun the Layer Info block");
+        assert!(
+            err.as_str().contains("out of bounds"),
+            "unexpected err: {err}"
+        );
+    }
+
+    #[test]
+    fn layer_channel_byte_ranges_ignores_layer_info_even_pad() {
+        // Spec: Layer Info length is rounded up to a multiple of 2. Declared
+        // channel lengths stay authoritative; the pad byte is not channel data.
         let mut record = mk_layer(false, false, None);
         record.channels = vec![LayerChannel { id: 0, data_len: 3 }];
 
-        let err = layer_channel_byte_ranges(&[record], 5)
-            .expect_err("channel ranges must consume the complete data block");
-        assert!(err.as_str().contains("3"), "unexpected err: {err}");
-        assert!(err.as_str().contains("5"), "unexpected err: {err}");
+        let ranges = layer_channel_byte_ranges(&[record], 4).expect("even-align pad");
+        assert_eq!(ranges, vec![(0, 3)]);
+    }
+
+    #[test]
+    fn layer_channel_byte_ranges_ignores_unused_bytes_inside_layer_info_len() {
+        // Bytes still covered by Layer Info length but not claimed by any
+        // channel length field are unused section padding, not a mismatch.
+        let mut record = mk_layer(false, false, None);
+        record.channels = vec![LayerChannel { id: 0, data_len: 3 }];
+
+        let ranges = layer_channel_byte_ranges(&[record], 6).expect("unused section bytes");
+        assert_eq!(ranges, vec![(0, 3)]);
     }
 
     #[test]
