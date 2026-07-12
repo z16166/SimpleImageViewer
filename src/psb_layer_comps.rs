@@ -14,8 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#![allow(dead_code)]
-
 use crate::psb_descriptor::{DescriptorObject, DescriptorValue, parse_versioned_descriptor};
 use crate::psb_layer_composite::{
     LayerRecord, compute_effective_visibility, compute_effective_visibility_with_flags,
