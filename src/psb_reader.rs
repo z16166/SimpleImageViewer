@@ -269,29 +269,29 @@ pub fn read_composite_from_index(
     let mut rgba = vec![255u8; checked_rgba_len(pixel_count)?];
     let cmyk_cms_ok = color_mode == 4
         && channels >= 4
-        && planar_channels[0].is_some()
-        && planar_channels[1].is_some()
-        && planar_channels[2].is_some()
-        && planar_channels[3].is_some()
-        && {
-            let icc = crate::psb_cmyk_cms::resolve_cmyk_icc(embedded_icc.as_deref());
-            let c = planar_channels[0].as_deref().unwrap();
-            let m = planar_channels[1].as_deref().unwrap();
-            let y = planar_channels[2].as_deref().unwrap();
-            let k = planar_channels[3].as_deref().unwrap();
-            let a = if channels >= 5 {
-                planar_channels.get(4).and_then(|c| c.as_deref())
-            } else {
-                None
-            };
-            let span = crate::psb_cmyk_cms::AdobeCmykSpan {
-                c,
-                m,
-                y,
-                k,
-                alpha: a,
-            };
-            crate::psb_cmyk_cms::cmyk_span_adobe_to_rgba8(&span, icc, &mut rgba)
+        && match (
+            planar_channels[0].as_deref(),
+            planar_channels[1].as_deref(),
+            planar_channels[2].as_deref(),
+            planar_channels[3].as_deref(),
+        ) {
+            (Some(c), Some(m), Some(y), Some(k)) => {
+                let icc = crate::psb_cmyk_cms::resolve_cmyk_icc(embedded_icc.as_deref());
+                let a = if channels >= 5 {
+                    planar_channels.get(4).and_then(|ch| ch.as_deref())
+                } else {
+                    None
+                };
+                let span = crate::psb_cmyk_cms::AdobeCmykSpan {
+                    c,
+                    m,
+                    y,
+                    k,
+                    alpha: a,
+                };
+                crate::psb_cmyk_cms::cmyk_span_adobe_to_rgba8(&span, icc, &mut rgba)
+            }
+            _ => false,
         };
     if !cmyk_cms_ok {
         for row in 0..height as usize {
@@ -1146,8 +1146,8 @@ pub(crate) fn seek_forward_within(
     let pos = r
         .stream_position()
         .map_err(|e| format!("Stream position error: {e}"))?;
-    let end = checked_section_end(pos, len, file_size, label)?;
-    debug_assert!(end <= file_size);
+    let _ = checked_section_end(pos, len, file_size, label)?;
+    // checked_section_end already guarantees end <= file_size.
     seek_forward(r, len)
 }
 

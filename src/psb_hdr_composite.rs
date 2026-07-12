@@ -165,7 +165,9 @@ fn capture_base_alpha_f32(
 
 /// Multiply every pixel's alpha in `group` by the corresponding base-alpha sample.
 fn apply_base_alpha_mask_f32(group: &mut [f32], base_alpha: &[f32]) {
-    debug_assert_eq!(group.len(), base_alpha.len() * 4);
+    if group.len() != base_alpha.len().saturating_mul(4) {
+        return;
+    }
     for (px, &mask) in group.chunks_exact_mut(4).zip(base_alpha.iter()) {
         if mask <= 0.0 {
             px[0] = 0.0;
@@ -549,7 +551,7 @@ pub fn composite_layers_hdr_from_index(
     crate::psb_reader::check_decode_cancel(cancel)?;
     let info = parse_layer_records_from_index(index, bytes).map_err(DecodeError::Message)?;
     let visible = compute_effective_visibility(&info.records);
-    composite_layers_hdr_with_visibility(info, bytes, index, &visible, cancel, sdr_white_nits)
+    composite_layers_hdr_with_visibility(&info, bytes, index, &visible, cancel, sdr_white_nits)
 }
 
 /// Same as [`composite_layers_hdr_from_index`], but uses an explicit visibility mask
@@ -563,11 +565,25 @@ pub fn composite_layers_hdr_with_visibility_from_index(
 ) -> Result<HdrImageBuffer, DecodeError> {
     crate::psb_reader::check_decode_cancel(cancel)?;
     let info = parse_layer_records_from_index(index, bytes).map_err(DecodeError::Message)?;
+    composite_layers_hdr_with_visibility(&info, bytes, index, visible, cancel, sdr_white_nits)
+}
+
+/// Same as [`composite_layers_hdr_with_visibility_from_index`], but reuses an
+/// already-parsed [`crate::psb_layer_composite::LayerInfo`].
+pub fn composite_layers_hdr_with_visibility_from_info(
+    info: &crate::psb_layer_composite::LayerInfo<'_>,
+    bytes: &[u8],
+    index: &PsdSectionIndex,
+    visible: &[bool],
+    cancel: Option<&AtomicBool>,
+    sdr_white_nits: f32,
+) -> Result<HdrImageBuffer, DecodeError> {
+    crate::psb_reader::check_decode_cancel(cancel)?;
     composite_layers_hdr_with_visibility(info, bytes, index, visible, cancel, sdr_white_nits)
 }
 
 fn composite_layers_hdr_with_visibility(
-    info: crate::psb_layer_composite::LayerInfo<'_>,
+    info: &crate::psb_layer_composite::LayerInfo<'_>,
     bytes: &[u8],
     index: &PsdSectionIndex,
     visible: &[bool],

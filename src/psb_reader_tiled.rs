@@ -92,7 +92,9 @@ impl PsbTiledSource {
                     Some(&o) => o as usize,
                     None => return,
                 };
-                let end = offset + raw_len;
+                let Some(end) = offset.checked_add(raw_len) else {
+                    return;
+                };
                 if end <= self.mmap.len() {
                     downconvert_samples_to_u8(buf, &self.mmap[offset..end], bps);
                 }
@@ -131,7 +133,9 @@ impl PsbTiledSource {
                     Some(&o) => o as usize,
                     None => return,
                 };
-                let end = offset + raw_len;
+                let Some(end) = offset.checked_add(raw_len) else {
+                    return;
+                };
                 if end <= planar.len() {
                     downconvert_samples_to_u8(buf, &planar[offset..end], bps);
                 }
@@ -328,7 +332,13 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
-        let mut rgba = vec![255u8; (w * h * 4) as usize];
+        let Some(rgba_len) = (w as usize)
+            .checked_mul(h as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+        else {
+            return std::sync::Arc::new(Vec::new());
+        };
+        let mut rgba = vec![255u8; rgba_len];
 
         let mut row_grid = vec![vec![None; self.channels as usize]; h as usize];
         for ch in 0..self.channels {

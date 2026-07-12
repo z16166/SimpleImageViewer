@@ -41,7 +41,8 @@ pub struct PsdSectionIndex {
 
 impl PsdSectionIndex {
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() < 4 {
+        // Full fixed header is 26 bytes (signature through color mode).
+        if bytes.len() < 26 {
             return Err("PSD/PSB header is too short".into());
         }
 
@@ -53,9 +54,6 @@ impl PsdSectionIndex {
             .map_err(|e| format!("Read error: {e}"))?;
         if &sig != b"8BPS" {
             return Err("Not a PSD/PSB file (invalid signature)".into());
-        }
-        if bytes.len() < 26 {
-            return Err("PSD/PSB header is too short".into());
         }
 
         let version = read_u16(&mut r)?;

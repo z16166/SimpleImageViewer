@@ -313,6 +313,7 @@ impl ImageViewerApp {
 
         self.invalidate_decode_profile_epoch();
         self.loader.cancel_all();
+        self.image_status.set_psd_osd_line(None);
 
         let current = self.current_index;
         for idx in psd_indices {

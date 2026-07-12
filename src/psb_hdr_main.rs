@@ -24,6 +24,7 @@
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 use crate::psb_hdr_composite::{
     composite_layers_hdr_from_index, composite_layers_hdr_with_visibility_from_index,
+    composite_layers_hdr_with_visibility_from_info,
 };
 use crate::psb_hdr_flat::{read_composite_hdr_from_index, rgba_f32_is_absolutely_blank};
 use crate::psb_icc_hdr::{psd_content_wants_hdr, psd_env_wants_hdr};
@@ -108,7 +109,7 @@ pub fn decode_psd_hdr_main_from_bytes_with_cancel(
                 || rgba_f32_is_zero_information(&hdr.rgba_f32)
             {
                 crate::preload_debug!(
-                    "[PreloadDebug][PsdHdrMain] stage=P2_zero_information {}x{} -> degrade_P25",
+                    "[PreloadDebug][PsdHdrMain] stage=P2_zero_information {}x{} -> degrade_P25a",
                     hdr.width,
                     hdr.height
                 );
@@ -183,6 +184,7 @@ fn decode_psd_hdr_main_p25a(
         Ok(info) => info,
         Err(e) => {
             crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25a_parse_fail err={e}");
+            log::debug!("PSD HDR main P2.5a layer parse unavailable: {e}");
             return Ok(None);
         }
     };
@@ -218,6 +220,7 @@ fn decode_psd_hdr_main_p25a(
         Err(e) if e.is_cancelled() => Err(e),
         Err(e) => {
             crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25a_fail err={e}");
+            log::debug!("PSD HDR main P2.5a composite unavailable: {e}");
             Ok(None)
         }
     }
@@ -235,6 +238,7 @@ fn decode_psd_hdr_main_p25b_heuristic(
         Ok(info) => info,
         Err(e) => {
             crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_parse_fail err={e}");
+            log::debug!("PSD HDR main P2.5b layer parse unavailable: {e}");
             return Ok(None);
         }
     };
@@ -268,8 +272,13 @@ fn decode_psd_hdr_main_p25b_heuristic(
             &layer_info.records,
             &selection.member_indices,
         );
-        match composite_layers_hdr_with_visibility_from_index(
-            index, bytes, &visible, cancel, sdr_white,
+        match composite_layers_hdr_with_visibility_from_info(
+            &layer_info,
+            bytes,
+            index,
+            &visible,
+            cancel,
+            sdr_white,
         ) {
             Ok(hdr)
                 if !rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
@@ -298,6 +307,7 @@ fn decode_psd_hdr_main_p25b_heuristic(
                     "[PreloadDebug][PsdHdrMain] stage=P25b_pass1_fail cand={} err={e}",
                     cand_i
                 );
+                log::debug!("PSD HDR main P2.5b pass1 fail cand={cand_i}: {e}");
             }
         }
 
@@ -305,8 +315,13 @@ fn decode_psd_hdr_main_p25b_heuristic(
             &layer_info.records,
             &selection.member_indices,
         );
-        match composite_layers_hdr_with_visibility_from_index(
-            index, bytes, &visible, cancel, sdr_white,
+        match composite_layers_hdr_with_visibility_from_info(
+            &layer_info,
+            bytes,
+            index,
+            &visible,
+            cancel,
+            sdr_white,
         ) {
             Ok(hdr) => {
                 if rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
@@ -335,6 +350,7 @@ fn decode_psd_hdr_main_p25b_heuristic(
                     "[PreloadDebug][PsdHdrMain] stage=P25b_force_open_fail cand={} err={e}",
                     cand_i
                 );
+                log::debug!("PSD HDR main P2.5b force-open fail cand={cand_i}: {e}");
             }
         }
     }
@@ -355,6 +371,7 @@ fn decode_psd_hdr_main_p25b_show_all(
         Ok(info) => info,
         Err(e) => {
             crate::preload_debug!("[PreloadDebug][PsdHdrMain] stage=P25b_parse_fail err={e}");
+            log::debug!("PSD HDR main P2.5b layer parse unavailable: {e}");
             return Ok(None);
         }
     };
@@ -367,10 +384,15 @@ fn decode_psd_hdr_main_p25b_show_all(
         "PSD HDR main P2.5b force-open-all drawable={}",
         visible.iter().filter(|v| **v).count()
     );
-    drop(layer_info);
 
-    match composite_layers_hdr_with_visibility_from_index(index, bytes, &visible, cancel, sdr_white)
-    {
+    match composite_layers_hdr_with_visibility_from_info(
+        &layer_info,
+        bytes,
+        index,
+        &visible,
+        cancel,
+        sdr_white,
+    ) {
         Ok(hdr)
             if !rgba_f32_is_absolutely_blank(&hdr.rgba_f32)
                 && !rgba_f32_is_zero_information(&hdr.rgba_f32) =>

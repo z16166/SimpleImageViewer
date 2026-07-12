@@ -164,14 +164,14 @@ fn decode_psd_sdr_main_inner(
             if zero_info {
                 crate::preload_debug!(
                     "[PreloadDebug][PsdSdrMain] stage=P2_zero_information {}x{} \
-                     pixels={} -> degrade_P25b",
+                     pixels={} -> degrade_P25a",
                     composite.width,
                     composite.height,
                     composite.pixels.len()
                 );
                 log::debug!(
                     "PSD SDR main: P2 strict composite {}x{} is zero-information \
-                     (all-transparent or solid RGB); degrading to P2.5b",
+                     (all-transparent or solid RGB); degrading to P2.5a",
                     composite.width,
                     composite.height
                 );
@@ -383,7 +383,7 @@ fn decode_psd_sdr_main_p25a(
         return Ok(None);
     };
 
-    match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+    match composite_p25b_pass(&layer_info, &visible, parse_ms, cancel, gpu) {
         Ok(composite) => {
             let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                 &composite.pixels,
@@ -450,7 +450,6 @@ fn decode_psd_sdr_main_p25b_heuristic(
         &layer_info.records,
         crate::psb_p25_reveal::P25B_MAX_CANDIDATES,
     );
-    drop(layer_info);
     if candidates.is_empty() {
         crate::preload_debug!("[PreloadDebug][PsdSdrMain] stage=P25b_no_candidate");
         log::debug!("PSD SDR main P2.5b: no max-bbox candidate");
@@ -474,22 +473,11 @@ fn decode_psd_sdr_main_p25b_heuristic(
             selection.root_name
         );
 
-        let layer_info =
-            match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes) {
-                Ok(info) => info,
-                Err(e) => {
-                    crate::preload_debug!(
-                        "[PreloadDebug][PsdSdrMain] stage=P25b_reparse_fail cand={} err={e}",
-                        cand_i
-                    );
-                    continue;
-                }
-            };
         let visible = crate::psb_p25_reveal::visibility_respect_subtree(
             &layer_info.records,
             &selection.member_indices,
         );
-        match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+        match composite_p25b_pass(&layer_info, &visible, parse_ms, cancel, gpu) {
             Ok(composite) => {
                 let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                     &composite.pixels,
@@ -523,25 +511,15 @@ fn decode_psd_sdr_main_p25b_heuristic(
                     "[PreloadDebug][PsdSdrMain] stage=P25b_pass1_fail cand={} err={e}",
                     cand_i
                 );
+                log::debug!("PSD SDR main P2.5b pass1 fail cand={cand_i}: {e}");
             }
         }
 
-        let layer_info =
-            match crate::psb_layer_composite::parse_layer_records_from_index(index, bytes) {
-                Ok(info) => info,
-                Err(e) => {
-                    crate::preload_debug!(
-                        "[PreloadDebug][PsdSdrMain] stage=P25b_reparse_fail cand={} err={e}",
-                        cand_i
-                    );
-                    continue;
-                }
-            };
         let visible = crate::psb_p25_reveal::visibility_force_open_subtree(
             &layer_info.records,
             &selection.member_indices,
         );
-        match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+        match composite_p25b_pass(&layer_info, &visible, parse_ms, cancel, gpu) {
             Ok(composite) => {
                 let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                     &composite.pixels,
@@ -579,6 +557,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
                     "[PreloadDebug][PsdSdrMain] stage=P25b_force_open_fail cand={} err={e}",
                     cand_i
                 );
+                log::debug!("PSD SDR main P2.5b force-open fail cand={cand_i}: {e}");
             }
         }
     }
@@ -615,7 +594,7 @@ fn decode_psd_sdr_main_p25b_show_all(
         visible.iter().filter(|v| **v).count()
     );
 
-    match composite_p25b_pass(layer_info, &visible, parse_ms, cancel, gpu) {
+    match composite_p25b_pass(&layer_info, &visible, parse_ms, cancel, gpu) {
         Ok(composite) => {
             let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                 &composite.pixels,
@@ -655,7 +634,7 @@ fn decode_psd_sdr_main_p25b_show_all(
 }
 
 fn composite_p25b_pass(
-    layer_info: crate::psb_layer_composite::LayerInfo<'_>,
+    layer_info: &crate::psb_layer_composite::LayerInfo<'_>,
     visible: &[bool],
     parse_ms: f64,
     cancel: Option<&std::sync::atomic::AtomicBool>,

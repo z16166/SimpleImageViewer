@@ -461,13 +461,23 @@ pub(crate) fn build_layer_sized_mask(
         return out;
     }
 
+    let Some(mask_pixels_needed) = (mask_w as usize).checked_mul(mask_h as usize) else {
+        return out;
+    };
+    if mask_pixels.len() < mask_pixels_needed {
+        return out;
+    }
+
     for dy in dst_y0..dst_y1 {
         let sy = (dy - off_y) as usize;
         let dst_row_start = dy as usize * layer_w as usize;
         let src_row_start = sy * mask_w as usize;
         for dx in dst_x0..dst_x1 {
             let sx = (dx - off_x) as usize;
-            out[dst_row_start + dx as usize] = mask_pixels[src_row_start + sx];
+            out[dst_row_start + dx as usize] = mask_pixels
+                .get(src_row_start + sx)
+                .copied()
+                .unwrap_or(mask_info.default_color);
         }
     }
 

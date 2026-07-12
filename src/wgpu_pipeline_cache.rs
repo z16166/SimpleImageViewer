@@ -284,6 +284,6 @@ mod tests {
         let path = cache_path_for_adapter_info(&adapter_info("32.0.16.1052"));
         let file_name = path.file_name().unwrap().to_string_lossy();
 
-        assert!(file_name.contains("_pcv5_"));
+        assert!(file_name.contains(&format!("_pcv{PIPELINE_CACHE_SCHEMA_VERSION}_")));
     }
 }

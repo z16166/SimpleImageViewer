@@ -30,10 +30,22 @@ pub(crate) enum DescriptorValue {
 
 pub(crate) type DescriptorObject = HashMap<String, DescriptorValue>;
 
+/// Maximum items in a single descriptor object or list. Caps allocation from
+/// untrusted PSD/PSB descriptor counts before any element is read.
+const MAX_DESCRIPTOR_ITEMS: usize = 10_000;
+/// Maximum nesting depth for Objc/GlbO/VlLs descriptors (stack DoS guard).
+const MAX_DESCRIPTOR_DEPTH: usize = 64;
+/// Adobe OSType descriptor version used by Layer Comp IR and related blocks.
+const DESCRIPTOR_VERSION_V16: u32 = 16;
+
 pub(crate) fn parse_versioned_descriptor(bytes: &[u8]) -> Option<DescriptorObject> {
-    let mut parser = DescriptorParser { bytes, pos: 0 };
+    let mut parser = DescriptorParser {
+        bytes,
+        pos: 0,
+        depth: 0,
+    };
     let version = parser.read_u32()?;
-    if version != 16 {
+    if version != DESCRIPTOR_VERSION_V16 {
         return None;
     }
     parser.parse_descriptor()
@@ -42,13 +54,27 @@ pub(crate) fn parse_versioned_descriptor(bytes: &[u8]) -> Option<DescriptorObjec
 struct DescriptorParser<'a> {
     bytes: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 impl DescriptorParser<'_> {
     fn parse_descriptor(&mut self) -> Option<DescriptorObject> {
+        if self.depth >= MAX_DESCRIPTOR_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let result = self.parse_descriptor_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_descriptor_inner(&mut self) -> Option<DescriptorObject> {
         self.read_unicode_string()?;
         self.read_id_string()?;
         let item_count = self.read_u32()? as usize;
+        if item_count > MAX_DESCRIPTOR_ITEMS {
+            return None;
+        }
         let mut object = DescriptorObject::with_capacity(item_count);
         for _ in 0..item_count {
             let key = self.read_id_string()?;
@@ -63,12 +89,23 @@ impl DescriptorParser<'_> {
         match ostype {
             b"Objc" | b"GlbO" => self.parse_descriptor().map(DescriptorValue::Object),
             b"VlLs" => {
-                let count = self.read_u32()? as usize;
-                let mut values = Vec::with_capacity(count);
-                for _ in 0..count {
-                    values.push(self.parse_value()?);
+                if self.depth >= MAX_DESCRIPTOR_DEPTH {
+                    return None;
                 }
-                Some(DescriptorValue::List(values))
+                self.depth += 1;
+                let list = (|| {
+                    let count = self.read_u32()? as usize;
+                    if count > MAX_DESCRIPTOR_ITEMS {
+                        return None;
+                    }
+                    let mut values = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        values.push(self.parse_value()?);
+                    }
+                    Some(DescriptorValue::List(values))
+                })();
+                self.depth -= 1;
+                list
             }
             b"long" => self.read_i32().map(DescriptorValue::Long),
             b"bool" => {

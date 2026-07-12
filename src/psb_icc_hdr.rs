@@ -133,6 +133,12 @@ fn parse_icc_tag_table(icc: &[u8]) -> Option<Vec<IccTag>> {
         return None;
     }
     let tag_count = u32::from_be_bytes(icc[128..132].try_into().ok()?);
+    // Cap before allocation: each tag is 12 bytes; refuse absurd counts from
+    // truncated/malicious ICC payloads.
+    const MAX_ICC_TAGS: u32 = 1024;
+    if tag_count > MAX_ICC_TAGS {
+        return None;
+    }
     let table_end = 132u64
         .checked_add(u64::from(tag_count).checked_mul(12)?)?
         .min(icc.len() as u64) as usize;
@@ -257,11 +263,15 @@ fn description_marks_hdr(text: &str) -> bool {
         "hdr10",
         "rec. 2100",
         "rec.2100",
+        "rec2100",
+        "bt.2100",
+        "bt2100",
         "rec. 2020 pq",
         "rec.2020 pq",
         "display p3 hl",
         "high luminance",
         "smpte st 2084",
+        "smpte2084",
         "st2084",
     ];
     NEEDLES.iter().any(|n| lower.contains(n))

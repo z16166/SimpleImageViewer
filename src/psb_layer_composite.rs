@@ -1098,7 +1098,7 @@ fn composite_layers_from_info(
     gpu: Option<&crate::psb_layer_blend_gpu::PsdGpuContext>,
 ) -> Result<crate::psb_reader::PsbComposite, crate::loader::DecodeError> {
     let visible = compute_effective_visibility(&info.records);
-    composite_layers_with_visibility_from_info(info, &visible, parse_ms, total_t0, cancel, gpu)
+    composite_layers_with_visibility_from_info(&info, &visible, parse_ms, total_t0, cancel, gpu)
 }
 
 /// Same as [`composite_layers_from_info`], but takes an explicit per-record
@@ -1109,7 +1109,7 @@ fn composite_layers_from_info(
 /// a future Layer Comp or max-bounding-box "reveal" pass); ordinary decode
 /// paths should go through [`composite_layers_from_info`] instead.
 pub(crate) fn composite_layers_with_visibility_from_info(
-    info: LayerInfo<'_>,
+    info: &LayerInfo<'_>,
     visible: &[bool],
     parse_ms: f64,
     total_t0: std::time::Instant,
@@ -1152,7 +1152,7 @@ pub(crate) fn composite_layers_with_visibility_from_info(
     };
 
     run_composite_pass(
-        &info,
+        info,
         visible,
         &mut canvas,
         canvas_w,
@@ -1738,7 +1738,7 @@ mod tests {
         let visible = vec![true, true];
 
         let composite = composite_layers_with_visibility_from_info(
-            info,
+            &info,
             &visible,
             0.0,
             std::time::Instant::now(),
@@ -1771,7 +1771,7 @@ mod tests {
         let visible = vec![true, true]; // wrong length: 2 vs 1 record
 
         let err = composite_layers_with_visibility_from_info(
-            info,
+            &info,
             &visible,
             0.0,
             std::time::Instant::now(),

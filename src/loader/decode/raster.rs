@@ -335,11 +335,10 @@ pub(crate) fn load_psd(
     // When the HDR content gate is active, skip the SDR disk-tiled shortcut.
     let version = u16::from_be_bytes([mmap[4], mmap[5]]);
     let depth = u16::from_be_bytes([mmap[22], mmap[23]]);
-    let embedded_icc = crate::psb_section_index::PsdSectionIndex::parse(&mmap[..])
-        .ok()
-        .and_then(|idx| {
-            crate::psb_reader::extract_icc_profile_from_ir(&mmap[..], idx.ir_start, idx.ir_end)
-        });
+    let section_index = crate::psb_section_index::PsdSectionIndex::parse(&mmap[..]).ok();
+    let embedded_icc = section_index.as_ref().and_then(|idx| {
+        crate::psb_reader::extract_icc_profile_from_ir(&mmap[..], idx.ir_start, idx.ir_end)
+    });
     let try_hdr = crate::psb_hdr_main::psd_should_try_hdr(
         depth,
         embedded_icc.as_deref(),
@@ -353,7 +352,9 @@ pub(crate) fn load_psd(
             width,
             height
         );
-        let disk_tiled_compression = crate::psb_section_index::PsdSectionIndex::parse(&mmap[..])
+        let disk_tiled_compression = section_index
+            .as_ref()
+            .ok_or_else(|| "PSD/PSB section index unavailable".to_string())
             .and_then(|index| index.image_data_compression(&mmap[..]));
         match disk_tiled_compression {
             Ok(2 | 3) => {
@@ -366,7 +367,10 @@ pub(crate) fn load_psd(
                     let blank =
                         psb_tiled_flat_is_absolutely_blank(&source, Some(cancel.as_atomic()))?;
                     if !blank {
-                        return Ok((ImageData::Tiled(std::sync::Arc::new(source)), None));
+                        return Ok((
+                            ImageData::Tiled(std::sync::Arc::new(source)),
+                            Some(crate::loader::PsdOsdInfo::p1_flattened()),
+                        ));
                     }
                     log::debug!(
                         "PSB disk tiled flat {}x{} is absolute blank; degrading to P2/P3",

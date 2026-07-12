@@ -81,17 +81,36 @@ fn blend_onto(
     }
 
     let span_w = (src_x1 - src_x0) as usize;
-    let span_bytes = span_w * 4;
+    let Some(span_bytes) = span_w.checked_mul(4) else {
+        return;
+    };
     for sy in src_y0..src_y1 {
         let dy = (top + sy) as usize;
         let dx0 = (left + src_x0) as usize;
-        let d_off = dy * canvas_w as usize * 4 + dx0 * 4;
-        let s_off = sy as usize * lw as usize * 4 + src_x0 as usize * 4;
-        blend_separable_span(
-            &mut canvas[d_off..d_off + span_bytes],
-            &layer_rgba[s_off..s_off + span_bytes],
-            kind,
-        );
+        let Some(d_off) = dy
+            .checked_mul(canvas_w as usize)
+            .and_then(|row| row.checked_mul(4))
+            .and_then(|row| row.checked_add(dx0.checked_mul(4)?))
+        else {
+            return;
+        };
+        let Some(s_off) = (sy as usize)
+            .checked_mul(lw as usize)
+            .and_then(|row| row.checked_mul(4))
+            .and_then(|row| row.checked_add((src_x0 as usize).checked_mul(4)?))
+        else {
+            return;
+        };
+        let Some(d_end) = d_off.checked_add(span_bytes) else {
+            return;
+        };
+        let Some(s_end) = s_off.checked_add(span_bytes) else {
+            return;
+        };
+        if d_end > canvas.len() || s_end > layer_rgba.len() {
+            return;
+        }
+        blend_separable_span(&mut canvas[d_off..d_end], &layer_rgba[s_off..s_end], kind);
     }
 }
 
@@ -125,8 +144,27 @@ fn capture_base_alpha(
         let dy = (top + sy) as usize;
         let dx0 = (left + src_x0) as usize;
         let row_w = (src_x1 - src_x0) as usize;
-        let dst_row = dy * canvas_w as usize + dx0;
-        let src_row = sy as usize * base.width as usize + src_x0 as usize;
+        let Some(dst_row) = dy
+            .checked_mul(canvas_w as usize)
+            .and_then(|row| row.checked_add(dx0))
+        else {
+            continue;
+        };
+        let Some(src_row) = (sy as usize)
+            .checked_mul(base.width as usize)
+            .and_then(|row| row.checked_add(src_x0 as usize))
+        else {
+            continue;
+        };
+        let Some(dst_end) = dst_row.checked_add(row_w) else {
+            continue;
+        };
+        let Some(src_end) = src_row.checked_add(row_w) else {
+            continue;
+        };
+        if dst_end > plane.len() || src_end.checked_mul(4).is_none_or(|n| n > base.rgba.len()) {
+            continue;
+        }
         for x in 0..row_w {
             plane[dst_row + x] = base.rgba[(src_row + x) * 4 + 3];
         }
@@ -136,7 +174,9 @@ fn capture_base_alpha(
 
 /// Multiply every pixel's alpha in `group` by the corresponding base-alpha sample.
 fn apply_base_alpha_mask(group: &mut [u8], base_alpha: &[u8]) {
-    debug_assert_eq!(group.len(), base_alpha.len() * 4);
+    if group.len() != base_alpha.len().saturating_mul(4) {
+        return;
+    }
     for (px, &mask) in group.chunks_exact_mut(4).zip(base_alpha.iter()) {
         if mask == 0 {
             px[0] = 0;

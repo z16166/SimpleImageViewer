@@ -335,6 +335,9 @@ fn prefix_sum_u8_inplace(row: &mut [u8]) {
 
 #[inline]
 fn prefix_sum_u8_scalar(row: &mut [u8]) {
+    if row.is_empty() {
+        return;
+    }
     let mut acc = row[0];
     for px in row.iter_mut().skip(1) {
         acc = acc.wrapping_add(*px);
@@ -404,20 +407,10 @@ unsafe fn prefix_sum_u8_avx2(row: &mut [u8]) {
         }
         i += PREFIX_SUM_AVX2_BYTES;
     }
-    if i + PREFIX_SUM_SSE_BYTES <= n {
-        // Reuse SSE path for the remainder with current carry -- fall back to scalar
-        // from here so carry stays correct without re-entering a fresh SSE carry=0.
-        while i < n {
-            carry = carry.wrapping_add(row[i]);
-            row[i] = carry;
-            i += 1;
-        }
-    } else {
-        while i < n {
-            carry = carry.wrapping_add(row[i]);
-            row[i] = carry;
-            i += 1;
-        }
+    while i < n {
+        carry = carry.wrapping_add(row[i]);
+        row[i] = carry;
+        i += 1;
     }
 }
 

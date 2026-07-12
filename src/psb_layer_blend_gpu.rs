@@ -1025,10 +1025,12 @@ fn blend_layers_gpu_inner(
                         zeros,
                     )?);
                 }
-                let group_view = &materialized_group
-                    .as_ref()
-                    .expect("clip group materialized before clip blend")
-                    .group_view;
+                let Some(group) = materialized_group.as_ref() else {
+                    return Err("PSD/PSB GPU clip group missing before clip blend"
+                        .to_string()
+                        .into());
+                };
+                let group_view = &group.group_view;
                 encode_blend_decoded_layer(
                     device,
                     queue,
