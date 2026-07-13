@@ -365,14 +365,23 @@ impl ImageViewerApp {
             }
         }
         let view_data = view.load();
-        let list_keyboard_active = list
+        let (list_keyboard_active, folder_tree_keyboard_active) = list
             .try_lock()
-            .map(|guard| guard.image_list_keyboard_active)
-            .unwrap_or(false);
+            .map(|guard| {
+                (
+                    guard.image_list_keyboard_active,
+                    guard.folder_tree_keyboard_active,
+                )
+            })
+            .unwrap_or((false, false));
         let Some(mut chrome_guard) = chrome.try_lock() else {
             return false;
         };
-        chrome_guard.begin_paint_frame(&view_data, list_keyboard_active);
+        chrome_guard.begin_paint_frame(
+            &view_data,
+            list_keyboard_active,
+            folder_tree_keyboard_active,
+        );
         draw_directory_tree_window(
             ui,
             super::ui::DirectoryTreeDrawParams {
@@ -836,9 +845,10 @@ impl ImageViewerApp {
             let loaded_namespace = result.namespace_path.clone();
             // Capture scroll intent before reveal_selected_namespace(); only re-request scroll when
             // a reveal/show/reveal-in-progress already set the flag (not for unrelated expands).
-            let (requests, pending_folder_scroll, folder_repaint) = {
+            let (requests, pending_select, pending_folder_scroll, folder_repaint) = {
                 let mut tree = self.directory_tree.tree.lock();
                 tree.apply_children_result(result);
+                let pending_select = tree.take_pending_first_child_selection(&loaded_namespace);
                 let pending_folder_scroll = tree.scroll_folder_tree_to_selected;
                 let folder_repaint = super::visibility::folder_children_load_affects_visible(
                     &tree,
@@ -848,10 +858,24 @@ impl ImageViewerApp {
                     .saved_directory_tree_selection_dir()
                     .map(|dir| tree.children_requests_for_selection(&dir))
                     .unwrap_or_else(|| tree.reveal_selected_namespace());
-                (requests, pending_folder_scroll, folder_repaint)
+                (
+                    requests,
+                    pending_select,
+                    pending_folder_scroll,
+                    folder_repaint,
+                )
             };
             for request in requests {
                 self.send_directory_tree_children_request(request);
+            }
+            if let Some((namespace_path, fs_path)) = pending_select {
+                super::send_directory_tree_command(
+                    &self.directory_tree.command_tx,
+                    DirectoryTreeCommand::SelectDirectory {
+                        namespace_path,
+                        fs_path,
+                    },
+                );
             }
             if pending_folder_scroll {
                 self.request_directory_tree_folder_scroll_to_selected();
@@ -921,6 +945,7 @@ impl ImageViewerApp {
                         let mut list = self.directory_tree.list.lock();
                         tree.set_selected_namespace_node(namespace_path.clone(), fs_path.clone());
                         list.image_list_keyboard_active = false;
+                        list.folder_tree_keyboard_active = true;
                         // Drop stale rows immediately so deferred list sync cannot flash the
                         // previous folder's header before the empty-folder message appears.
                         list.image_rows.clear();
@@ -935,6 +960,11 @@ impl ImageViewerApp {
                             self.send_directory_tree_children_request(request);
                         }
                     }
+                    self.request_directory_tree_folder_scroll_to_selected();
+                    if let Some(mut chrome) = self.directory_tree.chrome.try_lock() {
+                        chrome.image_list_keyboard_active = false;
+                        chrome.folder_tree_keyboard_active = true;
+                    }
                     self.load_directory(fs_path);
                     self.queue_save();
                     self.wake_root_for_logic();
@@ -944,6 +974,33 @@ impl ImageViewerApp {
                     let request = self.directory_tree.tree.lock().toggle_expanded(&path);
                     if let Some(request) = request {
                         self.send_directory_tree_children_request(request);
+                    }
+                    ctx.request_repaint();
+                }
+                DirectoryTreeCommand::RefreshChildren(path) => {
+                    let request = self.directory_tree.tree.lock().refresh_children(&path);
+                    if let Some(request) = request {
+                        self.send_directory_tree_children_request(request);
+                    }
+                    self.request_directory_tree_folder_scroll_to_selected();
+                    ctx.request_repaint();
+                }
+                DirectoryTreeCommand::ExpandTowardFirstChild(path) => {
+                    let (request, pending_select) = {
+                        let mut tree = self.directory_tree.tree.lock();
+                        tree.begin_expand_toward_first_child(&path)
+                    };
+                    if let Some(request) = request {
+                        self.send_directory_tree_children_request(request);
+                    }
+                    if let Some((namespace_path, fs_path)) = pending_select {
+                        super::send_directory_tree_command(
+                            &self.directory_tree.command_tx,
+                            DirectoryTreeCommand::SelectDirectory {
+                                namespace_path,
+                                fs_path,
+                            },
+                        );
                     }
                     ctx.request_repaint();
                 }
@@ -965,7 +1022,12 @@ impl ImageViewerApp {
                     self.pending_directory_tree_select_index = Some(file_index);
                     list.current_index = row_index;
                     list.scroll_image_list_to_current = true;
+                    list.folder_tree_keyboard_active = false;
                     list.mark_snapshot_dirty();
+                    drop(list);
+                    if let Some(mut chrome) = self.directory_tree.chrome.try_lock() {
+                        chrome.folder_tree_keyboard_active = false;
+                    }
                     ctx.request_repaint();
                     self.request_directory_tree_viewport_repaint(ctx);
                 }
@@ -989,7 +1051,11 @@ impl ImageViewerApp {
                     }
                     list.current_index = row_index;
                     list.scroll_image_list_to_current = true;
+                    list.folder_tree_keyboard_active = false;
                     drop(list);
+                    if let Some(mut chrome) = self.directory_tree.chrome.try_lock() {
+                        chrome.folder_tree_keyboard_active = false;
+                    }
                     // Session-only hide: keep show_directory_tree_nav persisted so Ctrl+T /
                     // Settings can restore the panel without rewriting yaml.
                     self.auto_hide_directory_tree_nav_for_single_image_open(ctx);
@@ -1156,7 +1222,7 @@ impl ImageViewerApp {
         self.directory_tree
             .list
             .try_lock()
-            .is_some_and(|list| list.image_list_keyboard_active)
+            .is_some_and(|list| list.image_list_keyboard_active || list.folder_tree_keyboard_active)
     }
 
     pub(crate) fn on_directory_tree_nav_style_changed(
@@ -1599,9 +1665,11 @@ impl ImageViewerApp {
         }
         if let Some(mut list) = self.directory_tree.list.try_lock() {
             list.image_list_keyboard_active = false;
+            list.folder_tree_keyboard_active = false;
         }
         if let Some(mut chrome) = self.directory_tree.chrome.try_lock() {
             chrome.image_list_keyboard_active = false;
+            chrome.folder_tree_keyboard_active = false;
         }
     }
 

@@ -162,6 +162,8 @@ pub(crate) enum DirectoryTreeCommand {
         fs_path: PathBuf,
     },
     ToggleExpanded(PathBuf),
+    RefreshChildren(PathBuf),
+    ExpandTowardFirstChild(PathBuf),
     SelectImage(usize),
     SelectImageAndHideNav(usize),
     SortImageList(ImageListSortColumn),
@@ -933,6 +935,94 @@ impl DirectoryTreeTreeState {
         ))
     }
 
+    pub(crate) fn refresh_children(&mut self, path: &Path) -> Option<DirectoryChildrenRequest> {
+        let node = self.nodes.get_mut(path)?;
+        node.expanded = true;
+        node.children_loaded = false;
+        node.loading = true;
+        node.error = None;
+        node.children.clear();
+        let fs_path = node.fs_path.clone();
+        self.scroll_folder_tree_to_selected = true;
+        self.mark_snapshot_dirty();
+        Some(children_request(
+            path.to_path_buf(),
+            fs_path,
+            self.generation,
+        ))
+    }
+
+    pub(crate) fn set_pending_select_first_child(&mut self, path: PathBuf) {
+        self.pending_select_first_child_of = Some(path);
+        self.mark_snapshot_dirty();
+    }
+
+    pub(crate) fn clear_pending_select_first_child(&mut self) {
+        if self.pending_select_first_child_of.take().is_some() {
+            self.mark_snapshot_dirty();
+        }
+    }
+
+    /// Start ExpandTowardFirstChild: set pending, then either queue a load or select immediately.
+    ///
+    /// When expand returns None because a load is already in flight, pending is kept so the
+    /// children-result handler can select the first child after the load completes.
+    pub(crate) fn begin_expand_toward_first_child(
+        &mut self,
+        path: &Path,
+    ) -> (Option<DirectoryChildrenRequest>, Option<(PathBuf, PathBuf)>) {
+        self.set_pending_select_first_child(path.to_path_buf());
+        match self.expand_namespace_node(path) {
+            Some(request) => (Some(request), None),
+            None if self
+                .nodes
+                .get(path)
+                .is_some_and(|node| node.loading && !node.children_loaded) =>
+            {
+                (None, None)
+            }
+            None => (None, self.take_pending_first_child_selection(path)),
+        }
+    }
+
+    /// Consume a deferred first-child selection once its matching namespace finishes loading.
+    pub(crate) fn take_pending_first_child_selection(
+        &mut self,
+        loaded_namespace: &Path,
+    ) -> Option<(PathBuf, PathBuf)> {
+        let pending_matches = self
+            .pending_select_first_child_of
+            .as_ref()
+            .is_some_and(|pending| pending.as_os_str() == loaded_namespace.as_os_str());
+        if !pending_matches {
+            return None;
+        }
+        let still_selected = self
+            .selected_namespace_path
+            .as_ref()
+            .is_some_and(|selected| selected.as_os_str() == loaded_namespace.as_os_str());
+        if !still_selected {
+            self.clear_pending_select_first_child();
+            return None;
+        }
+        let first_child = self
+            .nodes
+            .get(loaded_namespace)
+            .and_then(|node| node.children.first())
+            .cloned();
+        self.clear_pending_select_first_child();
+        let first_child = first_child?;
+        if is_places_sentinel_namespace_path(&first_child) {
+            return None;
+        }
+        let fs_path = self
+            .nodes
+            .get(&first_child)
+            .map(|node| node.fs_path.clone())
+            .unwrap_or_else(|| first_child.clone());
+        Some((first_child, fs_path))
+    }
+
     pub(crate) fn expand_namespace_node_for_fs_path(
         &mut self,
         dir: &Path,
@@ -1012,6 +1102,13 @@ impl DirectoryTreeTreeState {
 
     pub(crate) fn set_selected_namespace_node(&mut self, namespace_path: PathBuf, dir: PathBuf) {
         let namespace_path = namespace::normalize_tree_namespace_path(namespace_path);
+        if self
+            .pending_select_first_child_of
+            .as_ref()
+            .is_some_and(|pending| pending.as_os_str() != namespace_path.as_os_str())
+        {
+            self.pending_select_first_child_of = None;
+        }
         if is_unc_path(&dir) {
             self.ensure_network_visible();
             if let Some(share_root) = unc_share_root(&dir) {
@@ -1760,6 +1857,7 @@ impl DirectoryTreeTreeState {
 }
 
 mod app;
+mod keyboard_nav;
 mod namespace;
 mod node_store;
 mod sort;

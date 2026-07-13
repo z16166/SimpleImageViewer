@@ -51,6 +51,8 @@ pub(crate) struct DirectoryTreeTreeState {
     pub(crate) selected_fs_path: Option<PathBuf>,
     /// Tree-node key last selected in the folder pane (distinct from [`selected_fs_path`] when aliases share a path).
     pub(crate) selected_namespace_path: Option<PathBuf>,
+    /// Namespace node awaiting selection of its first child after an asynchronous load.
+    pub(crate) pending_select_first_child_of: Option<PathBuf>,
     pub(crate) nodes: node_store::DirectoryTreeNodeArena,
     pub(crate) generation: u64,
     pub(crate) folder_scroll_offset_y: f32,
@@ -79,6 +81,7 @@ impl Default for DirectoryTreeTreeState {
             network_share_roots: HashSet::new(),
             selected_fs_path: None,
             selected_namespace_path: None,
+            pending_select_first_child_of: None,
             nodes: node_store::DirectoryTreeNodeArena::default(),
             generation: 0,
             folder_scroll_offset_y: 0.0,
@@ -111,6 +114,7 @@ pub(crate) struct DirectoryTreeListState {
     pub(crate) scroll_image_list_to_current: bool,
     pub(crate) image_list_scroll_offset_y: f32,
     pub(crate) image_list_keyboard_active: bool,
+    pub(crate) folder_tree_keyboard_active: bool,
     pub(crate) image_list_visible_row_range: Option<(usize, usize)>,
     pub(crate) image_list_col_size_w: f32,
     pub(crate) image_list_col_modified_w: f32,
@@ -142,6 +146,7 @@ impl Default for DirectoryTreeListState {
             scroll_image_list_to_current: false,
             image_list_scroll_offset_y: 0.0,
             image_list_keyboard_active: false,
+            folder_tree_keyboard_active: false,
             image_list_visible_row_range: None,
             image_list_col_size_w: DIRECTORY_TREE_COL_SIZE_WIDTH,
             image_list_col_modified_w: DIRECTORY_TREE_COL_MODIFIED_WIDTH,
