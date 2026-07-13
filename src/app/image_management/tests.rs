@@ -587,6 +587,24 @@ fn current_image_load_guard_treats_hdr_tiled_source_as_loaded() {
 }
 
 #[test]
+fn has_loaded_asset_treats_prefetched_tiles_as_loaded() {
+    let source = Arc::new(DummyTiledSource {
+        width: 11811,
+        height: 11811,
+    });
+    let mut app = make_test_app();
+    assert!(!app.has_loaded_asset(1));
+    app.prefetched_tiles.insert(
+        1,
+        TileManager::with_source(1, crate::loader::decode_profile_stub(), source),
+    );
+    assert!(
+        app.has_loaded_asset(1),
+        "async PSD install into prefetched_tiles must stop preload respawn"
+    );
+}
+
+#[test]
 fn hdr_fallback_texture_without_hdr_plane_is_not_loaded_asset() {
     assert!(hdr_fallback_asset_is_loaded(false, false));
     assert!(hdr_fallback_asset_is_loaded(true, true));
@@ -991,6 +1009,129 @@ fn strip_skip_slow_allows_neighbors_when_current_main_loader_failed() {
 }
 
 #[test]
+fn install_image_error_persists_and_surfaces_when_not_current() {
+    let mut app = make_test_app();
+    app.image_files = vec![PathBuf::from("a.psd"), PathBuf::from("b.psd")];
+    app.current_index = 0;
+    app.record_installed_display_mode(1, crate::loader::RenderShape::Tiled);
+    app.directory_tree_strip_tiled_attempted.insert(1);
+
+    app.install_image_error(1, "hidden by the designer");
+
+    assert!(app.main_loader_failed_indices.contains(&1));
+    assert_eq!(
+        app.main_loader_failed_errors.get(&1).map(String::as_str),
+        Some("hidden by the designer")
+    );
+    assert!(
+        app.error_message.is_none(),
+        "non-current fail must not clobber current UI"
+    );
+    assert_eq!(app.installed_display_mode(1), None);
+    assert!(!app.directory_tree_strip_tiled_attempted.contains(&1));
+
+    app.current_index = 1;
+    app.surface_main_loader_failure_for_current();
+    let msg = app
+        .error_message
+        .as_deref()
+        .expect("failed index should surface error");
+    assert!(msg.contains("hidden by the designer"));
+
+    app.note_main_loader_install_success(1);
+    assert!(!app.main_loader_failed_indices.contains(&1));
+    assert!(!app.main_loader_failed_errors.contains_key(&1));
+}
+
+#[test]
+fn install_image_error_sets_message_when_current() {
+    let mut app = make_test_app();
+    app.image_files = vec![PathBuf::from("a.psd")];
+    app.current_index = 0;
+
+    app.install_image_error(0, "no displayable image");
+
+    let msg = app
+        .error_message
+        .as_deref()
+        .expect("current fail should set error_message");
+    assert!(msg.contains("no displayable image"));
+    assert!(app.main_loader_failed_indices.contains(&0));
+}
+
+#[test]
+fn reload_current_does_not_reload_psd_only_directory() {
+    let mut app = make_test_app();
+    set_test_image_files(&mut app, &["a.psd"]);
+    app.current_index = 0;
+    app.error_message = Some("load failed".into());
+    app.main_loader_failed_indices.insert(0);
+
+    app.reload_current();
+
+    assert!(
+        !app.loader.is_loading(0),
+        "reload_current is RAW-only and must not start a PSD reload"
+    );
+    assert!(app.error_message.is_some());
+    assert!(app.main_loader_failed_indices.contains(&0));
+}
+
+#[test]
+fn psd_hidden_layer_strategy_change_reloads_failed_current_psd() {
+    let mut app = make_test_app();
+    set_test_image_files(&mut app, &["a.psd", "b.jpg"]);
+    app.current_index = 0;
+    app.error_message = Some("load failed".into());
+    app.main_loader_failed_indices.insert(0);
+    app.main_loader_failed_errors
+        .insert(0, "all layers hidden".into());
+    app.settings.psd_hidden_layer_strategy = crate::settings::PsdHiddenLayerStrategy::ShowAllLayers;
+
+    app.reload_after_psd_hidden_layer_strategy_change();
+
+    assert!(
+        app.loader.is_loading(0),
+        "changing the PSD hidden-layer strategy must re-request the current PSD"
+    );
+    assert!(
+        app.error_message.is_none(),
+        "stale load error must clear so the canvas can show the new decode"
+    );
+    assert!(
+        !app.main_loader_failed_indices.contains(&0),
+        "failed mark must clear or schedule_preloads will refuse to retry"
+    );
+}
+
+#[test]
+fn navigate_back_to_failed_index_retries_load() {
+    let mut app = make_test_app();
+    set_test_image_files(&mut app, &["a.jpg", "b.jpg"]);
+    app.current_index = 0;
+    app.main_loader_failed_indices.insert(1);
+    app.main_loader_failed_errors
+        .insert(1, "transient oom".into());
+
+    let ctx = egui::Context::default();
+    app.navigate_to(1, &ctx);
+
+    assert_eq!(app.current_index, 1);
+    assert!(
+        !app.main_loader_failed_indices.contains(&1),
+        "re-navigation must clear the permanent gate so transient failures can retry"
+    );
+    assert!(
+        app.loader.is_loading(1),
+        "re-navigation to a failed index must request_load again"
+    );
+    assert!(
+        app.error_message.is_none(),
+        "retry clears the stale error until a new failure arrives"
+    );
+}
+
+#[test]
 fn strip_skip_slow_defers_neighbors_while_current_main_in_flight() {
     let mut app = make_test_app();
     app.settings.preload = true;
@@ -1002,6 +1143,7 @@ fn strip_skip_slow_defers_neighbors_while_current_main_in_flight() {
         app.image_files[0].clone(),
         app.settings.raw_high_quality,
         app.settings.raw_demosaic_mode,
+        app.settings.psd_hidden_layer_strategy,
     );
 
     assert!(
@@ -1021,6 +1163,7 @@ fn strip_cold_defers_current_index_while_main_loader_in_flight() {
         app.image_files[0].clone(),
         app.settings.raw_high_quality,
         app.settings.raw_demosaic_mode,
+        app.settings.psd_hidden_layer_strategy,
     );
 
     assert!(
@@ -1041,6 +1184,7 @@ fn strip_neighbor_not_deferred_for_current_main_when_no_embedded_sdr_share() {
         app.image_files[0].clone(),
         app.settings.raw_high_quality,
         app.settings.raw_demosaic_mode,
+        app.settings.psd_hidden_layer_strategy,
     );
 
     assert!(
@@ -1070,6 +1214,7 @@ fn directory_tree_list_sort_restarts_current_main_loader_after_permute() {
         app.image_files[0].clone(),
         app.settings.raw_high_quality,
         app.settings.raw_demosaic_mode,
+        app.settings.psd_hidden_layer_strategy,
     );
     assert!(app.loader.is_loading(0));
 
@@ -2010,6 +2155,7 @@ fn hdr_load_result_capacity_is_stale_when_sensitive_hdr_mismatch() {
         sdr_fallback_is_placeholder: false,
         target_hdr_capacity: 1.0,
         raw_osd: None,
+        psd_osd: None,
         uploaded_planes: None,
         staged_gpu_plane_upload: false,
         device_id: None,
@@ -2040,6 +2186,7 @@ fn hdr_load_result_capacity_is_stale_ignores_hq_raw_scene_linear() {
         sdr_fallback_is_placeholder: false,
         target_hdr_capacity: 3.478,
         raw_osd: Some(crate::loader::RawOsdInfo::empty()),
+        psd_osd: None,
         uploaded_planes: None,
         staged_gpu_plane_upload: false,
         device_id: None,
@@ -2069,6 +2216,7 @@ fn hdr_load_result_capacity_is_stale_ignores_non_sensitive_loads() {
         sdr_fallback_is_placeholder: false,
         target_hdr_capacity: 1.0,
         raw_osd: None,
+        psd_osd: None,
         uploaded_planes: None,
         staged_gpu_plane_upload: false,
         device_id: None,
@@ -2298,6 +2446,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         hdr_raw_gpu_demosaic_pending_key_index: HashMap::new(),
         gpu_demosaic_failed_indices: HashSet::new(),
         main_loader_failed_indices: HashSet::new(),
+        main_loader_failed_errors: HashMap::new(),
         raw_gpu_demosaic_await_hdr_present: false,
         raw_gpu_embedded_bootstrap_indices: HashSet::new(),
         hdr_register_prewarm_repush_counts: HashMap::new(),
@@ -2340,6 +2489,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         directory_tree_strip_pending_main_handoff: std::collections::HashMap::new(),
         directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
         directory_tree_strip_inflight_tokens: std::collections::HashMap::new(),
+        directory_tree_strip_inflight_cancel: std::collections::HashMap::new(),
         directory_tree_strip_next_job_token: 0,
         directory_tree_strip_static_full_decode_inflight: std::collections::HashSet::new(),
         directory_tree_strip_preview_tx: {
@@ -2394,6 +2544,7 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         current_image_res: None,
         canvas_display_timing: crate::preload_debug::CanvasDisplayTiming::default(),
         raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
+        psd_osd: crate::app::view_status::PsdOsdStore::new(osd_event_tx.clone()),
         image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
         current_file_name: String::new(),
         cached_keyboard_hint: rust_i18n::t!("hint.keyboard").to_string(),
@@ -2608,6 +2759,62 @@ fn relocate_index_keyed_cache_moves_raw_osd_info() {
 
     assert!(!app.raw_metadata.contains_key(2));
     assert!(app.raw_metadata.contains_key(0));
+}
+
+#[test]
+fn relocate_index_keyed_cache_moves_psd_osd_info() {
+    let mut app = make_test_app();
+    app.psd_osd
+        .set_for_index(2, Some(crate::loader::PsdOsdInfo::p2_strict()));
+
+    app.relocate_index_keyed_cache(2, 0, true);
+
+    assert!(!app.psd_osd.contains_key(2));
+    assert!(app.psd_osd.contains_key(0));
+}
+
+#[test]
+fn psd_osd_survives_cache_hit_navigation_away_and_back() {
+    let mut app = make_test_app();
+    app.image_files = vec![
+        PathBuf::from("a.psd"),
+        PathBuf::from("b.jpg"),
+        PathBuf::from("c.psd"),
+    ];
+    app.current_index = 0;
+    app.psd_osd.set_current_index(0);
+    app.psd_osd
+        .set_for_index(0, Some(crate::loader::PsdOsdInfo::p1_flattened()));
+    app.psd_osd
+        .set_for_index(2, Some(crate::loader::PsdOsdInfo::p2_strict()));
+    app.osd.sync_events();
+    assert!(
+        app.osd.has_psd_line(),
+        "current PSD must show OSD after install"
+    );
+
+    // Simulate navigating to a non-PSD cache hit: only index sync, no reinstall.
+    app.set_current_index(1);
+    app.osd.sync_events();
+    assert!(
+        !app.osd.has_psd_line(),
+        "non-PSD current image must clear PSD OSD line"
+    );
+
+    // Navigate back to the already-decoded PSD without reinstalling.
+    app.set_current_index(0);
+    app.osd.sync_events();
+    assert!(
+        app.osd.has_psd_line(),
+        "cache-hit return to PSD must restore OSD line"
+    );
+
+    app.set_current_index(2);
+    app.osd.sync_events();
+    assert!(
+        app.osd.has_psd_line(),
+        "navigating to another prefetched PSD must show its OSD"
+    );
 }
 
 #[test]
@@ -3209,12 +3416,13 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
             index: 0,
             decode_profile,
             source_key,
-            result: Err("synthetic cpu fallback complete".to_string()),
+            result: Err("synthetic cpu fallback complete".into()),
             preview_bundle: PreviewBundle::initial(),
             ultra_hdr_capacity_sensitive: false,
             sdr_fallback_is_placeholder: false,
             target_hdr_capacity: 1.0,
             raw_osd: None,
+            psd_osd: None,
             uploaded_planes: None,
             staged_gpu_plane_upload: false,
             device_id: None,
@@ -3283,6 +3491,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
             sdr_fallback_is_placeholder: false,
             target_hdr_capacity: 1.0,
             raw_osd: None,
+            psd_osd: None,
             uploaded_planes: Some(uploaded),
             staged_gpu_plane_upload: true,
             device_id: Some(999),
@@ -3323,6 +3532,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
             sdr_fallback_is_placeholder: false,
             target_hdr_capacity: 1.0,
             raw_osd: None,
+            psd_osd: None,
             uploaded_planes: Some(uploaded),
             staged_gpu_plane_upload: true,
             device_id: Some(app.current_device_id),

@@ -18,11 +18,193 @@
 
 use std::path::{Path, PathBuf};
 
+use super::support::{TiledThresholdOverride, lock_tiled_threshold_for_test};
 use crate::loader::ImageData;
 use crate::loader::decode::modern::{
     is_avif_path, is_hdr_capable_modern_format_path, is_heif_path, is_jxl_path,
 };
 use crate::loader::decode::raster::load_psd;
+
+fn craft_rgb8_raw_psd(width: u32, height: u32) -> Vec<u8> {
+    let pixel_count = (width * height) as usize;
+    let mut planar = vec![0u8; pixel_count * 3];
+    for (i, b) in planar.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(3).wrapping_add(7);
+    }
+    craft_rgb8_raw_document(1, width, height, &planar)
+}
+
+/// PSB (version 2) with raw RGB Image Data. Layer/mask length is u64.
+fn craft_rgb8_raw_psb(width: u32, height: u32, planar: &[u8]) -> Vec<u8> {
+    craft_rgb8_raw_document(2, width, height, planar)
+}
+
+fn craft_rgb8_raw_document(version: u16, width: u32, height: u32, planar: &[u8]) -> Vec<u8> {
+    assert!(version == 1 || version == 2);
+    assert_eq!(planar.len(), (width * height * 3) as usize);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"8BPS");
+    bytes.extend_from_slice(&version.to_be_bytes());
+    bytes.extend_from_slice(&[0u8; 6]);
+    bytes.extend_from_slice(&3u16.to_be_bytes());
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&8u16.to_be_bytes());
+    bytes.extend_from_slice(&3u16.to_be_bytes());
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    if version == 2 {
+        bytes.extend_from_slice(&0u64.to_be_bytes());
+    } else {
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+    }
+    bytes.extend_from_slice(&0u16.to_be_bytes()); // raw
+    bytes.extend_from_slice(planar);
+    bytes
+}
+
+fn write_temp_psd(bytes: &[u8]) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "siv_psd_route_{}_{}.psd",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&path, bytes).expect("write temp psd");
+    path
+}
+
+#[test]
+fn load_psd_small_decoded_routes_to_static() {
+    let _lock = lock_tiled_threshold_for_test();
+    let path = write_temp_psd(&craft_rgb8_raw_psd(4, 2));
+    let (data, _osd) = load_psd(
+        &path,
+        crate::loader::DecodeCancelFlag::new(),
+        None,
+        1.0,
+        crate::hdr::types::HdrToneMapSettings::default(),
+        crate::settings::PsdHiddenLayerStrategy::Heuristic,
+    )
+    .unwrap_or_else(|e| panic!("load_psd: {e}"));
+    let _ = std::fs::remove_file(&path);
+    match data {
+        ImageData::Static(img) => {
+            assert_eq!((img.width, img.height), (4, 2));
+            assert_eq!(img.rgba().len(), 4 * 2 * 4);
+        }
+        other => panic!(
+            "expected Static for small PSD, got discriminant {:?}",
+            std::mem::discriminant(&other)
+        ),
+    }
+}
+
+#[test]
+fn load_psd_routes_to_memory_tiled_when_under_low_threshold() {
+    let _lock = lock_tiled_threshold_for_test();
+    let _threshold = TiledThresholdOverride::set(1);
+    let path = write_temp_psd(&craft_rgb8_raw_psd(4, 2));
+    let (data, _osd) = load_psd(
+        &path,
+        crate::loader::DecodeCancelFlag::new(),
+        None,
+        1.0,
+        crate::hdr::types::HdrToneMapSettings::default(),
+        crate::settings::PsdHiddenLayerStrategy::Heuristic,
+    )
+    .unwrap_or_else(|e| panic!("load_psd: {e}"));
+    let _ = std::fs::remove_file(&path);
+    match data {
+        ImageData::Tiled(src) => {
+            assert_eq!((src.width(), src.height()), (4, 2));
+            let px = src.full_pixels().expect("memory tiled has full pixels");
+            assert_eq!(px.len(), 4 * 2 * 4);
+        }
+        other => panic!(
+            "expected Tiled under 1px threshold, got discriminant {:?}",
+            std::mem::discriminant(&other)
+        ),
+    }
+}
+
+#[test]
+fn load_psb_disk_tiled_keeps_nonblank_flat() {
+    // Header over tiled threshold forces PSB disk tiling; non-blank flat must stay tiled.
+    let _lock = lock_tiled_threshold_for_test();
+    let _threshold = TiledThresholdOverride::set(1);
+    let mut planar = vec![0u8; 4 * 2 * 3];
+    planar[0] = 12;
+    planar[8] = 34;
+    planar[16] = 56;
+    let path = write_temp_psd(&craft_rgb8_raw_psb(4, 2, &planar));
+    let (data, _osd) = load_psd(
+        &path,
+        crate::loader::DecodeCancelFlag::new(),
+        None,
+        1.0,
+        crate::hdr::types::HdrToneMapSettings::default(),
+        crate::settings::PsdHiddenLayerStrategy::Heuristic,
+    )
+    .unwrap_or_else(|e| panic!("load_psd: {e}"));
+    let _ = std::fs::remove_file(&path);
+    match data {
+        ImageData::Tiled(src) => {
+            assert_eq!((src.width(), src.height()), (4, 2));
+            assert!(
+                src.full_pixels().is_none(),
+                "disk tiled PSB must not materialize full pixels"
+            );
+            let tile = src.extract_tile(0, 0, 4, 2);
+            assert!(
+                tile.iter().any(|&b| b != 0),
+                "non-blank flat must yield visible tile pixels"
+            );
+        }
+        other => panic!(
+            "expected disk Tiled for non-blank oversized PSB, got {:?}",
+            std::mem::discriminant(&other)
+        ),
+    }
+}
+
+#[test]
+fn load_psb_disk_tiled_blank_flat_degrades_off_blank_tiled() {
+    // Layers-only / blank-flat oversized PSB must not stick on blank disk tiling.
+    // With no layers and no IR thumb, P2/P3 fail -- that is preferable to forever-blank tiles.
+    let _lock = lock_tiled_threshold_for_test();
+    let _threshold = TiledThresholdOverride::set(1);
+    let planar = vec![0u8; 4 * 2 * 3];
+    let path = write_temp_psd(&craft_rgb8_raw_psb(4, 2, &planar));
+    let result = load_psd(
+        &path,
+        crate::loader::DecodeCancelFlag::new(),
+        None,
+        1.0,
+        crate::hdr::types::HdrToneMapSettings::default(),
+        crate::settings::PsdHiddenLayerStrategy::Heuristic,
+    );
+    let _ = std::fs::remove_file(&path);
+    let err = match result {
+        Err(e) => e,
+        Ok((ImageData::Tiled(src), _osd)) => {
+            let tile = src.extract_tile(0, 0, 4, 2);
+            let blank = tile
+                .chunks_exact(4)
+                .all(|p| (p[0] | p[1] | p[2]) == 0 || p[3] == 0);
+            panic!("blank-flat oversized PSB must not succeed as blank tiled (tile_blank={blank})");
+        }
+        Ok(_) => panic!("blank-flat oversized PSB must not succeed without P2/P3 content"),
+    };
+    let expected_no_image = rust_i18n::t!("error.psd_no_displayable_image").to_string();
+    let expected_hidden = rust_i18n::t!("error.psd_all_layers_hidden").to_string();
+    assert!(
+        err.as_str() == expected_no_image || err.as_str() == expected_hidden,
+        "unexpected degrade error: {err}"
+    );
+}
 
 #[test]
 fn modern_hdr_format_path_helpers_detect_supported_extensions() {
@@ -35,12 +217,12 @@ fn modern_hdr_format_path_helpers_detect_supported_extensions() {
 }
 
 /// Set `SIV_PSD_SAMPLES_DIR` to a folder that contains `colors.psd` and `seine.psd`
-/// (for example `libavif/tests/data/sources` inside a libavif source checkout) to regression-test the `psd` crate composite
-/// path: it must not unwind (historical `psd_channel` index OOB panics).
+/// (for example `libavif/tests/data/sources` inside a libavif source checkout) to regression-test
+/// the self-written PSD composite path (16/32-bit RGB).
 ///
 /// When the variable is unset or files are missing, this test is a no-op so CI stays green.
 #[test]
-fn optional_psd_libavif_sources_load_without_panic() {
+fn optional_psd_libavif_sources_decode_to_pixels() {
     let Some(dir) = std::env::var("SIV_PSD_SAMPLES_DIR")
         .ok()
         .filter(|p| Path::new(p).is_dir())
@@ -53,26 +235,99 @@ fn optional_psd_libavif_sources_load_without_panic() {
         if !path.is_file() {
             continue;
         }
-        let outcome =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load_psd(&path, None)));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            load_psd(
+                &path,
+                crate::loader::DecodeCancelFlag::new(),
+                None,
+                1.0,
+                crate::hdr::types::HdrToneMapSettings::default(),
+                crate::settings::PsdHiddenLayerStrategy::Heuristic,
+            )
+        }));
         assert!(
             outcome.is_ok(),
             "load_psd must not panic for {}",
             path.display()
         );
-        match outcome.unwrap() {
-            Ok(data) => match &data {
-                ImageData::Static(img) => {
-                    assert!(img.width > 0 && img.height > 0, "{name}: static dims");
-                }
-                ImageData::Tiled(src) => {
-                    assert!(src.width() > 0 && src.height() > 0, "{name}: tiled dims");
-                }
-                _ => panic!("{name}: unexpected PSD ImageData shape"),
-            },
-            Err(_msg) => {
-                // OOM guard, `psd` parse error, or composite `Err` after catch_unwind — all OK.
+        let (data, _osd) = outcome
+            .unwrap()
+            .unwrap_or_else(|e| panic!("{name}: load_psd failed: {e}"));
+        match data {
+            ImageData::Static(img) => {
+                assert!(img.width > 0 && img.height > 0, "{name}: static dims");
+                assert!(
+                    !img.rgba().is_empty() || img.width * img.height == 0,
+                    "{name}: empty static pixels"
+                );
             }
+            ImageData::Tiled(src) => {
+                assert!(src.width() > 0 && src.height() > 0, "{name}: tiled dims");
+                src.wait_for_async_pixels(std::time::Duration::from_secs(30))
+                    .unwrap_or_else(|e| panic!("{name}: async decode failed: {e}"));
+                let px = src
+                    .full_pixels()
+                    .unwrap_or_else(|| panic!("{name}: missing full pixels after decode"));
+                assert_eq!(
+                    px.len(),
+                    (src.width() as usize) * (src.height() as usize) * 4,
+                    "{name}: unexpected RGBA length"
+                );
+            }
+            _ => panic!("{name}: unexpected PSD ImageData shape"),
         }
     }
+}
+
+/// Set `SIV_PSD_CMYK_SAMPLES_DIR` to a folder with 8-bit CMYK PSD files to smoke-test CMYK→RGB.
+#[test]
+fn optional_psd_cmyk_samples_decode_to_pixels() {
+    let Some(dir) = std::env::var("SIV_PSD_CMYK_SAMPLES_DIR")
+        .ok()
+        .filter(|p| Path::new(p).is_dir())
+    else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let mut found = false;
+    for entry in std::fs::read_dir(&dir).expect("read CMYK samples dir") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_none_or(|e| !e.eq_ignore_ascii_case("psd"))
+        {
+            continue;
+        }
+        found = true;
+        let (data, _osd) = load_psd(
+            &path,
+            crate::loader::DecodeCancelFlag::new(),
+            None,
+            1.0,
+            crate::hdr::types::HdrToneMapSettings::default(),
+            crate::settings::PsdHiddenLayerStrategy::Heuristic,
+        )
+        .unwrap_or_else(|e| panic!("load_psd failed for {}: {e}", path.display()));
+        match data {
+            ImageData::Tiled(src) => {
+                src.wait_for_async_pixels(std::time::Duration::from_secs(120))
+                    .unwrap_or_else(|e| panic!("{}: async decode failed: {e}", path.display()));
+                let px = src
+                    .full_pixels()
+                    .unwrap_or_else(|| panic!("{}: missing full pixels", path.display()));
+                assert_eq!(
+                    px.len(),
+                    (src.width() as usize) * (src.height() as usize) * 4
+                );
+            }
+            ImageData::Static(img) => {
+                assert!(img.width > 0 && img.height > 0);
+            }
+            _ => panic!("{}: unexpected ImageData", path.display()),
+        }
+        break; // one file is enough for smoke
+    }
+    let _ = found;
 }

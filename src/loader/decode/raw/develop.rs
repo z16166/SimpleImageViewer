@@ -60,6 +60,7 @@ pub(crate) struct FullResolutionRawDevelopRequest<'a> {
     pub(crate) hdr_target_capacity: f32,
     pub(crate) hdr_tone_map: HdrToneMapSettings,
     pub(crate) osd_ctx: &'a RawOsdContext,
+    pub(crate) cancel: &'a crate::loader::DecodeCancelFlag,
 }
 
 pub(crate) fn develop_full_resolution(
@@ -77,6 +78,7 @@ pub(crate) fn develop_full_resolution(
         hdr_target_capacity,
         hdr_tone_map,
         osd_ctx,
+        cancel,
     } = request;
     if area < threshold
         && width <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
@@ -90,7 +92,10 @@ pub(crate) fn develop_full_resolution(
         );
 
         if !hdr_display_requests_sdr_preview(hdr_target_capacity) {
+            // Stage boundary before LibRaw unpack / dcraw_process.
+            crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
             if let Ok((hdr, cpu_ms)) = develop_scene_linear_hdr_timed(processor) {
+                crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
                 let warnings = processor.process_warnings();
                 if warnings != 0 {
                     log::info!(
@@ -128,8 +133,10 @@ pub(crate) fn develop_full_resolution(
             }
         }
 
+        crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
         match processor.develop() {
             Ok(img) => {
+                crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
                 let rgba = img.to_rgba8();
                 let rw = rgba.width();
                 let rh = rgba.height();
@@ -152,7 +159,9 @@ pub(crate) fn develop_full_resolution(
         "[Loader] All fast RAW thumbnail paths failed for {:?}. Falling back to slow development...",
         path.file_name().unwrap_or_default()
     );
+    crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
     let preview = processor.develop()?.to_rgba8().into();
+    crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
     // Performance mode only (`load_raw` with `!high_quality`). Never queue HQ refinement.
     let source = Arc::new(RawImageSource::new(
         path.to_path_buf(),
@@ -196,6 +205,7 @@ pub(crate) fn develop_hq_preview(
     _hdr_target_capacity: f32,
     _hdr_tone_map: HdrToneMapSettings,
     osd_ctx: &RawOsdContext,
+    cancel: &crate::loader::DecodeCancelFlag,
 ) -> Result<RawLoadOutput, String> {
     crate::preload_debug!(
         "[PreloadDebug][RAW] sync HQ develop path={:?} limit={} hdr=true",
@@ -205,7 +215,10 @@ pub(crate) fn develop_hq_preview(
 
     // High-quality RAW preview always uses the scene-linear HDR pipeline
     // to support exposure adjustments and tone mapping consistently.
+    // Stage boundary before LibRaw unpack / dcraw_process.
+    crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
     let (hdr, cpu_ms) = develop_scene_linear_hdr_timed(processor)?;
+    crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
     let (logical_w, logical_h) = processor.developed_output_dimensions();
     let hdr = finalize_raw_hq_hdr_buffer(hdr, logical_w, logical_h)?;
     let fallback = DecodedImage::from_hdr_sdr_fallback(

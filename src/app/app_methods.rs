@@ -118,6 +118,7 @@ impl ImageViewerApp {
         self.current_index = current_index;
         self.image_status.set_current_index(current_index);
         self.raw_metadata.set_current_index(current_index);
+        self.psd_osd.set_current_index(current_index);
     }
 
     pub(crate) fn set_current_image_resolution(&mut self, resolution: Option<(u32, u32)>) {
@@ -144,6 +145,9 @@ impl ImageViewerApp {
                 inset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
             }
             if self.osd.has_raw_line() {
+                inset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
+            }
+            if self.osd.has_psd_line() {
                 inset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
             }
             if self.last_save_error.is_some() {

@@ -91,17 +91,18 @@ fn box_use_per_lane_iteration(x0: &[u32], x1: &[u32], base_x: usize, simd_w: usi
     box_merged_span(x0, x1, base_x, simd_w) > box_max_lane_span(x0, x1, base_x, simd_w)
 }
 
+type BoxLaneAccumulateFn = unsafe fn(&[u8], usize, u32, u32, u32, u32) -> (u64, u64, u64, u64, u64);
+
 #[inline]
-unsafe fn box_accumulate_lane(
+fn debug_assert_box_lane_in_bounds(
     src: &[u8],
     row_stride: usize,
     y0: u32,
     y1: u32,
     lane_x0: u32,
     lane_x1: u32,
-) -> (u64, u64, u64, u64, u64) {
+) {
     // Callers must keep [lane_x0, lane_x1) x [y0, y1) inside the RGBA8 buffer.
-    // Hot path keeps get_unchecked; debug builds catch span regressions.
     if y0 < y1 && lane_x0 < lane_x1 {
         let max_i = (y1 as usize - 1)
             .saturating_mul(row_stride)
@@ -113,6 +114,18 @@ unsafe fn box_accumulate_lane(
             src.len()
         );
     }
+}
+
+#[inline]
+#[cfg(not(target_arch = "aarch64"))]
+unsafe fn box_accumulate_lane_scalar(
+    src: &[u8],
+    row_stride: usize,
+    y0: u32,
+    y1: u32,
+    lane_x0: u32,
+    lane_x1: u32,
+) -> (u64, u64, u64, u64, u64) {
     let mut sum_r = 0_u64;
     let mut sum_g = 0_u64;
     let mut sum_b = 0_u64;
@@ -134,6 +147,181 @@ unsafe fn box_accumulate_lane(
     (sum_r, sum_g, sum_b, sum_a, count)
 }
 
+/// Horizontal sum of eight i32 lanes (AVX2). Caller guarantees non-negative values.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx2")]
+unsafe fn hsum_epi32_avx2(v: __m256i) -> u64 {
+    // Intrinsics are available without nested `unsafe` inside this `#[target_feature]` fn.
+    let hi = _mm256_extracti128_si256::<1>(v);
+    let lo = _mm256_castsi256_si128(v);
+    let sum128 = _mm_add_epi32(lo, hi);
+    let shuf = _mm_shuffle_epi32::<0b11_10_11_10>(sum128);
+    let sum64 = _mm_add_epi32(sum128, shuf);
+    let shuf2 = _mm_shuffle_epi32::<0b01_01_01_01>(sum64);
+    let sum32 = _mm_add_epi32(sum64, shuf2);
+    _mm_cvtsi128_si32(sum32) as u32 as u64
+}
+
+/// Horizontal sum of four i32 lanes (SSE).
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "sse4.1")]
+unsafe fn hsum_epi32_sse41(v: __m128i) -> u64 {
+    let shuf = _mm_shuffle_epi32::<0b11_10_11_10>(v);
+    let sum64 = _mm_add_epi32(v, shuf);
+    let shuf2 = _mm_shuffle_epi32::<0b01_01_01_01>(sum64);
+    let sum32 = _mm_add_epi32(sum64, shuf2);
+    _mm_cvtsi128_si32(sum32) as u32 as u64
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn box_accumulate_lane_avx2(
+    src: &[u8],
+    row_stride: usize,
+    y0: u32,
+    y1: u32,
+    lane_x0: u32,
+    lane_x1: u32,
+) -> (u64, u64, u64, u64, u64) {
+    // SAFETY: AVX2 enabled; caller keeps the span in-bounds.
+    unsafe {
+        let mask8 = _mm256_set1_epi32(0xFF);
+        let mut sum_r = 0_u64;
+        let mut sum_g = 0_u64;
+        let mut sum_b = 0_u64;
+        let mut sum_a = 0_u64;
+        let mut count = 0_u64;
+        let span = lane_x1.saturating_sub(lane_x0) as u64;
+        for sy in y0..y1 {
+            let row_off = sy as usize * row_stride;
+            let mut sx = lane_x0;
+            while sx + 8 <= lane_x1 {
+                let i = row_off + sx as usize * 4;
+                let px = _mm256_loadu_si256(src.as_ptr().add(i) as *const __m256i);
+                let r = _mm256_and_si256(px, mask8);
+                let g = _mm256_and_si256(_mm256_srli_epi32(px, 8), mask8);
+                let b = _mm256_and_si256(_mm256_srli_epi32(px, 16), mask8);
+                let a = _mm256_and_si256(_mm256_srli_epi32(px, 24), mask8);
+                sum_r += hsum_epi32_avx2(r);
+                sum_g += hsum_epi32_avx2(g);
+                sum_b += hsum_epi32_avx2(b);
+                sum_a += hsum_epi32_avx2(a);
+                sx += 8;
+            }
+            while sx < lane_x1 {
+                let i = row_off + sx as usize * 4;
+                sum_r += *src.get_unchecked(i) as u64;
+                sum_g += *src.get_unchecked(i + 1) as u64;
+                sum_b += *src.get_unchecked(i + 2) as u64;
+                sum_a += *src.get_unchecked(i + 3) as u64;
+                sx += 1;
+            }
+            count += span;
+        }
+        (sum_r, sum_g, sum_b, sum_a, count)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn box_accumulate_lane_sse41(
+    src: &[u8],
+    row_stride: usize,
+    y0: u32,
+    y1: u32,
+    lane_x0: u32,
+    lane_x1: u32,
+) -> (u64, u64, u64, u64, u64) {
+    // SAFETY: SSE4.1 enabled; caller keeps the span in-bounds.
+    unsafe {
+        let mask8 = _mm_set1_epi32(0xFF);
+        let mut sum_r = 0_u64;
+        let mut sum_g = 0_u64;
+        let mut sum_b = 0_u64;
+        let mut sum_a = 0_u64;
+        let mut count = 0_u64;
+        let span = lane_x1.saturating_sub(lane_x0) as u64;
+        for sy in y0..y1 {
+            let row_off = sy as usize * row_stride;
+            let mut sx = lane_x0;
+            while sx + 4 <= lane_x1 {
+                let i = row_off + sx as usize * 4;
+                let px = _mm_loadu_si128(src.as_ptr().add(i) as *const __m128i);
+                let r = _mm_and_si128(px, mask8);
+                let g = _mm_and_si128(_mm_srli_epi32(px, 8), mask8);
+                let b = _mm_and_si128(_mm_srli_epi32(px, 16), mask8);
+                let a = _mm_and_si128(_mm_srli_epi32(px, 24), mask8);
+                sum_r += hsum_epi32_sse41(r);
+                sum_g += hsum_epi32_sse41(g);
+                sum_b += hsum_epi32_sse41(b);
+                sum_a += hsum_epi32_sse41(a);
+                sx += 4;
+            }
+            while sx < lane_x1 {
+                let i = row_off + sx as usize * 4;
+                sum_r += *src.get_unchecked(i) as u64;
+                sum_g += *src.get_unchecked(i + 1) as u64;
+                sum_b += *src.get_unchecked(i + 2) as u64;
+                sum_a += *src.get_unchecked(i + 3) as u64;
+                sx += 1;
+            }
+            count += span;
+        }
+        (sum_r, sum_g, sum_b, sum_a, count)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn box_accumulate_lane_neon(
+    src: &[u8],
+    row_stride: usize,
+    y0: u32,
+    y1: u32,
+    lane_x0: u32,
+    lane_x1: u32,
+) -> (u64, u64, u64, u64, u64) {
+    // SAFETY: NEON enabled; caller keeps the span in-bounds.
+    unsafe {
+        let mask8 = vdupq_n_u32(0xFF);
+        let mut sum_r = 0_u64;
+        let mut sum_g = 0_u64;
+        let mut sum_b = 0_u64;
+        let mut sum_a = 0_u64;
+        let mut count = 0_u64;
+        let span = lane_x1.saturating_sub(lane_x0) as u64;
+        for sy in y0..y1 {
+            let row_off = sy as usize * row_stride;
+            let mut sx = lane_x0;
+            while sx + 4 <= lane_x1 {
+                let i = row_off + sx as usize * 4;
+                let px = vld1q_u32(src.as_ptr().add(i) as *const u32);
+                let r = vandq_u32(px, mask8);
+                let g = vandq_u32(vshrq_n_u32(px, 8), mask8);
+                let b = vandq_u32(vshrq_n_u32(px, 16), mask8);
+                let a = vandq_u32(vshrq_n_u32(px, 24), mask8);
+                sum_r += vaddvq_u32(r) as u64;
+                sum_g += vaddvq_u32(g) as u64;
+                sum_b += vaddvq_u32(b) as u64;
+                sum_a += vaddvq_u32(a) as u64;
+                sx += 4;
+            }
+            while sx < lane_x1 {
+                let i = row_off + sx as usize * 4;
+                sum_r += *src.get_unchecked(i) as u64;
+                sum_g += *src.get_unchecked(i + 1) as u64;
+                sum_b += *src.get_unchecked(i + 2) as u64;
+                sum_a += *src.get_unchecked(i + 3) as u64;
+                sx += 1;
+            }
+            count += span;
+        }
+        (sum_r, sum_g, sum_b, sum_a, count)
+    }
+}
+
 /// Inputs for the scalar per-lane fallback shared by SSE4.1 / AVX2 / NEON.
 struct BoxFallbackPerLaneParams<'a> {
     src: &'a [u8],
@@ -150,7 +338,7 @@ struct BoxFallbackPerLaneParams<'a> {
 }
 
 /// Scalar per-lane fallback when the merged X span is wider than the max
-/// individual lane span.
+/// individual lane span. Dispatches horizontal SIMD accumulate once per block.
 #[inline]
 unsafe fn box_fallback_per_lane_block(params: BoxFallbackPerLaneParams<'_>) {
     let BoxFallbackPerLaneParams {
@@ -166,9 +354,26 @@ unsafe fn box_fallback_per_lane_block(params: BoxFallbackPerLaneParams<'_>) {
         dy,
         dst_w_u,
     } = params;
+    #[cfg(target_arch = "x86_64")]
+    let accumulate: BoxLaneAccumulateFn = {
+        if is_x86_feature_detected!("avx2") {
+            box_accumulate_lane_avx2
+        } else if is_x86_feature_detected!("sse4.1") {
+            box_accumulate_lane_sse41
+        } else {
+            box_accumulate_lane_scalar
+        }
+    };
+    #[cfg(target_arch = "aarch64")]
+    let accumulate: BoxLaneAccumulateFn = box_accumulate_lane_neon;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let accumulate: BoxLaneAccumulateFn = box_accumulate_lane_scalar;
     for i in 0..simd_w {
+        let lane_x0 = x0[base_x + i];
+        let lane_x1 = x1[base_x + i];
+        debug_assert_box_lane_in_bounds(src, row_stride, y0, y1, lane_x0, lane_x1);
         let (sum_r, sum_g, sum_b, sum_a, count) =
-            unsafe { box_accumulate_lane(src, row_stride, y0, y1, x0[base_x + i], x1[base_x + i]) };
+            unsafe { accumulate(src, row_stride, y0, y1, lane_x0, lane_x1) };
         let di = (dy * dst_w_u + base_x + i) * 4;
         unsafe {
             box_store_lane_average(dst, di, sum_r, sum_g, sum_b, sum_a, count);

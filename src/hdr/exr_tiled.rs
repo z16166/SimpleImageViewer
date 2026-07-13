@@ -218,6 +218,7 @@ impl ExrTiledImageSource {
                     y,
                     self.width,
                     band_height,
+                    None,
                 )
             })?;
 
@@ -265,6 +266,50 @@ impl ExrTiledImageSource {
             );
             Ok(())
         })()
+    }
+
+    /// Load-path extract with cooperative cancel polling through OpenEXR chunk orchestration.
+    pub(crate) fn extract_tile_rgba32f_arc_with_cancel(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Arc<HdrTileBuffer>, String> {
+        let key = (x, y, width, height);
+        {
+            let mut cache = self.tile_cache.lock();
+            if let Some(tile) = cache.get(key) {
+                return Ok(tile);
+            }
+        }
+
+        if self.should_prefill_scanline_band(x, y, width, height) {
+            self.prefill_scanline_band_tiles(y, height)?;
+            {
+                let mut cache = self.tile_cache.lock();
+                if let Some(tile) = cache.get(key) {
+                    return Ok(tile);
+                }
+            }
+        }
+
+        let context = exr_file_context("extract EXR HDR tile", &self.path);
+        let tile = catch_exr_panic(&context, || {
+            self.context
+                .extract_scanline_rgba32f_tile(self.part_index, x, y, width, height, cancel)
+        })?;
+        let tile = Arc::new(HdrTileBuffer::new_with_metadata(
+            tile.width,
+            tile.height,
+            self.color_space,
+            HdrImageMetadata::from_color_space(self.color_space),
+            Arc::new(tile.rgba),
+        ));
+
+        self.tile_cache.lock().insert(key, Arc::clone(&tile));
+        Ok(tile)
     }
 }
 
@@ -371,39 +416,7 @@ impl HdrTiledSource for ExrTiledImageSource {
         width: u32,
         height: u32,
     ) -> Result<Arc<HdrTileBuffer>, String> {
-        let key = (x, y, width, height);
-        {
-            let mut cache = self.tile_cache.lock();
-            if let Some(tile) = cache.get(key) {
-                return Ok(tile);
-            }
-        }
-
-        if self.should_prefill_scanline_band(x, y, width, height) {
-            self.prefill_scanline_band_tiles(y, height)?;
-            {
-                let mut cache = self.tile_cache.lock();
-                if let Some(tile) = cache.get(key) {
-                    return Ok(tile);
-                }
-            }
-        }
-
-        let context = exr_file_context("extract EXR HDR tile", &self.path);
-        let tile = catch_exr_panic(&context, || {
-            self.context
-                .extract_scanline_rgba32f_tile(self.part_index, x, y, width, height)
-        })?;
-        let tile = Arc::new(HdrTileBuffer::new_with_metadata(
-            tile.width,
-            tile.height,
-            self.color_space,
-            HdrImageMetadata::from_color_space(self.color_space),
-            Arc::new(tile.rgba),
-        ));
-
-        self.tile_cache.lock().insert(key, Arc::clone(&tile));
-        Ok(tile)
+        self.extract_tile_rgba32f_arc_with_cancel(x, y, width, height, None)
     }
 
     fn cached_tile_rgba32f_arc(
@@ -517,13 +530,16 @@ pub(crate) fn exr_dimensions_unvalidated_from_mmap(
 #[cfg(test)]
 pub(crate) fn decode_deep_exr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     let mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
-    decode_deep_exr_image_from_mmap(path, mmap)
+    decode_deep_exr_image_from_mmap(path, mmap, None)
 }
 
 pub(crate) fn decode_deep_exr_image_from_mmap(
     path: &Path,
     mmap: Arc<memmap2::Mmap>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<HdrImageBuffer, String> {
+    // Deep flatten is owned by OpenEXR IMF; poll at the stage boundary only.
+    crate::loader::check_decode_cancel_str(cancel)?;
     let context =
         crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open_from_mmap(path, mmap)?;
     let parts = exr_part_infos_from_context(&context)?;

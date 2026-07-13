@@ -687,6 +687,7 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
     width: u32,
     height: u32,
     mut spp: u16,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<f32>, String> {
     if spp == 0 {
         spp = 3;
@@ -739,6 +740,7 @@ pub(crate) fn decode_uint16_rgb_scene_linear_rgba32f(
     let mut actual_max = f64::MIN;
     let mut out = vec![0.0_f32; checked_rgba32f_len(width, height)?];
     for y in 0..height {
+        super::constants::poll_tiff_scanline_cancel(cancel, y)?;
         // SAFETY: `tif` is valid and exclusive; `buf` is sized to `TIFFScanlineSize(tif)`.
         if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
             return Err(format!("16-bit RGB TIFF: scan failed at row {y}"));
@@ -1049,16 +1051,31 @@ pub(crate) fn finalize_linear_scratch_to_rgba(
 }
 
 /// Scene-linear RGBA (`HdrImageMetadata` linear / scene) from IEEE float TIFF samples. libtiff returns
-/// multi-byte samples in **native** byte order — no endian swap here (matches `get_sample_value` rule).
+/// multi-byte samples in **native** byte order -- no endian swap here (matches `get_sample_value` rule).
+pub(crate) struct IeeeSceneLinearDecodeArgs<'a> {
+    pub tif: *mut lib::TIFF,
+    pub width: u32,
+    pub height: u32,
+    pub bps: u16,
+    pub spp: u16,
+    pub photo: u16,
+    pub config: u16,
+    pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
+}
+
 pub(crate) fn decode_ieee_scene_linear_rgba32f(
-    tif: *mut lib::TIFF,
-    width: u32,
-    height: u32,
-    bps: u16,
-    mut spp: u16,
-    photo: u16,
-    config: u16,
+    args: IeeeSceneLinearDecodeArgs<'_>,
 ) -> Result<Vec<f32>, String> {
+    let IeeeSceneLinearDecodeArgs {
+        tif,
+        width,
+        height,
+        bps,
+        mut spp,
+        photo,
+        config,
+        cancel,
+    } = args;
     if spp == 0 {
         spp = 1;
     }
@@ -1095,6 +1112,7 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
 
     if config == CONFIG_CONTIG {
         for y in 0..height {
+            super::constants::poll_tiff_scanline_cancel(cancel, y)?;
             // SAFETY: `tif` is valid and exclusive; `buf` is sized to `TIFFScanlineSize(tif)`.
             if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
                 return Err(format!("IEEE TIFF: TIFFReadScanline failed at row {y}"));
@@ -1198,6 +1216,7 @@ pub(crate) fn decode_ieee_scene_linear_rgba32f(
         };
         for c in 0..comp_count {
             for y in 0..height {
+                super::constants::poll_tiff_scanline_cancel(cancel, y)?;
                 // SAFETY: `tif` is valid and exclusive; `buf` fits one planar sample row (`sample=c`).
                 if unsafe {
                     lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, c as u16)
@@ -1296,6 +1315,7 @@ pub(crate) struct LogLuvDecodeParams {
 
 pub(crate) fn decode_logl_logluv_scene_linear_rgba32f(
     params: LogLuvDecodeParams,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<f32>, String> {
     let LogLuvDecodeParams {
         tif,
@@ -1330,6 +1350,7 @@ pub(crate) fn decode_logl_logluv_scene_linear_rgba32f(
             ));
         }
         for y in 0..height {
+            super::constants::poll_tiff_scanline_cancel(cancel, y)?;
             // SAFETY: `tif` is valid and exclusive; `scanline` is sized to `TIFFScanlineSize(tif)`.
             if unsafe { lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0) }
                 <= 0
@@ -1365,6 +1386,7 @@ pub(crate) fn decode_logl_logluv_scene_linear_rgba32f(
                 ));
             }
             for y in 0..height {
+                super::constants::poll_tiff_scanline_cancel(cancel, y)?;
                 // SAFETY: `tif` is valid and exclusive; `scanline` is sized to `TIFFScanlineSize(tif)`.
                 if unsafe { lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0) }
                     <= 0
@@ -1390,6 +1412,7 @@ pub(crate) fn decode_logl_logluv_scene_linear_rgba32f(
                 ));
             }
             for y in 0..height {
+                super::constants::poll_tiff_scanline_cancel(cancel, y)?;
                 // SAFETY: `tif` is valid and exclusive; `scanline` is sized to `TIFFScanlineSize(tif)`.
                 if unsafe { lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0) }
                     <= 0

@@ -220,12 +220,14 @@ impl ImageViewerApp {
                     ctx.request_repaint();
                 }
                 // 1. Update current TileManager
+                let mut synced_current_dims: Option<(u32, u32)> = None;
                 if let Some(ref mut tm) = self.tile_manager
                     && refined_preview_applies_to_tile_manager(tm, &update, &display)
                 {
                     if update.decode_profile != tm.decode_profile {
                         tm.decode_profile = current_tile_profile.clone();
                     }
+                    let dims_changed = tm.sync_dimensions_from_source();
                     log::debug!(
                         "[App] HQ preview applied for current index {} ({}x{})",
                         update.index,
@@ -233,7 +235,7 @@ impl ImageViewerApp {
                         preview.height
                     );
                     if update.preview_bundle.stage() == crate::loader::PreviewStage::Refined
-                        && tm.preview_texture.is_some()
+                        && (tm.preview_texture.is_some() || dims_changed)
                     {
                         crate::tile_cache::PIXEL_CACHE
                             .write()
@@ -242,6 +244,9 @@ impl ImageViewerApp {
                         tm.drop_gpu_tiles();
                     }
                     tm.set_preview(preview.clone(), ctx);
+                    if dims_changed {
+                        synced_current_dims = Some((tm.full_width, tm.full_height));
+                    }
                     if should_request_repaint_for_asset_update(
                         AssetUpdateKind::PreviewUpgraded,
                         true,
@@ -249,6 +254,10 @@ impl ImageViewerApp {
                     ) {
                         ctx.request_repaint();
                     }
+                }
+                if let Some((fw, fh)) = synced_current_dims {
+                    self.set_current_image_resolution(Some((fw, fh)));
+                    crate::tile_cache::set_tile_size_for_image(fw, fh);
                 }
                 if update.preview_bundle.stage() == crate::loader::PreviewStage::Refined
                     && self.tile_manager.as_ref().is_some_and(|tm| {
@@ -265,6 +274,7 @@ impl ImageViewerApp {
                     if update.decode_profile != tm.decode_profile {
                         tm.decode_profile = current_tile_profile.clone();
                     }
+                    let _ = tm.sync_dimensions_from_source();
                     log::debug!(
                         "[App] HQ preview applied for prefetched index {} ({}x{})",
                         update.index,
@@ -322,11 +332,16 @@ impl ImageViewerApp {
                 }
             }
             (None, Some(error)) => {
-                log::error!(
-                    "Preview update failed for index {}: {}",
-                    update.index,
-                    error
-                );
+                // Async tiled decode failures (e.g. PSD v1 composite) arrive as
+                // error-only PreviewResult; surface them like a main load failure.
+                self.install_image_error(update.index, &error);
+                if should_request_repaint_for_asset_update(
+                    AssetUpdateKind::ImageLoaded,
+                    update.index == self.current_index,
+                    false,
+                ) {
+                    ctx.request_repaint();
+                }
             }
             (None, None) => {
                 if update.preview_bundle.hdr().is_some() {
@@ -402,6 +417,7 @@ impl ImageViewerApp {
                     self.image_files[idx].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(idx),
+                    self.settings.psd_hidden_layer_strategy,
                 );
             } else {
                 crate::preload_debug!(

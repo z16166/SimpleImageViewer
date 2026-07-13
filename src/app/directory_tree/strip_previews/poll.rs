@@ -34,6 +34,7 @@ impl ImageViewerApp {
     pub(super) fn clear_strip_preview_attempt_state(&mut self, index: usize) {
         self.directory_tree_strip_generate_inflight.remove(&index);
         self.directory_tree_strip_inflight_tokens.remove(&index);
+        self.directory_tree_strip_inflight_cancel.remove(&index);
         self.directory_tree_strip_static_full_decode_inflight
             .remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
@@ -54,6 +55,9 @@ impl ImageViewerApp {
     }
 
     /// Drop inflight bookkeeping without clearing a completed cold attempt (avoids retry loops).
+    ///
+    /// Also leaves `directory_tree_strip_tiled_attempted` set: empty async tiled previews
+    /// (PSD v1 before pixels land) must not clear that flag, or ensure_strip respawns every frame.
     fn finish_strip_preview_job_for_key(&mut self, key: &DirectoryTreeStripJobKey) -> bool {
         let Some(active_index) = self.directory_tree_strip_active_index_for_job_token(key) else {
             return false;
@@ -62,9 +66,9 @@ impl ImageViewerApp {
             .remove(&active_index);
         self.directory_tree_strip_inflight_tokens
             .remove(&active_index);
-        self.directory_tree_strip_static_full_decode_inflight
+        self.directory_tree_strip_inflight_cancel
             .remove(&active_index);
-        self.directory_tree_strip_tiled_attempted
+        self.directory_tree_strip_static_full_decode_inflight
             .remove(&active_index);
         self.flush_strip_pending_main_handoff_for_index(active_index);
         true
@@ -92,6 +96,8 @@ impl ImageViewerApp {
         self.finish_strip_preview_job_for_key(key);
         // Keep `cold_attempted` so undecodable files (e.g. motion-video JPG) do not monopolize
         // the limited cold-generate budget and block thumbnails for neighboring rows.
+        // Keep `tiled_attempted` as well: async PSD/PSB sources return empty previews until
+        // composite pixels arrive; clearing would cause a per-frame tiled strip storm.
     }
 
     fn strip_preview_result_matches_index(&self, key: &DirectoryTreeStripJobKey) -> bool {
@@ -225,6 +231,12 @@ impl ImageViewerApp {
             .unwrap_or(failure.key.index);
         if self.finish_strip_preview_job_for_key(&failure.key) {
             self.mark_strip_cold_awaiting_main_loader(active_index);
+            // PSD/PSB (and other slow primaries) defer strip to the main loader. Neighbor
+            // preload may never cover every visible strip row (e.g. idx 3 with window
+            // [1,2]/[5,4]), so kick a main load here or the strip waits forever.
+            // Capacity misses are retried from ensure_directory_tree_strip_thumbnails;
+            // cancel_outside retains cold-awaiting indices so hole loads are not aborted.
+            self.request_main_load_for_strip_deferred_index(active_index);
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
                 "[PreloadDebug][StripPoll] idx={} cold deferred reason={} (await main loader fast path or install)",
@@ -232,6 +244,40 @@ impl ImageViewerApp {
                 _failure_reason
             );
         }
+    }
+
+    pub(super) fn request_main_load_for_strip_deferred_index(&mut self, index: usize) {
+        if self.has_loaded_asset(index) || self.loader.is_loading(index) {
+            return;
+        }
+        let Some(path) = self.image_files.get(index).cloned() else {
+            return;
+        };
+        #[cfg(feature = "preload-debug")]
+        let path_for_log = path.clone();
+        let spawned = self.loader.request_load(
+            index,
+            path,
+            self.settings.raw_high_quality,
+            self.raw_demosaic_mode_for_index(index),
+            self.settings.psd_hidden_layer_strategy,
+        );
+        #[cfg(feature = "preload-debug")]
+        if spawned {
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] request main load for deferred strip idx={} path={}",
+                index,
+                path_for_log.display()
+            );
+        } else {
+            crate::preload_debug!(
+                "[PreloadDebug][Strip] defer main load (loader capacity) idx={} path={}",
+                index,
+                path_for_log.display()
+            );
+        }
+        #[cfg(not(feature = "preload-debug"))]
+        let _ = spawned;
     }
 
     fn poll_successful_strip_result(
@@ -390,6 +436,11 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::super::strip_full_decode_reuse_allowed;
+    use crate::app::directory_tree_strip_cache::{
+        DirectoryTreeStripJobKey, DirectoryTreeStripJobToken,
+    };
+    use std::num::NonZeroU64;
+    use std::path::PathBuf;
 
     #[test]
     fn strip_full_decode_reuse_keeps_current_even_when_preload_disabled() {
@@ -409,5 +460,31 @@ mod tests {
         assert!(strip_full_decode_reuse_allowed(19, 0, 20, 1, true));
         assert!(strip_full_decode_reuse_allowed(0, 19, 20, 1, true));
         assert!(!strip_full_decode_reuse_allowed(17, 0, 20, 1, true));
+    }
+
+    #[test]
+    fn permanent_failure_keeps_tiled_attempted_to_avoid_retry_storm() {
+        let mut app = crate::app::image_management::tests::make_test_app();
+        app.image_files = vec![PathBuf::from("async.psd")];
+        app.directory_tree.list.lock().image_list_generation = 1;
+        let token = NonZeroU64::new(9).expect("non-zero");
+        app.directory_tree_strip_generate_inflight.insert(0);
+        app.directory_tree_strip_inflight_tokens.insert(0, token);
+        app.directory_tree_strip_tiled_attempted.insert(0);
+
+        let key = DirectoryTreeStripJobKey {
+            index: 0,
+            path: PathBuf::from("async.psd"),
+            image_list_generation: 1,
+            job_token: DirectoryTreeStripJobToken::Worker(token),
+        };
+        app.abandon_strip_preview_attempt_after_failure_for_key(&key);
+
+        assert!(
+            app.directory_tree_strip_tiled_attempted.contains(&0),
+            "empty async tiled strip must keep tiled_attempted"
+        );
+        assert!(!app.directory_tree_strip_generate_inflight.contains(&0));
+        assert!(!app.directory_tree_strip_inflight_tokens.contains_key(&0));
     }
 }

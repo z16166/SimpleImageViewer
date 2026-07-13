@@ -66,7 +66,7 @@ struct ToneMapSettings {
     input_transfer_function: u32,
     input_reference: u32,
     sdr_manual_srgb_encode: u32,
-    _wgsl_pad_before_uv: u32,
+    sdr_grade_clamp: u32,
     uv_min: vec2<f32>,
     uv_max: vec2<f32>,
     apple_compose: u32,
@@ -158,10 +158,17 @@ fn tone_map_texel_to_sdr(hdr: vec4<f32>, settings: ToneMapSettings) -> vec4<f32>
     let src_a = clamp(hdr.a, 0.0, 1.0);
     let display_referred_srgb = settings.input_transfer_function == INPUT_TRANSFER_SRGB &&
         settings.input_reference != INPUT_REFERENCE_SCENE_LINEAR;
-    let decoded_rgb = decode_input_transfer(hdr.rgb, settings.input_transfer_function, settings);
+    var src_rgb = hdr.rgb;
+    if (settings.sdr_grade_clamp != 0u) {
+        src_rgb = clamp(src_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+        src_rgb = src_rgb * src_a;
+    }
+    let decoded_rgb = decode_input_transfer(src_rgb, settings.input_transfer_function, settings);
     var source_rgb = convert_input_to_linear_srgb(decoded_rgb, settings.input_color_space);
     if (src_a <= 0.0) {
         source_rgb = vec3<f32>(0.0);
+    } else if (settings.sdr_grade_clamp != 0u) {
+        source_rgb = source_rgb / src_a;
     }
     if (display_referred_srgb) {
         let exposure_scale = exp2(settings.exposure_ev);

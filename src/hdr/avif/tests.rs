@@ -242,6 +242,7 @@ fn avif_kimono_rotate90_strip_applies_container_orientation_when_sample_present(
         path,
         128,
         DirectoryTreeThumbDecodeOptions::default(),
+        &crate::loader::DecodeCancelFlag::new(),
     )
     .expect("kimono.rotate90 strip decode");
     assert_eq!(strip.logical_size, (722, 1024));
@@ -429,7 +430,7 @@ fn avif_animated_sequence_decodes_as_hdr_frames_when_sample_present() {
     };
     let bytes = std::fs::read(&path).expect("read avif");
     let capacity = HdrToneMapSettings::default().target_hdr_capacity();
-    let decode = super::try_decode_avif_image_sequence_hdr_limited(&bytes, capacity, None)
+    let decode = super::try_decode_avif_image_sequence_hdr_limited(&bytes, capacity, None, None)
         .expect("decode avif sequence")
         .expect("animated avif should expose a sequence");
     assert!(
@@ -469,7 +470,7 @@ fn avif_animated_sequence_bootstrap_decodes_first_frame_only() {
     }
     let bytes = std::fs::read(&path).expect("read avif");
     let capacity = HdrToneMapSettings::default().target_hdr_capacity();
-    let decode = super::try_decode_avif_image_sequence_hdr_limited(&bytes, capacity, Some(1))
+    let decode = super::try_decode_avif_image_sequence_hdr_limited(&bytes, capacity, Some(1), None)
         .expect("decode avif sequence")
         .expect("animated avif should expose a sequence");
     assert_eq!(decode.frames.len(), 1);

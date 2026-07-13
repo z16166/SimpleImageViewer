@@ -14,11 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Four-lane `x^e` helper used from tone-map and gain-map SIMD kernels (SSE4.1 / NEON).
+//! Four-lane (SSE4.1 / NEON) and eight-lane (AVX2) `x^e` helpers used from tone-map and
+//! gain-map SIMD kernels.
 //!
-//! Uses vectorized natural log / exp (Cephes-style minimax, sse_mathfun) so all four lanes
-//! stay in SIMD. Callers must be compiled with `#[target_feature(enable = "...")]` and invoked
-//! only after runtime feature detection (or unconditionally on aarch64).
+//! Uses vectorized natural log / exp (Cephes-style minimax, sse_mathfun) so all lanes stay in
+//! SIMD. Callers must be compiled with `#[target_feature(enable = "...")]` and invoked only
+//! after runtime feature detection (or unconditionally on aarch64).
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
@@ -150,6 +151,117 @@ mod x86 {
     pub(super) unsafe fn exp4_sse41(x: __m128) -> __m128 {
         unsafe { exp_ps(x) }
     }
+
+    #[target_feature(enable = "avx2")]
+    #[inline]
+    unsafe fn log_ps_avx2(x: __m256) -> __m256 {
+        let one = _mm256_set1_ps(1.0);
+        let half = _mm256_set1_ps(0.5);
+        let min_norm = _mm256_set1_ps(f32::MIN_POSITIVE);
+        let mut x = _mm256_max_ps(x, min_norm);
+
+        let mut imm0 = _mm256_srli_epi32(_mm256_castps_si256(x), 23);
+        x = _mm256_and_ps(x, _mm256_castsi256_ps(_mm256_set1_epi32(INV_MANT_MASK)));
+        x = _mm256_or_ps(x, half);
+        imm0 = _mm256_sub_epi32(imm0, _mm256_set1_epi32(EXP_BIAS));
+        let mut e = _mm256_add_ps(_mm256_cvtepi32_ps(imm0), one);
+
+        let mask = _mm256_cmp_ps(x, _mm256_set1_ps(SQRTHF), _CMP_LT_OQ);
+        let tmp = _mm256_and_ps(x, mask);
+        x = _mm256_sub_ps(x, one);
+        e = _mm256_sub_ps(e, _mm256_and_ps(one, mask));
+        x = _mm256_add_ps(x, tmp);
+
+        let z = _mm256_mul_ps(x, x);
+        let mut y = _mm256_set1_ps(7.037_683_6e-2);
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(-1.151_461e-1));
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(1.167_699_84e-1));
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(-1.242_014_1e-1));
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(1.424_932_3e-1));
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(-1.666_805_7e-1));
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(2.000_071_4e-1));
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(-2.499_999_4e-1));
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(3.333_333e-1));
+        y = _mm256_mul_ps(_mm256_mul_ps(y, x), z);
+
+        let mut tmp = _mm256_mul_ps(e, _mm256_set1_ps(LOG_Q1));
+        y = _mm256_add_ps(y, tmp);
+        tmp = _mm256_mul_ps(z, half);
+        y = _mm256_sub_ps(y, tmp);
+        tmp = _mm256_mul_ps(e, _mm256_set1_ps(LOG_Q2));
+        x = _mm256_add_ps(x, y);
+        _mm256_add_ps(x, tmp)
+    }
+
+    #[target_feature(enable = "avx2")]
+    #[inline]
+    unsafe fn exp_ps_avx2(x: __m256) -> __m256 {
+        let one = _mm256_set1_ps(1.0);
+        let half = _mm256_set1_ps(0.5);
+        let mut x = _mm256_min_ps(
+            _mm256_max_ps(x, _mm256_set1_ps(EXP_LO)),
+            _mm256_set1_ps(EXP_HI),
+        );
+
+        let mut fx = _mm256_add_ps(_mm256_mul_ps(x, _mm256_set1_ps(LOG2EF)), half);
+        let tmp = _mm256_cvtepi32_ps(_mm256_cvttps_epi32(fx));
+        let mask = _mm256_cmp_ps(tmp, fx, _CMP_GT_OQ);
+        fx = _mm256_sub_ps(tmp, _mm256_and_ps(mask, one));
+
+        let tmp = _mm256_mul_ps(fx, _mm256_set1_ps(EXP_C1));
+        let z = _mm256_mul_ps(fx, _mm256_set1_ps(EXP_C2));
+        x = _mm256_sub_ps(x, tmp);
+        x = _mm256_sub_ps(x, z);
+        let z2 = _mm256_mul_ps(x, x);
+
+        let mut y = _mm256_set1_ps(1.987_569_1e-4);
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(1.398_199_9e-3));
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(8.333_452e-3));
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(4.166_579_6e-2));
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(1.666_666_6e-1));
+        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(5e-1));
+        y = _mm256_add_ps(_mm256_mul_ps(y, z2), x);
+        y = _mm256_add_ps(y, one);
+
+        let imm0 = _mm256_slli_epi32(
+            _mm256_add_epi32(_mm256_cvttps_epi32(fx), _mm256_set1_epi32(EXP_BIAS)),
+            23,
+        );
+        _mm256_mul_ps(y, _mm256_castsi256_ps(imm0))
+    }
+
+    #[target_feature(enable = "avx2")]
+    #[inline]
+    unsafe fn pow_ps_avx2(base: __m256, exponent: f32) -> __m256 {
+        let zero = _mm256_setzero_ps();
+        let positive = _mm256_cmp_ps(base, zero, _CMP_GT_OQ);
+        let exp_vec = _mm256_set1_ps(exponent);
+        let pow = unsafe { exp_ps_avx2(_mm256_mul_ps(exp_vec, log_ps_avx2(base))) };
+        _mm256_and_ps(pow, positive)
+    }
+
+    #[target_feature(enable = "avx2")]
+    #[inline]
+    pub(super) unsafe fn pow8_avx2(base: __m256, exponent: f32) -> __m256 {
+        unsafe { pow_ps_avx2(base, exponent) }
+    }
+
+    #[target_feature(enable = "avx2")]
+    #[inline]
+    pub(super) unsafe fn exp2_8_avx2(exponents: __m256) -> __m256 {
+        unsafe {
+            exp_ps_avx2(_mm256_mul_ps(
+                exponents,
+                _mm256_set1_ps(std::f32::consts::LN_2),
+            ))
+        }
+    }
+
+    #[target_feature(enable = "avx2")]
+    #[inline]
+    pub(super) unsafe fn exp8_avx2(x: __m256) -> __m256 {
+        unsafe { exp_ps_avx2(x) }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -171,6 +283,27 @@ pub(crate) unsafe fn exp2_4_sse41(exponents: __m128) -> __m128 {
 #[inline]
 pub(crate) unsafe fn exp4_sse41(x: __m128) -> __m128 {
     unsafe { x86::exp4_sse41(x) }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+pub(crate) unsafe fn pow8_avx2(base: __m256, exponent: f32) -> __m256 {
+    unsafe { x86::pow8_avx2(base, exponent) }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+pub(crate) unsafe fn exp2_8_avx2(exponents: __m256) -> __m256 {
+    unsafe { x86::exp2_8_avx2(exponents) }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+pub(crate) unsafe fn exp8_avx2(x: __m256) -> __m256 {
+    unsafe { x86::exp8_avx2(x) }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -436,6 +569,88 @@ mod tests {
                 let out = exp2_4_sse41(exponents);
                 let mut buf = [0.0_f32; 4];
                 _mm_storeu_ps(buf.as_mut_ptr(), out);
+                buf
+            };
+            for (lane, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {
+                let rel = if e.abs() > 1.0e-8 {
+                    (g - e).abs() / e.abs()
+                } else {
+                    g - e
+                };
+                assert!(
+                    rel <= 2.0e-4,
+                    "lane={lane} x={} got={g} expected={e}",
+                    lanes[lane]
+                );
+            }
+            x += 0.2;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn pow8_avx2_matches_std_powf() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            return;
+        }
+        for exp in EXPONENTS {
+            let mut x = 0.0_f32;
+            while x <= 1.0 {
+                let lanes = [
+                    x,
+                    (x + 0.01).min(1.0),
+                    (x + 0.02).min(1.0),
+                    (x + 0.03).min(1.0),
+                    (x + 0.04).min(1.0),
+                    (x + 0.05).min(1.0),
+                    (x + 0.06).min(1.0),
+                    (x + 0.07).min(1.0),
+                ];
+                let expected: [f32; 8] = lanes.map(|v| if v <= 0.0 { 0.0 } else { v.powf(exp) });
+                let got = unsafe {
+                    let base = _mm256_loadu_ps(lanes.as_ptr());
+                    let out = pow8_avx2(base, exp);
+                    let mut buf = [0.0_f32; 8];
+                    _mm256_storeu_ps(buf.as_mut_ptr(), out);
+                    buf
+                };
+                for (lane, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {
+                    let rel = if e > 1.0e-8 { (g - e).abs() / e } else { g - e };
+                    assert!(
+                        rel <= 2.0e-4,
+                        "lane={lane} x={} exp={exp} got={g} expected={e}",
+                        lanes[lane]
+                    );
+                }
+                x += 0.017;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn exp2_8_avx2_matches_std_exp2() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            return;
+        }
+        let mut x = -4.0_f32;
+        while x <= 4.0 {
+            let lanes = [
+                x,
+                x + 0.125,
+                x + 0.25,
+                x + 0.375,
+                x + 0.5,
+                x + 0.625,
+                x + 0.75,
+                x + 0.875,
+            ];
+            let expected: [f32; 8] = lanes.map(|v| 2.0_f32.powf(v));
+            let got = unsafe {
+                let exponents = _mm256_loadu_ps(lanes.as_ptr());
+                let out = exp2_8_avx2(exponents);
+                let mut buf = [0.0_f32; 8];
+                _mm256_storeu_ps(buf.as_mut_ptr(), out);
                 buf
             };
             for (lane, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {

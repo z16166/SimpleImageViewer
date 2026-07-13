@@ -1,0 +1,200 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+//! CMYK -> display sRGB for PSD/PSB via lcms2.
+//!
+//! Photoshop stores CMYK bytes as `0 = 100% ink`. lcms2 8-bit CMYK uses
+//! `0 = no ink`. This module bridges that polarity, prefers an embedded ICC
+//! (IR 1039), and otherwise uses the bundled CGATS001-compatible default.
+
+/// Bundled default when the PSD has no embedded ICC (see `assets/icc/README.txt`).
+pub const DEFAULT_CMYK_ICC: &[u8] = include_bytes!("../assets/icc/CGATS001Compat-v2-micro.icc");
+
+/// Planar Adobe-polarity CMYK (+ optional alpha) for one CMS convert.
+pub struct AdobeCmykSpan<'a> {
+    pub c: &'a [u8],
+    pub m: &'a [u8],
+    pub y: &'a [u8],
+    pub k: &'a [u8],
+    pub alpha: Option<&'a [u8]>,
+}
+
+/// Choose embedded ICC when non-empty; otherwise the bundled default.
+#[inline]
+pub fn resolve_cmyk_icc(embedded: Option<&[u8]>) -> &[u8] {
+    match embedded {
+        Some(bytes) if !bytes.is_empty() => bytes,
+        _ => DEFAULT_CMYK_ICC,
+    }
+}
+
+/// Convert a CMYK span (Adobe polarity) into `dst_rgba` via lcms.
+/// Returns `false` to signal naive fallback.
+pub fn cmyk_span_adobe_to_rgba8(span: &AdobeCmykSpan<'_>, icc: &[u8], dst_rgba: &mut [u8]) -> bool {
+    let n = span
+        .c
+        .len()
+        .min(span.m.len())
+        .min(span.y.len())
+        .min(span.k.len())
+        .min(dst_rgba.len() / 4);
+    if n == 0 {
+        return true;
+    }
+    #[cfg(feature = "jpegxl")]
+    {
+        cmyk_span_adobe_to_rgba8_lcms(span, icc, dst_rgba, n)
+    }
+    #[cfg(not(feature = "jpegxl"))]
+    {
+        let _ = (span, icc, dst_rgba);
+        false
+    }
+}
+
+#[cfg(feature = "jpegxl")]
+fn cmyk_span_adobe_to_rgba8_lcms(
+    span: &AdobeCmykSpan<'_>,
+    icc: &[u8],
+    dst_rgba: &mut [u8],
+    n: usize,
+) -> bool {
+    use libjxl_sys::{
+        CmsProfile, CmsTransform, LCMS_INTENT_PERCEPTUAL, LCMS_TYPE_CMYK_8, LCMS_TYPE_RGB_8,
+    };
+
+    if icc.is_empty() {
+        return false;
+    }
+    let Some(in_profile) = CmsProfile::open_from_mem(icc) else {
+        log::warn!(
+            "PSD CMYK ICC: lcms2 could not parse profile ({} bytes)",
+            icc.len()
+        );
+        return false;
+    };
+    let Some(out_profile) = CmsProfile::new_srgb() else {
+        log::warn!("PSD CMYK ICC: lcms2 could not build sRGB profile");
+        return false;
+    };
+    let Some(transform) = CmsTransform::new(
+        &in_profile,
+        LCMS_TYPE_CMYK_8,
+        &out_profile,
+        LCMS_TYPE_RGB_8,
+        LCMS_INTENT_PERCEPTUAL,
+        0,
+    ) else {
+        log::warn!(
+            "PSD CMYK ICC: lcms2 could not build CMYK->sRGB transform ({} bytes)",
+            icc.len()
+        );
+        return false;
+    };
+
+    // Chunk to keep the temporary CMYK/RGB buffers bounded on huge canvases.
+    const CHUNK: usize = 16_384;
+    let mut cmyk_buf = vec![0u8; CHUNK * 4];
+    let mut rgb_buf = vec![0u8; CHUNK * 3];
+
+    let mut offset = 0usize;
+    while offset < n {
+        let count = (n - offset).min(CHUNK);
+        crate::psb_cmyk_simd::pack_adobe_cmyk_inverted(
+            &span.c[offset..offset + count],
+            &span.m[offset..offset + count],
+            &span.y[offset..offset + count],
+            &span.k[offset..offset + count],
+            &mut cmyk_buf[..count * 4],
+        );
+        transform.do_transform(
+            cmyk_buf.as_ptr().cast(),
+            rgb_buf.as_mut_ptr().cast(),
+            count as u32,
+        );
+        let dst_chunk = &mut dst_rgba[offset * 4..(offset + count) * 4];
+        simple_image_viewer::simd_swizzle::interleave_rgb_packed_to_rgba_packed(
+            &rgb_buf[..count * 3],
+            dst_chunk,
+        );
+        if let Some(a) = span.alpha {
+            let avail = a.len().saturating_sub(offset).min(count);
+            if avail > 0 {
+                crate::psb_cmyk_simd::write_alpha_plane_into_rgba8(
+                    &a[offset..offset + avail],
+                    &mut dst_chunk[..avail * 4],
+                );
+            }
+            for i in avail..count {
+                dst_chunk[i * 4 + 3] = 255;
+            }
+        }
+        offset += count;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_icc_is_non_empty() {
+        assert!(DEFAULT_CMYK_ICC.len() > 128);
+        // ICC magic "acsp" lives at offset 36 in the profile header.
+        assert_eq!(&DEFAULT_CMYK_ICC[36..40], b"acsp");
+    }
+
+    #[test]
+    fn resolve_prefers_embedded() {
+        let emb = b"not-a-real-profile-but-non-empty";
+        assert_eq!(resolve_cmyk_icc(Some(emb)), emb.as_slice());
+        assert_eq!(resolve_cmyk_icc(None), DEFAULT_CMYK_ICC);
+        assert_eq!(resolve_cmyk_icc(Some(&[])), DEFAULT_CMYK_ICC);
+    }
+
+    #[cfg(feature = "jpegxl")]
+    #[test]
+    fn default_profile_maps_paper_white_near_white() {
+        let span = AdobeCmykSpan {
+            c: &[255],
+            m: &[255],
+            y: &[255],
+            k: &[255],
+            alpha: None,
+        };
+        let mut rgba = [0u8; 4];
+        assert!(cmyk_span_adobe_to_rgba8(&span, DEFAULT_CMYK_ICC, &mut rgba));
+        assert!(rgba[0] > 240 && rgba[1] > 240 && rgba[2] > 240, "{rgba:?}");
+        assert_eq!(rgba[3], 255);
+    }
+
+    #[cfg(feature = "jpegxl")]
+    #[test]
+    fn default_profile_maps_full_black_near_black() {
+        let span = AdobeCmykSpan {
+            c: &[0],
+            m: &[0],
+            y: &[0],
+            k: &[0],
+            alpha: Some(&[200]),
+        };
+        let mut rgba = [0u8; 4];
+        assert!(cmyk_span_adobe_to_rgba8(&span, DEFAULT_CMYK_ICC, &mut rgba));
+        assert!(rgba[0] < 40 && rgba[1] < 40 && rgba[2] < 40, "{rgba:?}");
+        assert_eq!(rgba[3], 200);
+    }
+}

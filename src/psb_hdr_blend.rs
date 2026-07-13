@@ -1,0 +1,657 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+//! HDR-aware f32 separable blend for PSD/PSB layer compositing.
+//!
+//! Unlike the u8 SIMD path in `psb_layer_blend_simd`, color channels are NOT
+//! clamped to 1.0 so HDR headroom above SDR white is preserved through
+//! LinearDodge and Normal. Alpha is still clamped to [0, 1].
+
+use crate::psb_layer_blend_simd::SeparableBlendKind;
+
+/// Blend-function B(Cb, Cs) per separable mode (operates in linear-light f32).
+///
+/// LinearDodge does NOT apply min(1.0): values >1.0 represent HDR headroom.
+/// Screen uses Cb+Cs-Cb*Cs (algebraically identical to 1-(1-Cb)(1-Cs) but
+/// naturally extends to values >1 without an intermediate clamp).
+#[inline]
+fn blend_b_f32(kind: SeparableBlendKind, cb: f32, cs: f32) -> f32 {
+    match kind {
+        SeparableBlendKind::Normal => cs,
+        SeparableBlendKind::Screen => cb + cs - cb * cs,
+        SeparableBlendKind::LinearDodge => cb + cs,
+        SeparableBlendKind::Multiply => cb * cs,
+        SeparableBlendKind::Overlay => {
+            if cb <= 0.5 {
+                2.0 * cb * cs
+            } else {
+                1.0 - 2.0 * (1.0 - cb) * (1.0 - cs)
+            }
+        }
+        SeparableBlendKind::SoftLight => {
+            if cs <= 0.5 {
+                cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb)
+            } else {
+                let d = if cb <= 0.25 {
+                    ((16.0 * cb - 12.0) * cb + 4.0) * cb
+                } else {
+                    cb.sqrt()
+                };
+                cb + (2.0 * cs - 1.0) * (d - cb)
+            }
+        }
+        SeparableBlendKind::HardLight => {
+            if cs <= 0.5 {
+                2.0 * cb * cs
+            } else {
+                1.0 - 2.0 * (1.0 - cb) * (1.0 - cs)
+            }
+        }
+        SeparableBlendKind::Color => cs,
+    }
+}
+
+/// Straight-alpha separable blend of `src` onto `dst` (same length, interleaved
+/// RGBA f32 quads). Implements the PDF / ISO 32000 straight-alpha composite.
+///
+/// Color channels (R, G, B) are NOT clamped after blending so HDR values >1.0
+/// are preserved. Alpha is clamped to [0, 1].
+///
+/// # Panics
+/// Panics when `dst.len() != src.len()` or length is not a multiple of 4.
+/// These invariants are required by the SIMD paths (pointer loads keyed off
+/// `dst.len()`); release builds must not skip the checks.
+pub fn blend_separable_span_f32(dst: &mut [f32], src: &[f32], kind: SeparableBlendKind) {
+    assert_eq!(dst.len(), src.len());
+    assert!(dst.len().is_multiple_of(4));
+    if dst.is_empty() {
+        return;
+    }
+
+    if !kind.has_simd_kernel() {
+        blend_separable_span_f32_scalar(dst, src, kind);
+        return;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                blend_separable_span_f32_avx2(dst, src, kind);
+            }
+            return;
+        }
+        if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                blend_separable_span_f32_sse41(dst, src, kind);
+            }
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            blend_separable_span_f32_neon(dst, src, kind);
+        }
+        return;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        blend_separable_span_f32_scalar(dst, src, kind);
+    }
+}
+
+fn blend_separable_span_f32_scalar(dst: &mut [f32], src: &[f32], kind: SeparableBlendKind) {
+    let n = dst.len() / 4;
+    for i in 0..n {
+        let off = i * 4;
+        blend_one_pixel_f32(&mut dst[off..off + 4], &src[off..off + 4], kind);
+    }
+}
+
+#[inline]
+fn blend_one_pixel_f32(dst: &mut [f32], src: &[f32], kind: SeparableBlendKind) {
+    let sa = src[3];
+    if sa == 0.0 {
+        return;
+    }
+    let da = dst[3];
+    let out_a = sa + da * (1.0 - sa);
+    if out_a <= 0.0 {
+        dst[0] = 0.0;
+        dst[1] = 0.0;
+        dst[2] = 0.0;
+        dst[3] = 0.0;
+        return;
+    }
+    let inv_out_a = 1.0 / out_a;
+    if kind == SeparableBlendKind::Color {
+        let (br, bg, bb) = crate::psb_blend_nonseparable::blend_color_rgb(
+            dst[0], dst[1], dst[2], src[0], src[1], src[2],
+        );
+        let channels = [
+            (src[0], dst[0], br),
+            (src[1], dst[1], bg),
+            (src[2], dst[2], bb),
+        ];
+        for (c, (sc, dc, b)) in channels.into_iter().enumerate() {
+            let co = sa * (1.0 - da) * sc + sa * da * b + da * (1.0 - sa) * dc;
+            dst[c] = co * inv_out_a;
+        }
+        dst[3] = out_a.clamp(0.0, 1.0);
+        return;
+    }
+    for c in 0..3 {
+        let sc = src[c];
+        let dc = dst[c];
+        let b = blend_b_f32(kind, dc, sc);
+        let co = sa * (1.0 - da) * sc + sa * da * b + da * (1.0 - sa) * dc;
+        dst[c] = co * inv_out_a;
+    }
+    dst[3] = out_a.clamp(0.0, 1.0);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+#[inline]
+unsafe fn load_rgba_f32x4_planes(
+    ptr: *const f32,
+) -> (
+    core::arch::x86_64::__m128,
+    core::arch::x86_64::__m128,
+    core::arch::x86_64::__m128,
+    core::arch::x86_64::__m128,
+) {
+    use core::arch::x86_64::*;
+    unsafe {
+        let p0 = _mm_loadu_ps(ptr);
+        let p1 = _mm_loadu_ps(ptr.add(4));
+        let p2 = _mm_loadu_ps(ptr.add(8));
+        let t3 = _mm_loadu_ps(ptr.add(12));
+        let t0 = _mm_unpacklo_ps(p0, p1);
+        let t1 = _mm_unpacklo_ps(p2, t3);
+        let t2 = _mm_unpackhi_ps(p0, p1);
+        let t3u = _mm_unpackhi_ps(p2, t3);
+        let r = _mm_movelh_ps(t0, t1);
+        let g = _mm_movehl_ps(t1, t0);
+        let b = _mm_movelh_ps(t2, t3u);
+        let a = _mm_movehl_ps(t3u, t2);
+        (r, g, b, a)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+#[inline]
+unsafe fn store_rgba_f32x4_planes(
+    ptr: *mut f32,
+    r: core::arch::x86_64::__m128,
+    g: core::arch::x86_64::__m128,
+    b: core::arch::x86_64::__m128,
+    a: core::arch::x86_64::__m128,
+) {
+    use core::arch::x86_64::*;
+    unsafe {
+        let rg_lo = _mm_unpacklo_ps(r, g);
+        let rg_hi = _mm_unpackhi_ps(r, g);
+        let ba_lo = _mm_unpacklo_ps(b, a);
+        let ba_hi = _mm_unpackhi_ps(b, a);
+        let p0 = _mm_movelh_ps(rg_lo, ba_lo);
+        let p1 = _mm_movehl_ps(ba_lo, rg_lo);
+        let p2 = _mm_movelh_ps(rg_hi, ba_hi);
+        let p3 = _mm_movehl_ps(ba_hi, rg_hi);
+        _mm_storeu_ps(ptr, p0);
+        _mm_storeu_ps(ptr.add(4), p1);
+        _mm_storeu_ps(ptr.add(8), p2);
+        _mm_storeu_ps(ptr.add(12), p3);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn blend_plane_f32_sse41(
+    sc: core::arch::x86_64::__m128,
+    dc: core::arch::x86_64::__m128,
+    sa: core::arch::x86_64::__m128,
+    da: core::arch::x86_64::__m128,
+    out_a: core::arch::x86_64::__m128,
+    kind: SeparableBlendKind,
+) -> core::arch::x86_64::__m128 {
+    use core::arch::x86_64::*;
+    let one = _mm_set1_ps(1.0);
+    let zero = _mm_set1_ps(0.0);
+    let v_b = match kind {
+        SeparableBlendKind::Normal => sc,
+        SeparableBlendKind::Multiply => _mm_mul_ps(dc, sc),
+        SeparableBlendKind::Screen => _mm_sub_ps(_mm_add_ps(dc, sc), _mm_mul_ps(dc, sc)),
+        SeparableBlendKind::LinearDodge => _mm_add_ps(dc, sc),
+        SeparableBlendKind::Overlay
+        | SeparableBlendKind::SoftLight
+        | SeparableBlendKind::HardLight
+        | SeparableBlendKind::Color => sc,
+    };
+    let term1 = _mm_mul_ps(_mm_mul_ps(sa, _mm_sub_ps(one, da)), sc);
+    let term2 = _mm_mul_ps(_mm_mul_ps(sa, da), v_b);
+    let term3 = _mm_mul_ps(_mm_mul_ps(da, _mm_sub_ps(one, sa)), dc);
+    let co = _mm_add_ps(_mm_add_ps(term1, term2), term3);
+    let oa_safe = _mm_max_ps(out_a, _mm_set1_ps(1e-20));
+    let rcp = _mm_rcp_ps(oa_safe);
+    let inv = _mm_mul_ps(rcp, _mm_sub_ps(_mm_set1_ps(2.0), _mm_mul_ps(oa_safe, rcp)));
+    let mut out = _mm_mul_ps(co, inv);
+    let sa_zero = _mm_cmpeq_ps(sa, zero);
+    out = _mm_blendv_ps(out, dc, sa_zero);
+    let oa_le0 = _mm_cmple_ps(out_a, zero);
+    out = _mm_blendv_ps(out, zero, oa_le0);
+    out
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn blend_separable_span_f32_sse41(dst: &mut [f32], src: &[f32], kind: SeparableBlendKind) {
+    use core::arch::x86_64::*;
+    const LANES: usize = 4;
+    let n = dst.len() / 4;
+    let mut i = 0usize;
+    let one = _mm_set1_ps(1.0);
+    let zero = _mm_set1_ps(0.0);
+
+    while i + LANES <= n {
+        let base = i * 4;
+        unsafe {
+            let (v_sr, v_sg, v_sb, v_sa) = load_rgba_f32x4_planes(src.as_ptr().add(base));
+            let (v_dr, v_dg, v_db, v_da) = load_rgba_f32x4_planes(dst.as_ptr().add(base));
+            // All-transparent src: skip the chunk.
+            if _mm_movemask_ps(_mm_cmpeq_ps(v_sa, zero)) == 0xF {
+                i += LANES;
+                continue;
+            }
+            let v_out_a = _mm_add_ps(v_sa, _mm_mul_ps(v_da, _mm_sub_ps(one, v_sa)));
+            let out_r = blend_plane_f32_sse41(v_sr, v_dr, v_sa, v_da, v_out_a, kind);
+            let out_g = blend_plane_f32_sse41(v_sg, v_dg, v_sa, v_da, v_out_a, kind);
+            let out_b = blend_plane_f32_sse41(v_sb, v_db, v_sa, v_da, v_out_a, kind);
+            let out_a = _mm_min_ps(_mm_max_ps(v_out_a, zero), one);
+            let oa_le0 = _mm_cmple_ps(v_out_a, zero);
+            let out_a = _mm_blendv_ps(out_a, zero, oa_le0);
+            let sa_zero = _mm_cmpeq_ps(v_sa, zero);
+            let out_a = _mm_blendv_ps(out_a, v_da, sa_zero);
+            store_rgba_f32x4_planes(dst.as_mut_ptr().add(base), out_r, out_g, out_b, out_a);
+        }
+        i += LANES;
+    }
+
+    while i < n {
+        let off = i * 4;
+        blend_one_pixel_f32(&mut dst[off..off + 4], &src[off..off + 4], kind);
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "sse4.1")]
+#[inline]
+unsafe fn load_rgba_f32x8_planes(
+    ptr: *const f32,
+) -> (
+    core::arch::x86_64::__m256,
+    core::arch::x86_64::__m256,
+    core::arch::x86_64::__m256,
+    core::arch::x86_64::__m256,
+) {
+    use core::arch::x86_64::*;
+    unsafe {
+        let (r0, g0, b0, a0) = load_rgba_f32x4_planes(ptr);
+        let (r1, g1, b1, a1) = load_rgba_f32x4_planes(ptr.add(16));
+        (
+            _mm256_set_m128(r1, r0),
+            _mm256_set_m128(g1, g0),
+            _mm256_set_m128(b1, b0),
+            _mm256_set_m128(a1, a0),
+        )
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "sse4.1")]
+#[inline]
+unsafe fn store_rgba_f32x8_planes(
+    ptr: *mut f32,
+    r: core::arch::x86_64::__m256,
+    g: core::arch::x86_64::__m256,
+    b: core::arch::x86_64::__m256,
+    a: core::arch::x86_64::__m256,
+) {
+    use core::arch::x86_64::*;
+    unsafe {
+        store_rgba_f32x4_planes(
+            ptr,
+            _mm256_castps256_ps128(r),
+            _mm256_castps256_ps128(g),
+            _mm256_castps256_ps128(b),
+            _mm256_castps256_ps128(a),
+        );
+        store_rgba_f32x4_planes(
+            ptr.add(16),
+            _mm256_extractf128_ps(r, 1),
+            _mm256_extractf128_ps(g, 1),
+            _mm256_extractf128_ps(b, 1),
+            _mm256_extractf128_ps(a, 1),
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn blend_plane_f32_avx2(
+    sc: core::arch::x86_64::__m256,
+    dc: core::arch::x86_64::__m256,
+    sa: core::arch::x86_64::__m256,
+    da: core::arch::x86_64::__m256,
+    out_a: core::arch::x86_64::__m256,
+    kind: SeparableBlendKind,
+) -> core::arch::x86_64::__m256 {
+    use core::arch::x86_64::*;
+    let one = _mm256_set1_ps(1.0);
+    let zero = _mm256_set1_ps(0.0);
+    let v_b = match kind {
+        SeparableBlendKind::Normal => sc,
+        SeparableBlendKind::Multiply => _mm256_mul_ps(dc, sc),
+        SeparableBlendKind::Screen => _mm256_sub_ps(_mm256_add_ps(dc, sc), _mm256_mul_ps(dc, sc)),
+        SeparableBlendKind::LinearDodge => _mm256_add_ps(dc, sc),
+        SeparableBlendKind::Overlay
+        | SeparableBlendKind::SoftLight
+        | SeparableBlendKind::HardLight
+        | SeparableBlendKind::Color => sc,
+    };
+    let term1 = _mm256_mul_ps(_mm256_mul_ps(sa, _mm256_sub_ps(one, da)), sc);
+    let term2 = _mm256_mul_ps(_mm256_mul_ps(sa, da), v_b);
+    let term3 = _mm256_mul_ps(_mm256_mul_ps(da, _mm256_sub_ps(one, sa)), dc);
+    let co = _mm256_add_ps(_mm256_add_ps(term1, term2), term3);
+    let oa_safe = _mm256_max_ps(out_a, _mm256_set1_ps(1e-20));
+    let rcp = _mm256_rcp_ps(oa_safe);
+    let inv = _mm256_mul_ps(
+        rcp,
+        _mm256_sub_ps(_mm256_set1_ps(2.0), _mm256_mul_ps(oa_safe, rcp)),
+    );
+    let mut out = _mm256_mul_ps(co, inv);
+    let sa_zero = _mm256_cmp_ps(sa, zero, _CMP_EQ_OQ);
+    out = _mm256_blendv_ps(out, dc, sa_zero);
+    let oa_le0 = _mm256_cmp_ps(out_a, zero, _CMP_LE_OQ);
+    out = _mm256_blendv_ps(out, zero, oa_le0);
+    out
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "sse4.1")]
+unsafe fn blend_separable_span_f32_avx2(dst: &mut [f32], src: &[f32], kind: SeparableBlendKind) {
+    use core::arch::x86_64::*;
+    const LANES: usize = 8;
+    let n = dst.len() / 4;
+    let mut i = 0usize;
+    let one = _mm256_set1_ps(1.0);
+    let zero = _mm256_set1_ps(0.0);
+
+    while i + LANES <= n {
+        let base = i * 4;
+        unsafe {
+            let (v_sr, v_sg, v_sb, v_sa) = load_rgba_f32x8_planes(src.as_ptr().add(base));
+            let (v_dr, v_dg, v_db, v_da) = load_rgba_f32x8_planes(dst.as_ptr().add(base));
+            if _mm256_movemask_ps(_mm256_cmp_ps(v_sa, zero, _CMP_EQ_OQ)) == 0xFF {
+                i += LANES;
+                continue;
+            }
+            let v_out_a = _mm256_add_ps(v_sa, _mm256_mul_ps(v_da, _mm256_sub_ps(one, v_sa)));
+            let out_r = blend_plane_f32_avx2(v_sr, v_dr, v_sa, v_da, v_out_a, kind);
+            let out_g = blend_plane_f32_avx2(v_sg, v_dg, v_sa, v_da, v_out_a, kind);
+            let out_b = blend_plane_f32_avx2(v_sb, v_db, v_sa, v_da, v_out_a, kind);
+            let out_a = _mm256_min_ps(_mm256_max_ps(v_out_a, zero), one);
+            let oa_le0 = _mm256_cmp_ps(v_out_a, zero, _CMP_LE_OQ);
+            let out_a = _mm256_blendv_ps(out_a, zero, oa_le0);
+            let sa_zero = _mm256_cmp_ps(v_sa, zero, _CMP_EQ_OQ);
+            let out_a = _mm256_blendv_ps(out_a, v_da, sa_zero);
+            store_rgba_f32x8_planes(dst.as_mut_ptr().add(base), out_r, out_g, out_b, out_a);
+        }
+        i += LANES;
+    }
+
+    if i < n {
+        unsafe {
+            blend_separable_span_f32_sse41(&mut dst[i * 4..], &src[i * 4..], kind);
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn load_rgba_f32x4_planes_neon(
+    ptr: *const f32,
+) -> (
+    core::arch::aarch64::float32x4_t,
+    core::arch::aarch64::float32x4_t,
+    core::arch::aarch64::float32x4_t,
+    core::arch::aarch64::float32x4_t,
+) {
+    use core::arch::aarch64::*;
+    unsafe {
+        let pix = vld4q_f32(ptr);
+        (pix.0, pix.1, pix.2, pix.3)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn store_rgba_f32x4_planes_neon(
+    ptr: *mut f32,
+    r: core::arch::aarch64::float32x4_t,
+    g: core::arch::aarch64::float32x4_t,
+    b: core::arch::aarch64::float32x4_t,
+    a: core::arch::aarch64::float32x4_t,
+) {
+    use core::arch::aarch64::*;
+    unsafe {
+        vst4q_f32(ptr, float32x4x4_t(r, g, b, a));
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn blend_plane_f32_neon(
+    sc: core::arch::aarch64::float32x4_t,
+    dc: core::arch::aarch64::float32x4_t,
+    sa: core::arch::aarch64::float32x4_t,
+    da: core::arch::aarch64::float32x4_t,
+    out_a: core::arch::aarch64::float32x4_t,
+    kind: SeparableBlendKind,
+) -> core::arch::aarch64::float32x4_t {
+    use core::arch::aarch64::*;
+    let one = vdupq_n_f32(1.0);
+    let zero = vdupq_n_f32(0.0);
+    let v_b = match kind {
+        SeparableBlendKind::Normal => sc,
+        SeparableBlendKind::Multiply => vmulq_f32(dc, sc),
+        SeparableBlendKind::Screen => vsubq_f32(vaddq_f32(dc, sc), vmulq_f32(dc, sc)),
+        SeparableBlendKind::LinearDodge => vaddq_f32(dc, sc),
+        SeparableBlendKind::Overlay
+        | SeparableBlendKind::SoftLight
+        | SeparableBlendKind::HardLight
+        | SeparableBlendKind::Color => sc,
+    };
+    let term1 = vmulq_f32(vmulq_f32(sa, vsubq_f32(one, da)), sc);
+    let term2 = vmulq_f32(vmulq_f32(sa, da), v_b);
+    let term3 = vmulq_f32(vmulq_f32(da, vsubq_f32(one, sa)), dc);
+    let co = vaddq_f32(vaddq_f32(term1, term2), term3);
+    let oa_safe = vmaxq_f32(out_a, vdupq_n_f32(1e-20));
+    let mut out = vdivq_f32(co, oa_safe);
+    let sa_zero = vceqq_f32(sa, zero);
+    out = vbslq_f32(sa_zero, dc, out);
+    let oa_le0 = vcleq_f32(out_a, zero);
+    out = vbslq_f32(oa_le0, zero, out);
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn blend_separable_span_f32_neon(dst: &mut [f32], src: &[f32], kind: SeparableBlendKind) {
+    use core::arch::aarch64::*;
+    const LANES: usize = 4;
+    let n = dst.len() / 4;
+    let mut i = 0usize;
+    let one = vdupq_n_f32(1.0);
+    let zero = vdupq_n_f32(0.0);
+
+    while i + LANES <= n {
+        let base = i * 4;
+        unsafe {
+            let (v_sr, v_sg, v_sb, v_sa) = load_rgba_f32x4_planes_neon(src.as_ptr().add(base));
+            let (v_dr, v_dg, v_db, v_da) = load_rgba_f32x4_planes_neon(dst.as_ptr().add(base));
+            let sa_zero = vceqq_f32(v_sa, zero);
+            // Skip when every lane is transparent.
+            if vminvq_u32(sa_zero) == 0xFFFF_FFFF {
+                i += LANES;
+                continue;
+            }
+            let v_out_a = vaddq_f32(v_sa, vmulq_f32(v_da, vsubq_f32(one, v_sa)));
+            let out_r = blend_plane_f32_neon(v_sr, v_dr, v_sa, v_da, v_out_a, kind);
+            let out_g = blend_plane_f32_neon(v_sg, v_dg, v_sa, v_da, v_out_a, kind);
+            let out_b = blend_plane_f32_neon(v_sb, v_db, v_sa, v_da, v_out_a, kind);
+            let mut out_a = vminq_f32(vmaxq_f32(v_out_a, zero), one);
+            let oa_le0 = vcleq_f32(v_out_a, zero);
+            out_a = vbslq_f32(oa_le0, zero, out_a);
+            out_a = vbslq_f32(sa_zero, v_da, out_a);
+            store_rgba_f32x4_planes_neon(dst.as_mut_ptr().add(base), out_r, out_g, out_b, out_a);
+        }
+        i += LANES;
+    }
+
+    while i < n {
+        let off = i * 4;
+        blend_one_pixel_f32(&mut dst[off..off + 4], &src[off..off + 4], kind);
+        i += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_blend_preserves_hdr_headroom() {
+        // Fully opaque bright HDR src onto opaque dark dst; output must be >1.0.
+        let mut dst = [0.1f32, 0.1, 0.1, 1.0];
+        let src = [2.5f32, 2.5, 2.5, 1.0];
+        blend_separable_span_f32(&mut dst, &src, SeparableBlendKind::Normal);
+        assert!(
+            dst[0] > 1.0,
+            "HDR Normal blend must not clamp to 1.0, got {}",
+            dst[0]
+        );
+        assert!(
+            (dst[0] - 2.5).abs() < 1e-5,
+            "opaque over opaque must equal src, got {}",
+            dst[0]
+        );
+    }
+
+    #[test]
+    fn linear_dodge_preserves_hdr_headroom() {
+        // LinearDodge adds colors: 0.8 + 0.9 = 1.7 > 1.0 (HDR headroom).
+        let mut dst = [0.8f32, 0.8, 0.8, 1.0];
+        let src = [0.9f32, 0.9, 0.9, 1.0];
+        blend_separable_span_f32(&mut dst, &src, SeparableBlendKind::LinearDodge);
+        assert!(
+            dst[0] > 1.0,
+            "LinearDodge must not clamp HDR result, got {}",
+            dst[0]
+        );
+        assert!(
+            (dst[0] - 1.7).abs() < 1e-4,
+            "LinearDodge opaque+opaque: expected 1.7, got {}",
+            dst[0]
+        );
+    }
+
+    #[test]
+    fn transparent_src_leaves_dst_unchanged() {
+        let original = [0.5f32, 0.3, 0.7, 0.8];
+        let mut dst = original;
+        let src = [99.0f32, 99.0, 99.0, 0.0]; // fully transparent
+        blend_separable_span_f32(&mut dst, &src, SeparableBlendKind::Normal);
+        assert_eq!(dst, original, "transparent src must not modify dst");
+    }
+
+    #[test]
+    fn alpha_is_clamped_to_one() {
+        // Both src and dst are fully opaque; alpha output must be exactly 1.0.
+        let mut dst = [0.5f32, 0.5, 0.5, 1.0];
+        let src = [0.2f32, 0.2, 0.2, 1.0];
+        blend_separable_span_f32(&mut dst, &src, SeparableBlendKind::Normal);
+        assert!(
+            dst[3] <= 1.0,
+            "alpha must be clamped to 1.0, got {}",
+            dst[3]
+        );
+        assert!(
+            (dst[3] - 1.0).abs() < 1e-6,
+            "alpha should be 1.0, got {}",
+            dst[3]
+        );
+    }
+
+    #[test]
+    fn multiply_dark_produces_zero() {
+        // Multiply of two fully-opaque black pixels stays black.
+        let mut dst = [0.0f32, 0.0, 0.0, 1.0];
+        let src = [1.0f32, 1.0, 1.0, 1.0];
+        blend_separable_span_f32(&mut dst, &src, SeparableBlendKind::Multiply);
+        assert!(
+            (dst[0] - 0.0).abs() < 1e-6,
+            "Multiply(0,1)=0, got {}",
+            dst[0]
+        );
+    }
+
+    #[test]
+    fn simd_matches_scalar_across_modes() {
+        for kind in [
+            SeparableBlendKind::Normal,
+            SeparableBlendKind::Screen,
+            SeparableBlendKind::LinearDodge,
+            SeparableBlendKind::Multiply,
+        ] {
+            let mut dst_simd = [
+                0.1f32, 0.2, 0.3, 1.0, 0.5, 0.5, 0.5, 0.5, 2.0, 1.5, 0.8, 1.0, 0.0, 0.0, 0.0, 0.0,
+                0.9, 0.1, 0.2, 0.25, 1.2, 0.3, 0.4, 0.75, 0.05, 0.05, 0.05, 1.0, 0.7, 0.8, 0.9,
+                0.1,
+            ];
+            let mut dst_ref = dst_simd;
+            let src = [
+                0.4f32, 0.5, 0.6, 0.5, 1.5, 1.5, 1.5, 1.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.3, 0.4, 0.8,
+                0.1, 0.2, 0.3, 1.0, 0.0, 1.0, 0.0, 0.5, 3.0, 2.0, 1.0, 0.3, 0.5, 0.5, 0.5, 0.0,
+            ];
+            blend_separable_span_f32(&mut dst_simd, &src, kind);
+            blend_separable_span_f32_scalar(&mut dst_ref, &src, kind);
+            for (i, (a, b)) in dst_simd.iter().zip(dst_ref.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() < 1e-4,
+                    "mismatch at {i} for {kind:?}: simd={a} scalar={b}"
+                );
+            }
+        }
+    }
+}

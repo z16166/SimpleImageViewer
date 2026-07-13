@@ -58,7 +58,7 @@ use super::{
     source_key_for_path,
 };
 use super::{
-    extract_exif_thumbnail, hdr_display_requests_sdr_preview,
+    extract_exif_thumbnail, extract_exif_thumbnail_from_mmap, hdr_display_requests_sdr_preview,
     hdr_sdr_fallback_is_placeholder_for_load, should_use_embedded_sdr_master_load,
 };
 
@@ -71,7 +71,7 @@ use detect::{
     PrimaryDecodeAttempt, load_primary_with_detection_fallback, primary_with_optional_mmap,
     primary_with_retainable_mmap,
 };
-use hdr_formats::load_hdr;
+use hdr_formats::{load_hdr, load_hdr_from_mmap};
 use jpeg::load_jpeg_primary_attempt;
 use modern::{
     load_avif_with_target_capacity_outcome_from_mmap, load_heif_hdr_aware_from_mmap,
@@ -87,12 +87,14 @@ pub(crate) struct ImageLoadRequest<'a> {
     pub(crate) tx: crate::loader::orchestrator::LoaderOutputSender,
     pub(crate) refine_tx: Sender<RefinementRequest>,
     pub(crate) decode_profile: crate::loader::DecodeProfile,
+    pub(crate) cancel: crate::loader::DecodeCancelFlag,
     pub(crate) high_quality: bool,
     pub(crate) raw_demosaic_mode: crate::settings::RawDemosaicMode,
     pub(crate) hdr_target_capacity: f32,
     pub(crate) hdr_tone_map: HdrToneMapSettings,
     pub(crate) raw_open_prefetch: Option<&'a crate::loader::orchestrator::RawOpenPrefetch>,
     pub(crate) prefer_embedded_sdr_master: bool,
+    pub(crate) psd_gpu: Option<crate::psb_layer_blend_gpu::PsdGpuContext>,
 }
 
 pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
@@ -102,23 +104,45 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         tx,
         refine_tx,
         decode_profile,
+        cancel,
         high_quality,
         raw_demosaic_mode,
         hdr_target_capacity,
         hdr_tone_map,
         raw_open_prefetch,
         prefer_embedded_sdr_master,
+        psd_gpu,
     } = request;
+    if cancel.is_cancelled() {
+        return LoadResult {
+            index,
+            decode_profile: decode_profile.clone(),
+            source_key: crate::loader::source_key_for_path(path),
+            result: Err(crate::loader::DecodeError::Cancelled),
+            preview_bundle: crate::loader::PreviewBundle::initial(),
+            ultra_hdr_capacity_sensitive: false,
+            sdr_fallback_is_placeholder: false,
+            target_hdr_capacity: hdr_target_capacity,
+            raw_osd: None,
+            psd_osd: None,
+            uploaded_planes: None,
+            device_id: None,
+            staged_gpu_plane_upload: false,
+        };
+    }
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
     let mut raw_osd_info: Option<crate::loader::RawOsdInfo> = None;
+    let mut psd_osd_info: Option<crate::loader::PsdOsdInfo> = None;
     // Once per load: reused for dispatch and capacity-sensitive classification.
     let ext = path_ext_lower(path);
 
-    let result = (|| -> Result<ImageData, String> {
+    // Retained when primary decode mapped the file so tiled EXIF thumbs skip a second map_file.
+    let mut retained_mmap: Option<std::sync::Arc<memmap2::Mmap>> = None;
+    let result = (|| -> Result<ImageData, crate::loader::DecodeError> {
         // Size check: orchestrator already rejects tiny files before spawn; decode paths that
         // mmap also enforce MIN_IMAGE_FILE_BYTES inside `map_file` (single metadata() call).
         let is_system_native = {
@@ -127,7 +151,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         };
 
         if ext == "exr" {
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -138,35 +162,67 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                         path,
                         hdr_target_capacity,
                         hdr_tone_map,
+                        Some(cancel.as_atomic()),
                     ))
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result.map_err(Into::into);
         }
 
         if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
-            match load_hdr(path, hdr_target_capacity, hdr_tone_map) {
-                Ok(img) => return Ok(img),
+            // `.hdr`/`.pic` are often misnamed SDR files; sniff Radiance magic before a
+            // full float decode so we skip straight to the SDR fallback chain. Reuse the
+            // same mmap for decode when the magic matches (checklist #29).
+            match crate::mmap_util::map_file(path) {
+                Ok((mmap, _))
+                    if crate::hdr::decode::looks_like_radiance_hdr_bytes(mmap.as_ref()) =>
+                {
+                    match load_hdr_from_mmap(
+                        path,
+                        Arc::new(mmap),
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        Some(cancel.as_atomic()),
+                    ) {
+                        Ok(img) => return Ok(img),
+                        Err(e) => {
+                            log::debug!(
+                                "[{}] HDR float decode failed, continuing with standard fallback chain: {}",
+                                file_name,
+                                e
+                            );
+                        }
+                    }
+                }
+                Ok(_) => {
+                    log::debug!(
+                        "[{}] .{} lacks Radiance magic; skipping HDR probe",
+                        file_name,
+                        ext
+                    );
+                }
                 Err(e) => {
                     log::debug!(
-                        "[{}] HDR float decode failed, continuing with standard fallback chain: {}",
-                        file_name,
-                        e
+                        "[{}] HDR candidate mmap failed ({e}); continuing with standard fallback chain",
+                        file_name
                     );
                 }
             }
         }
 
-        // PSD/PSB: only `load_psd` (do not fall through — image-rs would invoke `psd` again without catch_unwind).
+        // PSD/PSB: only `load_psd` (self-written composite path; do not fall through to image-rs).
         if ext == "psd" || ext == "psb" {
-            return load_psd(
+            let (img, osd) = load_psd(
                 path,
-                Some(crate::loader::tiled_sources::PsdV1LoadNotify {
-                    index,
-                    decode_profile: decode_profile.clone(),
-                    source_key: crate::loader::source_key_for_path(path),
-                    load_tx: tx.clone(),
-                }),
-            );
+                cancel.clone(),
+                psd_gpu,
+                hdr_target_capacity,
+                hdr_tone_map,
+                decode_profile.psd_hidden_layer_strategy,
+            )?;
+            psd_osd_info = osd;
+            return Ok(img);
         }
 
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
@@ -184,6 +240,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 hdr_tone_map,
                 raw_open_prefetch,
                 file_bytes: None,
+                cancel: cancel.clone(),
             })?;
             if out.osd.sensor_size.0 > 0 {
                 raw_osd_info = Some(out.osd);
@@ -192,7 +249,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         }
 
         if ext == "jpg" || ext == "jpeg" {
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -204,9 +261,12 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                         hdr_target_capacity,
                         hdr_tone_map,
                         prefer_embedded_sdr_master,
+                        Some(cancel.as_atomic()),
                     )
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result.map_err(Into::into);
         }
         if ext == "tif" || ext == "tiff" {
             let file_mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
@@ -229,15 +289,17 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     hdr_tone_map,
                     raw_open_prefetch,
                     file_bytes: Some(file_mmap.as_ref()),
+                    cancel: cancel.clone(),
                 })
                 .map(|out| {
                     if out.osd.sensor_size.0 > 0 {
                         raw_osd_info = Some(out.osd);
                     }
                     out.image
-                });
+                })
+                .map_err(Into::into);
             }
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -250,14 +312,17 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                             mmap,
                             hdr_target_capacity,
                             hdr_tone_map,
+                            Some(cancel.as_atomic()),
                         )
                     })
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result.map_err(Into::into);
         }
 
         if ext == "avif" || ext == "avifs" {
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -272,6 +337,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                             hdr_tone_map,
                             prefer_embedded_sdr_master,
                             true,
+                            cancel.clone(),
                         )
                         .map(|outcome| {
                             if let Some(job) = outcome.sequence_remainder {
@@ -287,10 +353,12 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     })
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result.map_err(Into::into);
         }
 
         if ext == "jxl" {
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -305,6 +373,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                             hdr_tone_map,
                             prefer_embedded_sdr_master,
                             true,
+                            cancel.clone(),
                         )
                         .map(|outcome| {
                             if let Some(job) = outcome.remainder_job {
@@ -320,10 +389,12 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     })
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result.map_err(Into::into);
         }
 
         if ext == "heif" || ext == "heic" || ext == "hif" {
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -341,25 +412,35 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                                 path: Some(path),
                             },
                             prefer_embedded_sdr_master,
+                            Some(cancel.as_atomic()),
                         )
                     })
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result.map_err(Into::into);
         }
 
         if is_system_native && !is_maybe_animated(&ext) {
             #[cfg(target_os = "windows")]
-            if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
+            if let Ok(img) =
+                crate::wic::load_via_wic(path, high_quality, None, Some(cancel.as_atomic()))
+            {
                 return Ok(img);
             }
             #[cfg(target_os = "macos")]
-            if let Ok(img) = crate::macos_image_io::load_via_image_io(path, high_quality, None) {
+            if let Ok(img) = crate::macos_image_io::load_via_image_io(
+                path,
+                high_quality,
+                None,
+                Some(cancel.as_atomic()),
+            ) {
                 return Ok(img);
             }
         }
 
         if matches!(&*ext, "gif" | "png" | "apng" | "webp") {
-            return load_primary_with_detection_fallback(
+            let outcome = load_primary_with_detection_fallback(
                 path,
                 file_name,
                 hdr_target_capacity,
@@ -374,6 +455,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                                 hdr_target_capacity,
                                 hdr_tone_map,
                                 true,
+                                cancel.clone(),
                             ),
                             "png" | "apng" => load_png_with_bootstrap_from_mmap(
                                 path,
@@ -381,6 +463,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                                 hdr_target_capacity,
                                 hdr_tone_map,
                                 true,
+                                cancel.clone(),
                             ),
                             "webp" => load_webp_with_bootstrap_from_mmap(
                                 path,
@@ -388,6 +471,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                                 hdr_target_capacity,
                                 hdr_tone_map,
                                 true,
+                                cancel.clone(),
                             ),
                             _ => unreachable!("matched gif/png/apng/webp above"),
                         }?;
@@ -403,9 +487,11 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                     })
                 },
             );
+            retained_mmap = outcome.retained_mmap;
+            return outcome.result.map_err(Into::into);
         }
 
-        load_primary_with_detection_fallback(
+        let outcome = load_primary_with_detection_fallback(
             path,
             file_name,
             hdr_target_capacity,
@@ -413,10 +499,18 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             high_quality,
             || {
                 primary_with_retainable_mmap(path, |mmap| {
-                    load_static_from_mmap(path, mmap.as_ref(), hdr_target_capacity, hdr_tone_map)
+                    load_static_from_mmap(
+                        path,
+                        mmap.as_ref(),
+                        hdr_target_capacity,
+                        hdr_tone_map,
+                        Some(cancel.as_atomic()),
+                    )
                 })
             },
-        )
+        );
+        retained_mmap = outcome.retained_mmap;
+        outcome.result.map_err(Into::into)
     })();
 
     let mut preview: Option<DecodedImage> = None;
@@ -424,6 +518,23 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
 
     let final_result = match result {
         Ok(ImageData::Tiled(source)) => {
+            if cancel.is_cancelled() {
+                return LoadResult {
+                    index,
+                    decode_profile: decode_profile.clone(),
+                    source_key: crate::loader::source_key_for_path(path),
+                    result: Err(crate::loader::DecodeError::Cancelled),
+                    preview_bundle: crate::loader::PreviewBundle::initial(),
+                    ultra_hdr_capacity_sensitive: false,
+                    sdr_fallback_is_placeholder: false,
+                    target_hdr_capacity: hdr_target_capacity,
+                    raw_osd: None,
+                    psd_osd: None,
+                    uploaded_planes: None,
+                    device_id: None,
+                    staged_gpu_plane_upload: false,
+                };
+            }
             log::info!(
                 "[{}] Tiled image source active: {}x{} ({:.1} MP)",
                 file_name,
@@ -433,8 +544,13 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             );
 
             let t0 = std::time::Instant::now();
+            // Prefer the primary decode mmap when available (checklist #29); fall back to
+            // map_file only for paths that did not retain one (RAW / PSD / platform native).
             let exif_thumb = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                extract_exif_thumbnail(path)
+                match retained_mmap.as_deref() {
+                    Some(mmap) => extract_exif_thumbnail_from_mmap(mmap, path),
+                    None => extract_exif_thumbnail(path),
+                }
             }));
             let logical_w = source.width();
             let logical_h = source.height();
@@ -470,6 +586,23 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 }
             }
             if !used_exif {
+                if cancel.is_cancelled() {
+                    return LoadResult {
+                        index,
+                        decode_profile: decode_profile.clone(),
+                        source_key: crate::loader::source_key_for_path(path),
+                        result: Err(crate::loader::DecodeError::Cancelled),
+                        preview_bundle: crate::loader::PreviewBundle::initial(),
+                        ultra_hdr_capacity_sensitive: false,
+                        sdr_fallback_is_placeholder: false,
+                        target_hdr_capacity: hdr_target_capacity,
+                        raw_osd: None,
+                        psd_osd: None,
+                        uploaded_planes: None,
+                        device_id: None,
+                        staged_gpu_plane_upload: false,
+                    };
+                }
                 log::info!(
                     "[{}] Generating {}px preview...",
                     file_name,
@@ -664,6 +797,7 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
         sdr_fallback_is_placeholder,
         target_hdr_capacity: hdr_target_capacity,
         raw_osd: raw_osd_info,
+        psd_osd: psd_osd_info,
         uploaded_planes: None,
         device_id: None,
         staged_gpu_plane_upload: false,
@@ -684,11 +818,13 @@ pub(crate) fn path_ext_lower(path: &Path) -> Cow<'_, str> {
 fn is_hdr_capacity_sensitive_load(
     ext: &str,
     path: &Path,
-    result: &Result<ImageData, String>,
+    result: &Result<ImageData, crate::loader::DecodeError>,
 ) -> bool {
     let is_jpeg = ext == "jpg" || ext == "jpeg";
     let is_raw = crate::raw_processor::is_raw_extension(ext);
+    let is_psd = ext == "psd" || ext == "psb";
     (is_jpeg
+        || is_psd
         || modern::is_hdr_capable_modern_format_path(path)
         || crate::hdr::decode::is_hdr_candidate_ext(ext)
         || is_raw)

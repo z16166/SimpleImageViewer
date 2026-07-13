@@ -95,6 +95,7 @@ impl ImageViewerApp {
         self.raw_demosaic_baked_notify.lock().clear();
         // Clears all per-index RAW OSD rows (directory switch / full list reorder).
         self.raw_metadata.clear();
+        self.psd_osd.clear();
         self.cpu_raw_refinement_pending_indices.clear();
         self.hq_tiled_preview_pending_indices.clear();
         self.deferred_sdr_uploads.clear();
@@ -389,6 +390,7 @@ impl ImageViewerApp {
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(self.current_index),
+                    self.settings.psd_hidden_layer_strategy,
                 );
             }
         }
@@ -428,6 +430,7 @@ impl ImageViewerApp {
             self.image_files[idx].clone(),
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(idx),
+            self.settings.psd_hidden_layer_strategy,
         );
     }
 

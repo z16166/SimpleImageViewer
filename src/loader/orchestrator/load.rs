@@ -118,6 +118,7 @@ struct LoadWorkerInput {
     refine_tx: Sender<RefinementRequest>,
     loading_ref: Arc<Mutex<HashMap<usize, InFlightLoad>>>,
     decode_profile: DecodeProfile,
+    cancel: crate::loader::DecodeCancelFlag,
     high_quality: bool,
     raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
@@ -128,6 +129,7 @@ struct LoadWorkerInput {
     wgpu_device_id_at_spawn: u64,
     wgpu_is_opengl: bool,
     wgpu_device_id_live: Arc<AtomicU64>,
+    wgpu_pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
     hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
     embedded_iso_gain_map_sdr_master_live: Arc<std::sync::atomic::AtomicBool>,
     hdr_pending_gpu_writes: Option<Arc<crate::hdr::renderer::HdrPendingWorkQueues>>,
@@ -295,6 +297,7 @@ impl ImageLoader {
                             refine_tx: job.refine_tx.clone(),
                             loading_ref: job.loading.clone(),
                             decode_profile: job.decode_profile.clone(),
+                            cancel: job.cancel.clone(),
                             high_quality: job.high_quality,
                             raw_demosaic_mode: job.raw_demosaic_mode,
                             hdr_target_capacity: job.hdr_target_capacity,
@@ -306,6 +309,7 @@ impl ImageLoader {
                             wgpu_device_id_at_spawn: job.wgpu_device_id_at_spawn,
                             wgpu_is_opengl: job.wgpu_is_opengl,
                             wgpu_device_id_live: Arc::clone(&job.wgpu_device_id_live),
+                            wgpu_pipeline_cache: job.wgpu_pipeline_cache.clone(),
                             hdr_callback_upload_active_live: Arc::clone(
                                 &job.hdr_callback_upload_active_live,
                             ),
@@ -814,6 +818,7 @@ impl ImageLoader {
             wgpu_queue: None,
             wgpu_device_id: Arc::new(AtomicU64::new(1)),
             wgpu_is_opengl: false,
+            wgpu_pipeline_cache: None,
             output_mode_bits,
             current_image_os_threads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             capacity_requeue_counts: std::collections::HashMap::new(),
@@ -825,12 +830,29 @@ impl ImageLoader {
         device: Option<wgpu::Device>,
         queue: Option<wgpu::Queue>,
         device_id: u64,
+        pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
     ) {
         self.wgpu_is_opengl = device
             .as_ref()
             .is_some_and(|d| d.adapter_info().backend == wgpu::Backend::Gl);
+        if let (Some(dev), Some(cache)) = (device.as_ref(), pipeline_cache.as_ref()) {
+            crate::psb_layer_blend_gpu::prewarm_psd_normal_blend_pipeline(
+                dev,
+                device_id,
+                self.wgpu_is_opengl,
+                Some(cache.as_ref()),
+            );
+        } else if let Some(dev) = device.as_ref() {
+            crate::psb_layer_blend_gpu::prewarm_psd_normal_blend_pipeline(
+                dev,
+                device_id,
+                self.wgpu_is_opengl,
+                None,
+            );
+        }
         self.wgpu_device = device;
         self.wgpu_queue = queue;
+        self.wgpu_pipeline_cache = pipeline_cache;
         self.wgpu_device_id
             .store(device_id, std::sync::atomic::Ordering::Release);
         self.bump_profile_epoch();
@@ -842,7 +864,7 @@ impl ImageLoader {
         queue: Option<wgpu::Queue>,
         device_id: u64,
     ) -> Self {
-        self.apply_wgpu_context(device, queue, device_id);
+        self.apply_wgpu_context(device, queue, device_id, None);
         self
     }
 
@@ -860,8 +882,9 @@ impl ImageLoader {
         device: Option<wgpu::Device>,
         queue: Option<wgpu::Queue>,
         device_id: u64,
+        pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
     ) {
-        self.apply_wgpu_context(device, queue, device_id);
+        self.apply_wgpu_context(device, queue, device_id, pipeline_cache);
     }
 
     pub(crate) fn wgpu_device_handle(&self) -> Option<&wgpu::Device> {
@@ -935,6 +958,7 @@ impl ImageLoader {
         current_index: usize,
         image_count: usize,
         max_distance: usize,
+        retain: &std::collections::HashSet<usize>,
     ) {
         if image_count == 0 {
             return;
@@ -945,12 +969,13 @@ impl ImageLoader {
                 .keys()
                 .copied()
                 .filter(|&idx| {
-                    super::preload_plan::index_outside_prefetch_window(
-                        current_index,
-                        image_count,
-                        idx,
-                        max_distance,
-                    )
+                    !retain.contains(&idx)
+                        && super::preload_plan::index_outside_prefetch_window(
+                            current_index,
+                            image_count,
+                            idx,
+                            max_distance,
+                        )
                 })
                 .collect()
         };
@@ -969,7 +994,9 @@ impl ImageLoader {
         {
             let mut loading = self.loading.lock();
             for idx in &cancelled {
-                loading.remove(idx);
+                if let Some(entry) = loading.remove(idx) {
+                    entry.cancel.cancel();
+                }
             }
         }
         {
@@ -1068,13 +1095,15 @@ impl ImageLoader {
         }
     }
 
+    /// Returns `false` when the spawn was skipped (already covered or neighbor capacity full).
     pub fn request_load(
         &mut self,
         index: usize,
         path: PathBuf,
         high_quality: bool,
         raw_demosaic_mode: crate::settings::RawDemosaicMode,
-    ) {
+        psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy,
+    ) -> bool {
         let load_intent = if index == self.preload_plan.current_index() {
             LoadIntent::Current
         } else {
@@ -1082,6 +1111,7 @@ impl ImageLoader {
         };
         let decode_profile = DecodeProfile {
             raw_high_quality: high_quality,
+            psd_hidden_layer_strategy,
             raw_demosaic_mode,
             output_mode: self.output_mode_snapshot(),
             ultra_hdr_decode_capacity: self.hdr_target_capacity(),
@@ -1091,12 +1121,19 @@ impl ImageLoader {
         };
         let decode_profile_for_job = decode_profile.clone();
         let decode_profile_spawn = decode_profile_for_job.clone();
-        {
+        let cancel = {
             let mut loading = self.loading.lock();
             if !should_spawn_load_task(&mut loading, index, decode_profile) {
-                return;
+                return false;
             }
-        }
+            loading
+                .get(&index)
+                .expect("should_spawn_load_task inserted in-flight entry")
+                .cancel
+                .clone()
+        };
+        let cancel_spawn = cancel.clone();
+        let cancel_delayed = cancel;
 
         if let Err(e) = crate::mmap_util::reject_if_image_file_too_small(&path) {
             log::debug!(
@@ -1109,19 +1146,20 @@ impl ImageLoader {
                 index,
                 decode_profile: decode_profile_for_job.clone(),
                 source_key: source_key_for_path(&path),
-                result: Err(e),
+                result: Err(e.into()),
                 preview_bundle: PreviewBundle::initial(),
                 ultra_hdr_capacity_sensitive: false,
                 sdr_fallback_is_placeholder: false,
                 target_hdr_capacity: self.hdr_target_capacity(),
                 raw_osd: None,
+                psd_osd: None,
                 uploaded_planes: None,
                 device_id: None,
                 staged_gpu_plane_upload: false,
             };
             let _ = self.tx.try_send(LoaderOutput::Image(Box::new(load_result)));
             self.loading.lock().remove(&index);
-            return;
+            return true;
         }
 
         let claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1147,6 +1185,7 @@ impl ImageLoader {
             .load(std::sync::atomic::Ordering::Relaxed);
         let wgpu_is_opengl = self.wgpu_is_opengl;
         let wgpu_device_id_live = Arc::clone(&self.wgpu_device_id);
+        let wgpu_pipeline_cache = self.wgpu_pipeline_cache.clone();
         let hdr_callback_upload_active_live = Arc::clone(&self.hdr_callback_upload_active);
         let embedded_iso_gain_map_sdr_master_live =
             Arc::clone(&self.embedded_iso_gain_map_sdr_master);
@@ -1166,6 +1205,7 @@ impl ImageLoader {
         let wgpu_device_spawn = wgpu_device.clone();
         let wgpu_queue_spawn = wgpu_queue.clone();
         let wgpu_device_id_live_spawn = Arc::clone(&wgpu_device_id_live);
+        let wgpu_pipeline_cache_spawn = wgpu_pipeline_cache.clone();
         let hdr_callback_upload_active_live_spawn = Arc::clone(&hdr_callback_upload_active_live);
         let embedded_iso_gain_map_sdr_master_live_spawn =
             Arc::clone(&embedded_iso_gain_map_sdr_master_live);
@@ -1194,6 +1234,7 @@ impl ImageLoader {
                 refine_tx: rtx1,
                 loading_ref: loading1,
                 decode_profile: decode_profile_spawn,
+                cancel: cancel_spawn,
                 high_quality,
                 raw_demosaic_mode,
                 hdr_target_capacity,
@@ -1205,6 +1246,7 @@ impl ImageLoader {
                 wgpu_device_id_at_spawn,
                 wgpu_is_opengl,
                 wgpu_device_id_live: wgpu_device_id_live_spawn,
+                wgpu_pipeline_cache: wgpu_pipeline_cache_spawn,
                 hdr_callback_upload_active_live: hdr_callback_upload_active_live_spawn,
                 embedded_iso_gain_map_sdr_master_live: embedded_iso_gain_map_sdr_master_live_spawn,
             });
@@ -1301,6 +1343,7 @@ impl ImageLoader {
         let delayed_job = DelayedFallbackJob {
             index,
             decode_profile: decode_profile_for_job,
+            cancel: cancel_delayed,
             path: path2,
             high_quality,
             raw_demosaic_mode,
@@ -1317,6 +1360,7 @@ impl ImageLoader {
             wgpu_device_id_at_spawn,
             wgpu_is_opengl,
             wgpu_device_id_live,
+            wgpu_pipeline_cache,
             hdr_callback_upload_active_live,
             embedded_iso_gain_map_sdr_master_live,
         };
@@ -1326,6 +1370,7 @@ impl ImageLoader {
             *slot = Some(delayed_job);
             cvar.notify_one();
         }
+        true
     }
 
     /// True when [`ImageLoader::loading`] shows a **strictly newer** registered profile for
@@ -1363,6 +1408,7 @@ impl ImageLoader {
             refine_tx,
             loading_ref,
             decode_profile,
+            cancel,
             high_quality,
             raw_demosaic_mode,
             hdr_target_capacity,
@@ -1373,6 +1419,7 @@ impl ImageLoader {
             wgpu_device_id_at_spawn,
             wgpu_is_opengl,
             wgpu_device_id_live,
+            wgpu_pipeline_cache,
             hdr_callback_upload_active_live,
             embedded_iso_gain_map_sdr_master_live,
             hdr_pending_gpu_writes,
@@ -1384,6 +1431,9 @@ impl ImageLoader {
             if !loading.contains_key(&index) {
                 return;
             }
+        }
+        if cancel.is_cancelled() {
+            return;
         }
 
         let decode_profile_for_load = decode_profile.clone();
@@ -1401,6 +1451,7 @@ impl ImageLoader {
                         tx: tx.clone(),
                         refine_tx: refine_tx.clone(),
                         decode_profile: decode_profile_for_load,
+                        cancel: cancel.clone(),
                         high_quality,
                         raw_demosaic_mode,
                         hdr_target_capacity,
@@ -1408,6 +1459,19 @@ impl ImageLoader {
                         raw_open_prefetch: Some(raw_open_prefetch.as_ref()),
                         prefer_embedded_sdr_master: embedded_iso_gain_map_sdr_master_live
                             .load(std::sync::atomic::Ordering::Acquire),
+                        psd_gpu: match (wgpu_device.clone(), wgpu_queue.clone()) {
+                            (Some(device), Some(queue)) => {
+                                Some(crate::psb_layer_blend_gpu::PsdGpuContext {
+                                    device,
+                                    queue,
+                                    pipeline_cache: wgpu_pipeline_cache.clone(),
+                                    device_id: wgpu_device_id_at_spawn,
+                                    device_id_live: Arc::clone(&wgpu_device_id_live),
+                                    is_opengl: wgpu_is_opengl,
+                                })
+                            }
+                            _ => None,
+                        },
                     })
                 },
             )
@@ -1429,12 +1493,13 @@ impl ImageLoader {
                 index,
                 decode_profile: decode_profile.clone(),
                 source_key: source_key_for_path(&path),
-                result: Err(format!("Decoder Panic: {}", msg)),
+                result: Err(format!("Decoder Panic: {}", msg).into()),
                 preview_bundle: PreviewBundle::initial(),
                 ultra_hdr_capacity_sensitive: false,
                 sdr_fallback_is_placeholder: false,
                 target_hdr_capacity: hdr_target_capacity,
                 raw_osd: None,
+                psd_osd: None,
                 uploaded_planes: None,
                 device_id: None,
                 staged_gpu_plane_upload: false,
@@ -1442,6 +1507,10 @@ impl ImageLoader {
         });
 
         if let Err(ref e) = load_result.result {
+            if e.is_cancelled() {
+                log::debug!("[Loader] Load cancelled for index={}", index);
+                return;
+            }
             log::error!("[Loader] Load FAILED for index={}: {}", index, e);
         }
         #[cfg(feature = "preload-debug")]

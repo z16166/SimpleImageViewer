@@ -401,9 +401,10 @@ struct ManualScanlineDecodePass<'a> {
     linear_scratch: Option<&'a mut [f32]>,
     actual_min: &'a mut f64,
     actual_max: &'a mut f64,
+    cancel: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
-unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
+unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) -> Result<(), String> {
     // SAFETY (caller contract): `tif` is a valid libtiff handle opened by this loader and is not
     // shared across threads. `buf` is sized to `TIFFScanlineSize(tif)`; `rgba` fits `width * height * 4`.
     let ManualScanlineDecodePass {
@@ -421,6 +422,7 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
         mut linear_scratch,
         actual_min,
         actual_max,
+        cancel,
     } = pass;
     let mut linear_stats = TiffLinearScratchStats {
         actual_min,
@@ -432,6 +434,7 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
                 .as_deref_mut()
                 .expect("deferred linear scale requires scratch");
             for y in 0..height {
+                super::constants::poll_tiff_scanline_cancel(cancel, y)?;
                 if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0
                 {
                     buf.fill(0);
@@ -448,6 +451,7 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
             }
         } else {
             for y in 0..height {
+                super::constants::poll_tiff_scanline_cancel(cancel, y)?;
                 if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0
                 {
                     buf.fill(0);
@@ -460,6 +464,7 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
         let scratch = linear_scratch.expect("deferred linear scale requires scratch");
         for s in 0..samples_to_process {
             for y in 0..height {
+                super::constants::poll_tiff_scanline_cancel(cancel, y)?;
                 if unsafe {
                     lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, s as u16)
                 } <= 0
@@ -480,6 +485,7 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
     } else {
         for s in 0..samples_to_process {
             for y in 0..height {
+                super::constants::poll_tiff_scanline_cancel(cancel, y)?;
                 if unsafe {
                     lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, s as u16)
                 } <= 0
@@ -491,12 +497,14 @@ unsafe fn manual_decode_scanline_pass(pass: ManualScanlineDecodePass<'_>) {
             }
         }
     }
+    Ok(())
 }
 
 pub(crate) unsafe fn manual_decode_scanline(
     tif: *mut lib::TIFF,
     width: u32,
     height: u32,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<u8>, String> {
     // SAFETY (caller contract): `tif` is a valid, exclusive libtiff handle for one image.
     let mut bps: u16 = 0;
@@ -629,7 +637,8 @@ pub(crate) unsafe fn manual_decode_scanline(
             linear_scratch: linear_scratch.as_deref_mut(),
             actual_min: &mut actual_min,
             actual_max: &mut actual_max,
-        });
+            cancel,
+        })?;
     }
 
     if use_linear_deferred_scale {

@@ -318,6 +318,7 @@ impl Ord for TileRequest {
 pub(crate) struct DelayedFallbackJob {
     pub(crate) index: usize,
     pub(crate) decode_profile: DecodeProfile,
+    pub(crate) cancel: crate::loader::DecodeCancelFlag,
     pub(crate) path: PathBuf,
     pub(crate) high_quality: bool,
     pub(crate) raw_demosaic_mode: crate::settings::RawDemosaicMode,
@@ -333,6 +334,7 @@ pub(crate) struct DelayedFallbackJob {
     pub(crate) wgpu_device_id_at_spawn: u64,
     pub(crate) wgpu_is_opengl: bool,
     pub(crate) wgpu_device_id_live: Arc<AtomicU64>,
+    pub(crate) wgpu_pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
     pub(crate) hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) embedded_iso_gain_map_sdr_master_live: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) hdr_pending_gpu_writes: Option<Arc<crate::hdr::renderer::HdrPendingWorkQueues>>,
@@ -343,30 +345,21 @@ pub(crate) fn should_spawn_load_task(
     index: usize,
     profile: DecodeProfile,
 ) -> bool {
-    match loading.get(&index) {
-        Some(existing) => match profile_spawn_relation(&existing.profile, &profile) {
-            ProfileSpawnRelation::Equal => false,
-            ProfileSpawnRelation::Upgrade => {
-                loading.insert(index, InFlightLoad { profile });
-                true
+    if let Some(existing) = loading.get(&index) {
+        match profile_spawn_relation(&existing.profile, &profile) {
+            ProfileSpawnRelation::Equal => return false,
+            ProfileSpawnRelation::Upgrade | ProfileSpawnRelation::Downgrade => {
+                // Abort the previous worker's long decode; new registration gets a fresh flag.
+                existing.cancel.cancel();
             }
-            ProfileSpawnRelation::Downgrade => {
-                // Supersede the registered profile so gate/install reject stale output; spawn the
-                // downgraded request (old worker may still finish but is no longer registered).
-                loading.insert(index, InFlightLoad { profile });
-                true
-            }
-        },
-        None => {
-            if profile.load_intent == LoadIntent::NeighborPrefetch
-                && loading.len() >= MAX_IMG_LOADER_THREADS
-            {
-                return false;
-            }
-            loading.insert(index, InFlightLoad { profile });
-            true
         }
+    } else if profile.load_intent == LoadIntent::NeighborPrefetch
+        && loading.len() >= MAX_IMG_LOADER_THREADS
+    {
+        return false;
     }
+    loading.insert(index, InFlightLoad::new(profile));
+    true
 }
 
 pub struct ImageLoader {
@@ -402,6 +395,7 @@ pub struct ImageLoader {
     /// Live epoch; compare before background GPU upload and on the main thread at registration.
     pub(crate) wgpu_device_id: Arc<AtomicU64>,
     pub(crate) wgpu_is_opengl: bool,
+    pub(crate) wgpu_pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
     pub(crate) output_mode_bits: Arc<AtomicU32>,
     /// Dedicated OS threads running [`LoadIntent::Current`] decode (bounded — see
     /// [`crate::loader::MAX_CURRENT_IMAGE_OS_THREADS`]).

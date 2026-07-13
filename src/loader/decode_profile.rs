@@ -17,8 +17,9 @@
 //! Decode / display profile snapshots for loader spawn and result acceptance (generation-plan Phase A).
 
 use crate::hdr::types::HdrOutputMode;
-use crate::settings::RawDemosaicMode;
+use crate::settings::{PsdHiddenLayerStrategy, RawDemosaicMode};
 
+use super::DecodeCancelFlag;
 use super::RenderShape;
 
 pub const HDR_CAPACITY_MATCH_EPSILON: f32 = 0.001;
@@ -40,6 +41,7 @@ pub enum LoadIntent {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecodeProfile {
     pub raw_high_quality: bool,
+    pub psd_hidden_layer_strategy: PsdHiddenLayerStrategy,
     pub raw_demosaic_mode: RawDemosaicMode,
     pub output_mode: HdrOutputMode,
     pub ultra_hdr_decode_capacity: f32,
@@ -55,6 +57,7 @@ pub struct DecodeProfile {
 pub fn decode_profile_stub() -> DecodeProfile {
     DecodeProfile {
         raw_high_quality: false,
+        psd_hidden_layer_strategy: PsdHiddenLayerStrategy::Heuristic,
         raw_demosaic_mode: RawDemosaicMode::Gpu,
         output_mode: HdrOutputMode::SdrToneMapped,
         ultra_hdr_decode_capacity: 1.0,
@@ -77,6 +80,7 @@ pub fn decode_profile_with_epoch(epoch: u64) -> DecodeProfile {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplayRequirements {
     pub raw_high_quality: bool,
+    pub psd_hidden_layer_strategy: PsdHiddenLayerStrategy,
     pub raw_demosaic_mode: RawDemosaicMode,
     pub output_mode: HdrOutputMode,
     pub ultra_hdr_decode_capacity: f32,
@@ -86,9 +90,26 @@ pub struct DisplayRequirements {
 }
 
 /// Registered in-flight load for an index (replaces generation-only `loading[idx]`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct InFlightLoad {
     pub profile: DecodeProfile,
+    /// Cooperative cancel for this registration; clones share the same atomic.
+    pub cancel: DecodeCancelFlag,
+}
+
+impl InFlightLoad {
+    pub fn new(profile: DecodeProfile) -> Self {
+        Self {
+            profile,
+            cancel: DecodeCancelFlag::new(),
+        }
+    }
+}
+
+impl PartialEq for InFlightLoad {
+    fn eq(&self, other: &Self) -> bool {
+        self.profile == other.profile
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +162,7 @@ fn profile_decode_capabilities_equal_except_render_shape(
     new: &DecodeProfile,
 ) -> bool {
     old.raw_high_quality == new.raw_high_quality
+        && old.psd_hidden_layer_strategy == new.psd_hidden_layer_strategy
         && old.raw_demosaic_mode == new.raw_demosaic_mode
         && old.output_mode == new.output_mode
         && (old.ultra_hdr_decode_capacity - new.ultra_hdr_decode_capacity).abs()
@@ -177,6 +199,15 @@ fn profile_is_upgrade(old: &DecodeProfile, new: &DecodeProfile) -> bool {
     if new.raw_high_quality && !old.raw_high_quality {
         return true;
     }
+    if new.psd_hidden_layer_strategy != old.psd_hidden_layer_strategy {
+        return matches!(
+            (old.psd_hidden_layer_strategy, new.psd_hidden_layer_strategy),
+            (
+                PsdHiddenLayerStrategy::Heuristic,
+                PsdHiddenLayerStrategy::ShowAllLayers
+            )
+        );
+    }
     if output_mode_is_hdr(new.output_mode) && !output_mode_is_hdr(old.output_mode) {
         return true;
     }
@@ -204,6 +235,7 @@ fn profile_is_upgrade(old: &DecodeProfile, new: &DecodeProfile) -> bool {
 
 fn profile_decode_capabilities_equal(old: &DecodeProfile, new: &DecodeProfile) -> bool {
     old.raw_high_quality == new.raw_high_quality
+        && old.psd_hidden_layer_strategy == new.psd_hidden_layer_strategy
         && old.raw_demosaic_mode == new.raw_demosaic_mode
         && old.output_mode == new.output_mode
         && (old.ultra_hdr_decode_capacity - new.ultra_hdr_decode_capacity).abs()
@@ -216,6 +248,7 @@ fn profile_decode_capabilities_equal(old: &DecodeProfile, new: &DecodeProfile) -
 /// neighbor prefetch result becomes the current image.
 pub fn profile_core_matches(result: &DecodeProfile, display: &DisplayRequirements) -> bool {
     result.raw_high_quality == display.raw_high_quality
+        && result.psd_hidden_layer_strategy == display.psd_hidden_layer_strategy
         && result.raw_demosaic_mode == display.raw_demosaic_mode
         && result.output_mode == display.output_mode
         && (result.ultra_hdr_decode_capacity - display.ultra_hdr_decode_capacity).abs()
@@ -243,6 +276,7 @@ mod tests {
     fn base_profile() -> DecodeProfile {
         DecodeProfile {
             raw_high_quality: false,
+            psd_hidden_layer_strategy: PsdHiddenLayerStrategy::Heuristic,
             raw_demosaic_mode: RawDemosaicMode::Gpu,
             output_mode: HdrOutputMode::SdrToneMapped,
             ultra_hdr_decode_capacity: 1.0,
@@ -257,6 +291,32 @@ mod tests {
         let a = base_profile();
         let b = a.clone();
         assert_eq!(profile_spawn_relation(&a, &b), ProfileSpawnRelation::Equal);
+    }
+
+    #[test]
+    fn psd_show_all_layers_is_upgrade() {
+        let old = base_profile();
+        let new = DecodeProfile {
+            psd_hidden_layer_strategy: PsdHiddenLayerStrategy::ShowAllLayers,
+            ..base_profile()
+        };
+        assert_eq!(
+            profile_spawn_relation(&old, &new),
+            ProfileSpawnRelation::Upgrade
+        );
+    }
+
+    #[test]
+    fn psd_heuristic_from_show_all_is_downgrade() {
+        let old = DecodeProfile {
+            psd_hidden_layer_strategy: PsdHiddenLayerStrategy::ShowAllLayers,
+            ..base_profile()
+        };
+        let new = base_profile();
+        assert_eq!(
+            profile_spawn_relation(&old, &new),
+            ProfileSpawnRelation::Downgrade
+        );
     }
 
     #[test]
@@ -446,6 +506,7 @@ mod tests {
         };
         let display = DisplayRequirements {
             raw_high_quality: result.raw_high_quality,
+            psd_hidden_layer_strategy: result.psd_hidden_layer_strategy,
             raw_demosaic_mode: result.raw_demosaic_mode,
             output_mode: result.output_mode,
             ultra_hdr_decode_capacity: result.ultra_hdr_decode_capacity,

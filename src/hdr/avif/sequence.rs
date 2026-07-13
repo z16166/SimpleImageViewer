@@ -86,6 +86,7 @@ fn decode_avif_sequence_frames_from_decoder(
     decoder: &libavif_sys::AvifDecoderOwned,
     target_hdr_capacity: f32,
     max_frames: Option<usize>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<(std::time::Duration, HdrImageBuffer)>, String> {
     use crate::constants::{DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS};
     use std::time::Duration;
@@ -97,6 +98,7 @@ fn decode_avif_sequence_frames_from_decoder(
     let mut frames = Vec::with_capacity(limit);
     let mut iso_reuse = None;
     for _ in 0..limit {
+        crate::loader::check_decode_cancel_str(cancel)?;
         let r = unsafe { libavif_sys::avifDecoderNextImage(decoder.as_ptr()) };
         if r != libavif_sys::AVIF_RESULT_OK {
             return Err(format!(
@@ -146,12 +148,18 @@ pub(crate) fn try_decode_avif_image_sequence_hdr_limited(
     bytes: &[u8],
     target_hdr_capacity: f32,
     max_frames: Option<usize>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Option<AvifSequenceDecode>, String> {
+    crate::loader::check_decode_cancel_str(cancel)?;
     let Some((decoder, total_frame_count)) = avif_open_image_sequence_decoder(bytes)? else {
         return Ok(None);
     };
-    let frames =
-        decode_avif_sequence_frames_from_decoder(&decoder, target_hdr_capacity, max_frames)?;
+    let frames = decode_avif_sequence_frames_from_decoder(
+        &decoder,
+        target_hdr_capacity,
+        max_frames,
+        cancel,
+    )?;
     Ok(Some(AvifSequenceDecode {
         frames,
         total_frame_count,

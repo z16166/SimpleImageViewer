@@ -74,6 +74,7 @@ impl ImageViewerApp {
             path,
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(cur),
+            self.settings.psd_hidden_layer_strategy,
         );
     }
 
@@ -144,10 +145,9 @@ impl ImageViewerApp {
             &self.hdr_image_cache,
             &self.hdr_tiled_source_cache,
         );
-        if !current_has_asset
+        if (!current_has_asset || current_missing_hdr_plane)
             && !current_is_loading
             && !self.main_loader_failed_indices.contains(&cur)
-            || current_missing_hdr_plane && !current_is_loading
         {
             if current_missing_hdr_plane && current_has_asset {
                 preload_debug!(
@@ -166,6 +166,7 @@ impl ImageViewerApp {
                 path,
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(cur),
+                self.settings.psd_hidden_layer_strategy,
             );
             current_is_loading = true;
         }
@@ -441,6 +442,7 @@ impl ImageViewerApp {
                 path.clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(idx),
+                self.settings.psd_hidden_layer_strategy,
             );
             in_flight.insert(idx);
             count += 1;
@@ -471,12 +473,21 @@ impl ImageViewerApp {
         ) {
             return false;
         }
+        // Async PSD/PSB installs into `prefetched_tiles` / `tile_manager` before any SDR
+        // texture exists. Treat that as loaded so schedule_preloads does not respawn
+        // `load_psd` every frame (each spawn queues another REFINEMENT_POOL composite).
+        let has_tiled_sdr = self.prefetched_tiles.contains_key(&index)
+            || self
+                .tile_manager
+                .as_ref()
+                .is_some_and(|tm| tm.image_index == index);
         let base_loaded = current_image_has_loaded_asset(
             self.texture_cache.contains(index),
             has_static_hdr,
             has_hdr_tiled_source,
             self.animation_cache.contains_key(&index),
-        ) || self.deferred_sdr_uploads.contains_key(&index);
+        ) || self.deferred_sdr_uploads.contains_key(&index)
+            || has_tiled_sdr;
         if !base_loaded {
             return false;
         }

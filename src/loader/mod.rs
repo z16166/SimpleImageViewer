@@ -17,6 +17,7 @@
 //! Image loading (`ImageLoader`), decode pipeline ([`decode`]), helper modules, and GPU texture cache.
 
 mod decode;
+mod decode_cancel;
 mod decode_profile;
 pub(crate) mod embedded_sdr_fallback;
 mod hdr_fallback;
@@ -25,6 +26,7 @@ mod orchestrator;
 mod orientation;
 mod preview_aspect;
 mod preview_caps;
+mod psd_osd;
 mod raw_osd;
 mod texture_cache;
 mod tiled_sources;
@@ -32,6 +34,11 @@ mod types;
 
 #[allow(unused_imports)]
 // Re-export-only surface for `crate::loader::*`; rustc may lint unused items here.
+pub use decode_cancel::{
+    DECODE_CANCELLED, DecodeCancelFlag, DecodeError, PSD_HDR_NOT_WANTED,
+    STRICT_LAYER_COMPOSITE_BLANK, check_decode_cancel, check_decode_cancel_str,
+};
+#[allow(unused_imports)]
 pub use decode_profile::{
     DEFAULT_PREFETCH_WINDOW_DISTANCE, DecodeProfile, DisplayRequirements,
     HDR_CAPACITY_MATCH_EPSILON, InFlightLoad, LoadIntent, MAX_CURRENT_IMAGE_OS_THREADS,
@@ -52,6 +59,8 @@ pub use preview_caps::{
     GPU_DEMOSAIC_SUPPORTED, MONITOR_PREVIEW_CAP, PREVIEW_LIMIT, hq_preview_max_side,
     refresh_hq_preview_monitor_cap,
 };
+#[allow(unused_imports)]
+pub use psd_osd::{PsdDecodeStage, PsdOsdInfo, PsdStageDetail};
 pub(crate) use raw_osd::elapsed_ms_u32;
 pub use raw_osd::{RawDemosaicBackend, RawLoadOutput, RawOsdInfo, RawRenderPixels};
 pub use texture_cache::{TextureCache, TextureCacheInsert};
@@ -78,7 +87,7 @@ pub(crate) use hdr_fallback::{
     static_hdr_background_plane_upload_eligible,
 };
 pub(crate) use metadata::{
-    extract_exif_thumbnail, extract_exif_thumbnail_from_bytes,
+    extract_exif_thumbnail, extract_exif_thumbnail_from_bytes, extract_exif_thumbnail_from_mmap,
     extract_exif_thumbnail_from_mmap_probed, extract_exif_thumbnail_probed,
 };
 pub(crate) use orientation::{

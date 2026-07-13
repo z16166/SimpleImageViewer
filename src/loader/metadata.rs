@@ -71,6 +71,14 @@ pub(crate) fn extract_exif_thumbnail(path: &Path) -> Option<DecodedImage> {
     exif_probe_image(extract_exif_thumbnail_probed(path))
 }
 
+/// Extract an EXIF thumbnail from an already-mapped file (avoids a second `map_file`).
+pub(crate) fn extract_exif_thumbnail_from_mmap(
+    mmap: &memmap2::Mmap,
+    path: &Path,
+) -> Option<DecodedImage> {
+    exif_probe_image(extract_exif_thumbnail_from_mmap_probed(mmap, path))
+}
+
 pub(crate) fn extract_exif_thumbnail_from_bytes(bytes: &[u8], path: &Path) -> Option<DecodedImage> {
     use std::io::Cursor;
     let mut reader = Cursor::new(bytes);

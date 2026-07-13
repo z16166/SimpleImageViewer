@@ -218,6 +218,9 @@ pub const IPC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// deadlines to avoid thread-pool starvation.
 pub const PSD_V1_ASYNC_DECODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Row strip height when probing oversized PSB disk-tiled flat Image Data for absolute blank.
+pub const PSB_DISK_TILED_BLANK_PROBE_STRIP_ROWS: u32 = 64;
+
 /// Maximum size for the log file (10MB) before rotation.
 #[cfg(not(feature = "preload-debug"))]
 pub const LOG_FILE_SIZE_LIMIT: u64 = 10 * 1024 * 1024;

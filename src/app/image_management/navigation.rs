@@ -193,6 +193,7 @@ impl ImageViewerApp {
             self.image_files[current].clone(),
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(current),
+            self.settings.psd_hidden_layer_strategy,
         );
         self.schedule_preloads(true);
         self.wake_root_for_logic();
@@ -284,10 +285,85 @@ impl ImageViewerApp {
             path,
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(self.current_index),
+            self.settings.psd_hidden_layer_strategy,
         );
 
         // Re-schedule preloads so nearby RAW files pick up the new mode too.
         self.schedule_preloads(true);
+    }
+
+    /// Re-decode PSD/PSB after [`Settings::psd_hidden_layer_strategy`] changes.
+    ///
+    /// Unlike [`Self::reload_current`] (RAW-only), this clears failed-load marks so a previously
+    /// unopenable PSD can be retried without restarting the process.
+    pub(crate) fn reload_after_psd_hidden_layer_strategy_change(&mut self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+
+        let psd_indices: Vec<usize> = self
+            .image_files
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, path)| path_is_psd_or_psb(path).then_some(idx))
+            .collect();
+        if psd_indices.is_empty() {
+            return;
+        }
+
+        self.invalidate_decode_profile_epoch();
+        self.loader.cancel_all();
+
+        let current = self.current_index;
+        for idx in psd_indices {
+            self.texture_cache.remove(idx);
+            self.clear_installed_display_mode(idx);
+            self.remove_hdr_image_resources(idx);
+            self.psd_osd.remove(idx);
+            self.prefetched_tiles.remove(&idx);
+            self.deferred_sdr_uploads.remove(&idx);
+            self.animation_cache.remove(&idx);
+            self.pending_anim_frames.remove(&idx);
+            crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
+            self.main_loader_failed_indices.remove(&idx);
+            self.main_loader_failed_errors.remove(&idx);
+            self.directory_tree_strip_cache.remove_index(idx);
+            self.directory_tree_strip_tiled_attempted.remove(&idx);
+            self.directory_tree_strip_cold_attempted.remove(&idx);
+            self.directory_tree_strip_cold_awaiting_main_loader
+                .remove(&idx);
+            if idx == current {
+                self.tile_manager = None;
+                self.set_current_image_resolution(None);
+                self.animation = None;
+                self.prev_texture = None;
+                self.prev_hdr_image = None;
+                self.prev_transition_rect = None;
+                self.transition_start = None;
+                self.pending_transition_target = None;
+                self.pixel_data_source = None;
+                self.error_message = None;
+                self.is_font_error = false;
+            }
+        }
+
+        crate::preload_debug!(
+            "[PreloadDebug][PSD] setting_reload strategy={} current_idx={}",
+            self.settings.psd_hidden_layer_strategy,
+            current,
+        );
+
+        if path_is_psd_or_psb(&self.image_files[current]) {
+            self.loader.request_load(
+                current,
+                self.image_files[current].clone(),
+                self.settings.raw_high_quality,
+                self.raw_demosaic_mode_for_index(current),
+                self.settings.psd_hidden_layer_strategy,
+            );
+        }
+        self.schedule_preloads(true);
+        self.wake_root_for_logic();
     }
 
     /// Drop every cached/prefetched RAW decode so a [`Settings::raw_high_quality`] toggle cannot
@@ -349,7 +425,6 @@ impl ImageViewerApp {
         if target_index == self.current_index {
             return;
         }
-        self.main_loader_failed_indices.remove(&target_index);
         self.canvas_display_timing.on_navigate();
         #[cfg(feature = "preload-debug")]
         {
@@ -519,6 +594,7 @@ impl ImageViewerApp {
         self.last_switch_time = Instant::now();
         self.error_message = None;
         self.is_font_error = false;
+        self.surface_main_loader_failure_for_current();
         ctx.request_repaint();
         // Close any open EXIF/XMP/PixelRegion modal — it shows data for the previous image
         if matches!(
@@ -554,7 +630,9 @@ impl ImageViewerApp {
                     );
                 }
                 tm.decode_profile = self.decode_profile_for_index(self.current_index);
+                let _ = tm.sync_dimensions_from_source();
                 self.set_current_image_resolution(Some((tm.full_width, tm.full_height)));
+                crate::tile_cache::set_tile_size_for_image(tm.full_width, tm.full_height);
 
                 tm.get_source()
                     .request_refinement(self.current_index, tm.decode_profile.clone());
@@ -610,6 +688,7 @@ impl ImageViewerApp {
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(self.current_index),
+                self.settings.psd_hidden_layer_strategy,
             );
         } else if self.has_loaded_asset(self.current_index)
             && !raw_hq_navigate_missing_hdr_plane(
@@ -649,6 +728,7 @@ impl ImageViewerApp {
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(self.current_index),
+                    self.settings.psd_hidden_layer_strategy,
                 );
             } else if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
                 self.set_current_image_resolution(Some((hdr.width, hdr.height)));
@@ -687,6 +767,21 @@ impl ImageViewerApp {
                     }
                 }
                 self.flush_deferred_sdr_upload_for_index(idx, ctx);
+            } else if self.main_loader_failed_indices.contains(&idx) {
+                // Re-navigation clears a prior failure so transient OOM / I/O
+                // errors can be retried. Preload stays gated on the set so
+                // background work does not storm a permanently broken file.
+                self.main_loader_failed_indices.remove(&idx);
+                self.main_loader_failed_errors.remove(&idx);
+                self.error_message = None;
+                self.is_font_error = false;
+                self.loader.request_load(
+                    idx,
+                    self.image_files[idx].clone(),
+                    self.settings.raw_high_quality,
+                    self.raw_demosaic_mode_for_index(idx),
+                    self.settings.psd_hidden_layer_strategy,
+                );
             } else {
                 #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
                 let missing_hdr = raw_hq_navigate_missing_hdr_plane(
@@ -727,6 +822,7 @@ impl ImageViewerApp {
                     self.image_files[idx].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(idx),
+                    self.settings.psd_hidden_layer_strategy,
                 );
             }
         }
@@ -742,12 +838,18 @@ impl ImageViewerApp {
         self.schedule_preloads(preload_forward);
         self.discard_stale_loader_outputs();
         self.refresh_pixel_data_source_for_current_index();
-        if self.settings.show_pixel_inspector && self.pixel_data_source.is_none() {
+        if self.settings.show_pixel_inspector
+            && self.pixel_data_source.is_none()
+            && !self
+                .main_loader_failed_indices
+                .contains(&self.current_index)
+        {
             self.loader.request_load(
                 self.current_index,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(self.current_index),
+                self.settings.psd_hidden_layer_strategy,
             );
         }
         self.sync_and_ensure_hq_tiled_preview(self.current_index, ctx);
@@ -809,6 +911,7 @@ impl ImageViewerApp {
             self.image_files[self.current_index].clone(),
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(self.current_index),
+            self.settings.psd_hidden_layer_strategy,
         );
         self.schedule_preloads(true);
         self.refresh_current_file_name();
@@ -865,6 +968,7 @@ impl ImageViewerApp {
         self.refresh_hdr_view_status();
         self.error_message = None;
         self.is_font_error = false;
+        self.surface_main_loader_failure_for_current();
         self.canvas_display_timing.on_navigate();
     }
 
@@ -922,4 +1026,13 @@ impl ImageViewerApp {
 
         self.pixel_data_source = None;
     }
+}
+
+fn path_is_psd_or_psb(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| {
+            let ext = ext.to_ascii_lowercase();
+            ext == "psd" || ext == "psb"
+        })
 }

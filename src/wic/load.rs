@@ -17,13 +17,22 @@ use super::tiled_source::WicTiledSource;
 
 use super::com::ComGuard;
 use super::imports::*;
+use std::sync::atomic::AtomicBool;
 
 pub fn load_via_wic(
     path: &std::path::Path,
     high_quality: bool,
     orientation_override: Option<u16>,
+    cancel: Option<&AtomicBool>,
 ) -> std::result::Result<crate::loader::ImageData, String> {
-    load_via_wic_inner(path, high_quality, orientation_override, false, None)
+    load_via_wic_inner(
+        path,
+        high_quality,
+        orientation_override,
+        false,
+        None,
+        cancel,
+    )
 }
 
 /// Decode by sniffing the bitstream (ISO BMFF / QuickTime / mislabeled extensions), not the path suffix.
@@ -31,8 +40,9 @@ pub fn load_via_wic_stream_sniff(
     path: &std::path::Path,
     high_quality: bool,
     orientation_override: Option<u16>,
+    cancel: Option<&AtomicBool>,
 ) -> std::result::Result<crate::loader::ImageData, String> {
-    load_via_wic_inner(path, high_quality, orientation_override, true, None)
+    load_via_wic_inner(path, high_quality, orientation_override, true, None, cancel)
 }
 
 /// Decode from an already-mapped file buffer (avoids reopening the file on recovery paths).
@@ -41,8 +51,16 @@ pub fn load_via_wic_from_mmap(
     mmap: std::sync::Arc<memmap2::Mmap>,
     high_quality: bool,
     orientation_override: Option<u16>,
+    cancel: Option<&AtomicBool>,
 ) -> std::result::Result<crate::loader::ImageData, String> {
-    load_via_wic_inner(path, high_quality, orientation_override, true, Some(mmap))
+    load_via_wic_inner(
+        path,
+        high_quality,
+        orientation_override,
+        true,
+        Some(mmap),
+        cancel,
+    )
 }
 
 fn load_via_wic_inner(
@@ -51,7 +69,9 @@ fn load_via_wic_inner(
     orientation_override: Option<u16>,
     prefer_stream_sniff: bool,
     existing_mmap: Option<std::sync::Arc<memmap2::Mmap>>,
+    cancel: Option<&AtomicBool>,
 ) -> std::result::Result<crate::loader::ImageData, String> {
+    crate::loader::check_decode_cancel_str(cancel)?;
     unsafe {
         let _com = ComGuard::new().map_err(|e| format!("COM Init failed: {:?}", e))?;
 
@@ -302,6 +322,7 @@ fn load_via_wic_inner(
         // to avoid all background tiling and refinement overhead.
         if is_raw && !high_quality {
             // Re-use the generate_preview logic but return it as ImageData::Static
+            crate::loader::check_decode_cancel_str(cancel)?;
             let temp_source = WicTiledSource {
                 path: path.to_path_buf(),
                 width: logical_width,
@@ -332,6 +353,7 @@ fn load_via_wic_inner(
         if pixel_count >= tiled_limit || logical_width > limit || logical_height > limit || is_raw {
             // Virtualized path: Create a cached WIC bitmap source to avoid redundant O(N^2) decoding.
             // WICBitmapCacheOnDemand will keep decoded scanlines in memory as we request tiles.
+            crate::loader::check_decode_cancel_str(cancel)?;
             let cached_bitmap = factory
                 .CreateBitmapFromSource(&final_source, WICBitmapCacheOnDemand)
                 .map_err(|e| format!("failed to create cached bitmap: {:?}", e))?;
@@ -358,6 +380,7 @@ fn load_via_wic_inner(
         }
 
         // --- Fallback for regular small images (Direct decode remains unchanged) ---
+        crate::loader::check_decode_cancel_str(cancel)?;
         let sc_converter = factory
             .CreateFormatConverter()
             .map_err(|e| format!("converter creation failed: {:?}", e))?;
@@ -384,6 +407,7 @@ fn load_via_wic_inner(
         sc_converter
             .CopyPixels(&rect, stride, &mut out)
             .map_err(|e| format!("Pixel copy failed: {:?}", e))?;
+        crate::loader::check_decode_cancel_str(cancel)?;
 
         Ok(crate::loader::ImageData::Static(
             crate::loader::DecodedImage::new(logical_width, logical_height, out),

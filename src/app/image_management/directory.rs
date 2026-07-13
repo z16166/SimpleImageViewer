@@ -144,12 +144,18 @@ impl ImageViewerApp {
         self.prev_hdr_image = None;
         self.prev_transition_rect = None;
         self.transition_start = None;
-        self.tile_manager = None;
+        if let Some(tm) = self.tile_manager.take() {
+            tm.get_source().request_cancel();
+        }
+        for tm in self.prefetched_tiles.values() {
+            tm.get_source().request_cancel();
+        }
         self.prefetched_tiles.clear();
         self.clear_prefetch_resource_indices();
         crate::tile_cache::PIXEL_CACHE.write().clear();
         self.set_current_image_resolution(None);
         self.raw_metadata.clear();
+        self.psd_osd.clear();
         self.current_file_name.clear();
         self.osd.invalidate();
         self.loader.cancel_all();
@@ -192,14 +198,16 @@ impl ImageViewerApp {
         self.scanning = true;
         self.status_message = t!("status.scanning", dir = dir_name).to_string();
         let recursive = self.effective_scan_recursive();
-        let paired = self.settings.paired_raw_jpeg_handling;
+        let paired_raw = self.settings.paired_raw_jpeg_handling;
+        let paired_psd = self.settings.paired_psd_jpeg_handling;
         #[cfg(feature = "preload-debug")]
         {
             crate::preload_debug!(
-                "[PreloadDebug][Scan] load_directory spawn: dir={} recursive={} paired={:?} gen={} cancel_phase_ms={} cleanup_phase_ms={} total_before_spawn_ms={}",
+                "[PreloadDebug][Scan] load_directory spawn: dir={} recursive={} paired_raw={:?} paired_psd={:?} gen={} cancel_phase_ms={} cleanup_phase_ms={} total_before_spawn_ms={}",
                 dir.display(),
                 recursive,
-                paired,
+                paired_raw,
+                paired_psd,
                 scan_generation,
                 after_cancel_ms,
                 after_cleanup_ms,
@@ -209,7 +217,8 @@ impl ImageViewerApp {
         scanner::scan_directory(
             dir,
             recursive,
-            paired,
+            paired_raw,
+            paired_psd,
             scan_generation,
             tx,
             cancel,
@@ -297,6 +306,7 @@ impl ImageViewerApp {
             .retain(|&idx| idx == keep);
         self.gpu_demosaic_failed_indices.retain(|&idx| idx == keep);
         self.main_loader_failed_indices.retain(|&idx| idx == keep);
+        self.main_loader_failed_errors.retain(|&idx, _| idx == keep);
         self.hdr_raw_gpu_demosaic_pending_key_index
             .retain(|_, idx| *idx == keep);
         self.cpu_raw_refinement_pending_indices
@@ -370,6 +380,7 @@ impl ImageViewerApp {
             dir,
             self.effective_scan_recursive(),
             self.settings.paired_raw_jpeg_handling,
+            self.settings.paired_psd_jpeg_handling,
             scan_generation,
             tx,
             cancel,
@@ -587,6 +598,7 @@ impl ImageViewerApp {
                                         fallback_path,
                                         self.settings.raw_high_quality,
                                         self.raw_demosaic_mode_for_index(0),
+                                        self.settings.psd_hidden_layer_strategy,
                                     );
                                 }
                             } else {

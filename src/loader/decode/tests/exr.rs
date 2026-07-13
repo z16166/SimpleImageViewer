@@ -40,7 +40,7 @@ fn assert_gray_ramp_loads_with_visible_fallback(root: &Path, relative_path: &str
         path.display()
     );
 
-    let image_data = load_hdr(&path, 1.0, HdrToneMapSettings::default())
+    let image_data = load_hdr(&path, 1.0, HdrToneMapSettings::default(), None)
         .unwrap_or_else(|err| panic!("load {}: {err}", path.display()));
     let (hdr_max_rgb, fallback_pixels) = match &image_data {
         ImageData::Hdr { hdr, fallback } => (
@@ -145,7 +145,7 @@ fn openexr_standard_corpus_loads_every_exr_sample() {
     let failures: Vec<String> = files
         .iter()
         .filter_map(|path| {
-            load_hdr(path, 1.0, HdrToneMapSettings::default())
+            load_hdr(path, 1.0, HdrToneMapSettings::default(), None)
                 .err()
                 .map(|err| {
                     let relative = path.strip_prefix(&root).unwrap_or(path);
@@ -222,8 +222,8 @@ fn deep_openexr_standard_sample_loads_hdr_float_content() {
         return;
     }
 
-    let image_data =
-        load_hdr(&path, 1.0, HdrToneMapSettings::default()).expect("load deep OpenEXR sample");
+    let image_data = load_hdr(&path, 1.0, HdrToneMapSettings::default(), None)
+        .expect("load deep OpenEXR sample");
     let ImageData::Hdr { hdr, .. } = image_data else {
         panic!("unexpected deep EXR image data");
     };
@@ -255,7 +255,7 @@ fn disk_backed_exr_probe_accepts_subsampled_yc_sample() {
     }
 
     let image_data =
-        try_load_disk_backed_exr_hdr(&path).expect("probe should load subsampled YC EXR");
+        try_load_disk_backed_exr_hdr(&path, None).expect("probe should load subsampled YC EXR");
 
     assert!(
         matches!(image_data, Some(ImageData::Hdr { .. })),
@@ -275,7 +275,8 @@ fn subsampled_exr_below_tile_threshold_routes_to_static_hdr() {
         return;
     };
 
-    let image_data = try_load_disk_backed_exr_hdr(&path).expect("probe should load MtTamNorth EXR");
+    let image_data =
+        try_load_disk_backed_exr_hdr(&path, None).expect("probe should load MtTamNorth EXR");
 
     let Some(ImageData::Hdr { hdr, .. }) = image_data else {
         panic!("expected small subsampled EXR to route to static HDR image data");
@@ -296,7 +297,7 @@ fn exr_extension_short_circuits_to_openexr_core_loader() {
     .expect("write invalid EXR probe");
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        load_hdr(&path, 1.0, HdrToneMapSettings::default())
+        load_hdr(&path, 1.0, HdrToneMapSettings::default(), None)
     }));
     let _ = std::fs::remove_file(&path);
 

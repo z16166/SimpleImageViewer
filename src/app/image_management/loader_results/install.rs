@@ -73,6 +73,7 @@ impl ImageViewerApp {
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(self.current_index),
+                    self.settings.psd_hidden_layer_strategy,
                 );
             } else {
                 log::warn!(
@@ -85,6 +86,7 @@ impl ImageViewerApp {
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
                     self.raw_demosaic_mode_for_index(self.current_index),
+                    self.settings.psd_hidden_layer_strategy,
                 );
             }
 
@@ -137,6 +139,15 @@ impl ImageViewerApp {
             }
         } else {
             self.set_raw_metadata_for_index(idx, None, ctx);
+        }
+
+        // Store PSD OSD per index (like RAW). Neighbor prefetch must not overwrite the
+        // visible line; `PsdOsdStore` only pushes the composed string for `current_index`.
+        // Cache-hit navigation restores the line via `set_current_index` / paint sync.
+        self.psd_osd.set_for_index(idx, load_result.psd_osd.clone());
+        if idx == self.current_index {
+            self.osd.sync_events();
+            ctx.request_repaint();
         }
 
         if !matches!(install_plan, ImageInstallPlan::Error { .. }) {

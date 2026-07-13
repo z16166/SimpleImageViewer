@@ -23,17 +23,19 @@ use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
 
 pub(crate) fn decode_exr_display_image(path: &Path) -> Result<HdrImageBuffer, String> {
     let mmap = Arc::new(crate::mmap_util::map_file(path)?.0);
-    decode_exr_display_image_from_mmap(path, mmap)
+    decode_exr_display_image_from_mmap(path, mmap, None)
 }
 
 pub(crate) fn decode_exr_display_image_from_mmap(
     path: &Path,
     mmap: Arc<memmap2::Mmap>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<HdrImageBuffer, String> {
+    crate::loader::check_decode_cancel_str(cancel)?;
     let source = crate::hdr::exr_tiled::ExrTiledImageSource::open_from_mmap(path, mmap)?;
     let (width, height) = (source.width(), source.height());
     super::tone_map::validate_hdr_fallback_budget(width, height)?;
-    let tile = source.extract_tile_rgba32f_arc(0, 0, width, height)?;
+    let tile = source.extract_tile_rgba32f_arc_with_cancel(0, 0, width, height, cancel)?;
 
     Ok(HdrImageBuffer {
         width,

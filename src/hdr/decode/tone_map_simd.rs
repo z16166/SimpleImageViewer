@@ -39,53 +39,57 @@ use core::arch::aarch64::*;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
+#[cfg(target_arch = "x86_64")]
+#[path = "tone_map_simd_avx2.rs"]
+mod avx2;
+
 const PIXELS_PER_SIMD_STEP: usize = 4;
 
-const SRGB_OFFSET: f32 = 0.055;
-const SRGB_ENCODE_LINEAR_BREAK: f32 = 0.0031308;
-const SRGB_ENCODE_SLOPE: f32 = 12.92;
-const SRGB_ENCODE_SCALE: f32 = 1.055;
-const SRGB_ENCODE_GAMMA: f32 = 1.0 / 2.4;
+pub(super) const SRGB_OFFSET: f32 = 0.055;
+pub(super) const SRGB_ENCODE_LINEAR_BREAK: f32 = 0.0031308;
+pub(super) const SRGB_ENCODE_SLOPE: f32 = 12.92;
+pub(super) const SRGB_ENCODE_SCALE: f32 = 1.055;
+pub(super) const SRGB_ENCODE_GAMMA: f32 = 1.0 / 2.4;
 
-const BT709_LINEAR_SEGMENT_BREAK: f32 = 0.018 * 4.5;
-const BT709_DIVISOR: f32 = 4.5;
-const BT709_OFFSET: f32 = 0.099;
-const BT709_SCALE: f32 = 1.099;
-const BT709_GAMMA: f32 = 1.0 / 0.45;
+pub(super) const BT709_LINEAR_SEGMENT_BREAK: f32 = 0.018 * 4.5;
+pub(super) const BT709_DIVISOR: f32 = 4.5;
+pub(super) const BT709_OFFSET: f32 = 0.099;
+pub(super) const BT709_SCALE: f32 = 1.099;
+pub(super) const BT709_GAMMA: f32 = 1.0 / 0.45;
 
-const HLG_A: f32 = 0.17883277;
-const HLG_B: f32 = 0.28466892;
+pub(super) const HLG_A: f32 = 0.17883277;
+pub(super) const HLG_B: f32 = 0.28466892;
 #[allow(clippy::excessive_precision)]
-const HLG_C: f32 = 0.55991073;
+pub(super) const HLG_C: f32 = 0.55991073;
 
-const REC2020_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
+pub(super) const REC2020_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
     [1.6605, -0.5876, -0.0728],
     [-0.1246, 1.1329, -0.0083],
     [-0.0182, -0.1006, 1.1187],
 ];
 
-const DISPLAY_P3_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
+pub(super) const DISPLAY_P3_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
     [1.2249401, -0.2249402, 0.0],
     [-0.0420569, 1.0420571, 0.0],
     [-0.0196376, -0.0786507, 1.0982884],
 ];
 
 /// Must match `aces2065_1_linear_to_linear_srgb` / WGSL `aces2065_1_to_linear_srgb`.
-const ACES2065_1_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
+pub(super) const ACES2065_1_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
     [2.5216, -1.1369, -0.3849],
     [-0.2762, 1.3697, -0.0935],
     [-0.0159, -0.1478, 1.1638],
 ];
 
 /// Must match `xyz_to_linear_srgb` / WGSL `xyz_to_linear_srgb`.
-const XYZ_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
+pub(super) const XYZ_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
     [3.2404, -1.5371, -0.4985],
     [-0.9692, 1.8760, 0.0415],
     [0.0556, -0.2040, 1.0572],
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StripSimdPath {
+pub(super) enum StripSimdPath {
     ReinhardPqRec2020,
     ReinhardPqDisplayP3,
     ReinhardPqLinearSrgb,
@@ -111,12 +115,12 @@ enum StripSimdPath {
 }
 
 #[derive(Clone, Copy)]
-struct StripToneMapContext {
-    exposure_scale: f32,
-    peak_scale: f32,
-    combined_scale: f32,
-    sdr_white_nits: f32,
-    path: StripSimdPath,
+pub(super) struct StripToneMapContext {
+    pub(super) exposure_scale: f32,
+    pub(super) peak_scale: f32,
+    pub(super) combined_scale: f32,
+    pub(super) sdr_white_nits: f32,
+    pub(super) path: StripSimdPath,
 }
 
 /// CPU HDR -> SDR tone-map: SIMD fast paths when possible, scalar otherwise.
@@ -292,12 +296,16 @@ fn tone_map_strip_simd(src: &[f32], dst: &mut [u8], ctx: StripToneMapContext) {
     let mut offset = 0_usize;
     #[cfg(target_arch = "x86_64")]
     {
-        if std::arch::is_x86_feature_detected!("sse4.1") {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            unsafe {
+                avx2::tone_map_strip_simd_avx2(src, dst, pixel_count, ctx, &mut offset);
+            }
+        } else if std::arch::is_x86_feature_detected!("sse4.1") {
             unsafe {
                 tone_map_strip_simd_sse41(src, dst, pixel_count, ctx, &mut offset);
             }
         }
-        // No SSE4.1 (or remaining 0-3 pixels): scalar tail from `offset`.
+        // Remaining 0-7 (AVX2) or 0-3 (SSE4.1) pixels: scalar tail from `offset`.
         tone_map_strip_scalar_tail(src, dst, pixel_count, ctx, offset);
     }
     #[cfg(target_arch = "aarch64")]

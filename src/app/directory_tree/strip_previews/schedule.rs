@@ -75,7 +75,7 @@ impl ImageViewerApp {
         if !self.strip_needs_iso_baseline_sync_inner(index, true) {
             return false;
         }
-        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+        let Some((job_key, cancel)) = self.begin_directory_tree_strip_job(index) else {
             return false;
         };
         let tx = self.directory_tree_strip_preview_tx.clone();
@@ -94,6 +94,15 @@ impl ImageViewerApp {
             max_side
         );
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
+            if cancel.is_cancelled() {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
+                return;
+            }
             let decoded = DecodedImage::from_arc(width, height, baseline);
             let strip = match downsample_decoded_for_strip(&decoded, max_side) {
                 Ok(strip) => strip,
@@ -110,7 +119,9 @@ impl ImageViewerApp {
                     return;
                 }
             };
-            if !preview_aspect_matches_logical(strip.width, strip.height, width, height) {
+            if cancel.is_cancelled()
+                || !preview_aspect_matches_logical(strip.width, strip.height, width, height)
+            {
                 send_strip_inflight_release(
                     &release_tx,
                     job_key.clone(),
@@ -165,7 +176,7 @@ impl ImageViewerApp {
         }
         let stage = PreviewStage::Refined;
 
-        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+        let Some((job_key, cancel)) = self.begin_directory_tree_strip_job(index) else {
             return false;
         };
         let tx = self.directory_tree_strip_preview_tx.clone();
@@ -184,6 +195,15 @@ impl ImageViewerApp {
             max_side
         );
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
+            if cancel.is_cancelled() {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
+                return;
+            }
             let decoded = match crate::loader::directory_tree_strip_from_hdr_or_fallback(
                 hdr.as_ref(),
                 &fallback,
@@ -203,6 +223,15 @@ impl ImageViewerApp {
                     return;
                 }
             };
+            if cancel.is_cancelled() {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
+                return;
+            }
             let logical = if hdr_has_float_pixels {
                 (hdr.width, hdr.height)
             } else {
@@ -534,7 +563,7 @@ impl ImageViewerApp {
         let defer_iso_baseline = self.strip_embedded_sdr_master_mode_active()
             && slow_primary_skip_reason == DirectoryTreeThumbSlowPrimarySkipReason::EmbeddedSdr;
         self.directory_tree_strip_cold_attempted.insert(index);
-        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+        let Some((job_key, cancel)) = self.begin_directory_tree_strip_job(index) else {
             self.directory_tree_strip_cold_attempted.remove(&index);
             return;
         };
@@ -557,6 +586,15 @@ impl ImageViewerApp {
             max_side
         );
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
+            if cancel.is_cancelled() {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
+                return;
+            }
             #[cfg(target_os = "windows")]
             let com_ok = ensure_strip_worker_com_initialized();
             #[cfg(not(target_os = "windows"))]
@@ -577,6 +615,7 @@ impl ImageViewerApp {
                     &path,
                     max_side,
                     decode_options,
+                    &cancel,
                 ) {
                     Ok(strip_decode) => {
                         decoded = strip_decode.preview;
@@ -585,6 +624,15 @@ impl ImageViewerApp {
                         if strip_decode.from_embedded_sdr_preview {
                             buffer_tag = StripPreviewBufferTag::PreloadSdrFallback;
                         }
+                    }
+                    Err(err) if err == crate::loader::DECODE_CANCELLED => {
+                        send_strip_inflight_release(
+                            &release_tx,
+                            job_key.clone(),
+                            DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                            root_wake.as_ref(),
+                        );
+                        return;
                     }
                     Err(err)
                         if err == STRIP_DEFER_SLOW_EMBEDDED_SDR
@@ -608,6 +656,15 @@ impl ImageViewerApp {
                 log::warn!(
                     "[DirectoryTree] COM init failed for cold strip preview worker index {index}"
                 );
+            }
+            if cancel.is_cancelled() {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
+                return;
             }
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
@@ -698,7 +755,7 @@ impl ImageViewerApp {
         #[cfg(feature = "preload-debug")]
         let path = self.image_files.get(index).cloned().unwrap_or_default();
         self.directory_tree_strip_tiled_attempted.insert(index);
-        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+        let Some((job_key, cancel)) = self.begin_directory_tree_strip_job(index) else {
             self.directory_tree_strip_tiled_attempted.remove(&index);
             return;
         };
@@ -719,6 +776,15 @@ impl ImageViewerApp {
             max_side
         );
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
+            if cancel.is_cancelled() {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
+                return;
+            }
             crate::preload_debug!(
                 "[PreloadDebug][Strip] worker start idx={} logical={}x{} max_side={}",
                 index,
@@ -730,6 +796,23 @@ impl ImageViewerApp {
             let com_ok = ensure_strip_worker_com_initialized();
             #[cfg(not(target_os = "windows"))]
             let com_ok = true;
+            // Tiled sources that defer HQ pixels: wait on the strip worker (not the UI
+            // thread) so we do not spin PermanentFailure retries.
+            if source.defers_loader_hq_preview()
+                && let Err(err) =
+                    source.wait_for_async_pixels(crate::constants::PSD_V1_ASYNC_DECODE_TIMEOUT)
+            {
+                log::debug!("[DirectoryTree] Strip tiled async wait failed idx={index}: {err}");
+            }
+            if cancel.is_cancelled() {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
+                return;
+            }
             // SAFETY: panic in generate_full_image_preview is caught below; the rayon worker
             // thread stays healthy without spawning a nested OS thread.
             let preview_result = if com_ok {
@@ -742,6 +825,15 @@ impl ImageViewerApp {
                 );
                 None
             };
+            if cancel.is_cancelled() {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
+                return;
+            }
             let mut decoded = DecodedImage::new(0, 0, Vec::new());
             if let Some(preview_result) = preview_result {
                 match preview_result {
@@ -828,7 +920,7 @@ impl ImageViewerApp {
         if self.directory_tree_strip_generate_inflight.contains(&index) {
             return false;
         }
-        let Some(job_key) = self.begin_directory_tree_strip_job(index) else {
+        let Some((job_key, cancel)) = self.begin_directory_tree_strip_job(index) else {
             return false;
         };
         let tx = self.directory_tree_strip_preview_tx.clone();
@@ -846,6 +938,15 @@ impl ImageViewerApp {
             max_side
         );
         DIRECTORY_TREE_STRIP_POOL.spawn(move || {
+            if cancel.is_cancelled() {
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                    root_wake.as_ref(),
+                );
+                return;
+            }
             let strip = match downsample_decoded_for_strip(&decoded, max_side) {
                 Ok(strip) => strip,
                 Err(err) => {
@@ -861,7 +962,9 @@ impl ImageViewerApp {
                     return;
                 }
             };
-            if !preview_aspect_matches_logical(strip.width, strip.height, logical.0, logical.1) {
+            if cancel.is_cancelled()
+                || !preview_aspect_matches_logical(strip.width, strip.height, logical.0, logical.1)
+            {
                 send_strip_inflight_release(
                     &release_tx,
                     job_key.clone(),

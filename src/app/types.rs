@@ -469,8 +469,12 @@ pub struct ImageViewerApp {
     /// Frames spent waiting for HDR callback prewarm before pre-upload registration is abandoned.
     pub(crate) hdr_register_prewarm_repush_counts: HashMap<usize, u8>,
     pub(crate) gpu_demosaic_failed_indices: HashSet<usize>,
-    /// Main-window loader gave up on these indices until the user navigates back or rescans.
+    /// Main-window loader failed these indices. Cleared on successful install, rescan,
+    /// PSD strategy reload, or when the user navigates back to the index (retry).
+    /// Preload stays gated so background work does not storm a broken file.
     pub(crate) main_loader_failed_indices: HashSet<usize>,
+    /// Last main-loader error text per index (survives async fail while not current).
+    pub(crate) main_loader_failed_errors: HashMap<usize, String>,
     /// After GPU demosaic completes, defer neighbor preloads until the HDR plane is shown.
     pub(crate) raw_gpu_demosaic_await_hdr_present: bool,
     pub(crate) raw_demosaic_baked_notify:
@@ -546,6 +550,9 @@ pub struct ImageViewerApp {
     pub(crate) directory_tree_strip_generate_inflight: std::collections::HashSet<usize>,
     pub(crate) directory_tree_strip_inflight_tokens:
         std::collections::HashMap<usize, std::num::NonZeroU64>,
+    /// Per-index cooperative cancel for strip workers (independent of ImageLoader cancel).
+    pub(crate) directory_tree_strip_inflight_cancel:
+        std::collections::HashMap<usize, crate::loader::DecodeCancelFlag>,
     pub(crate) directory_tree_strip_next_job_token: u64,
     /// Cold strip jobs known to produce reusable full-SDR pixels for the main loader.
     /// This is not derived from `generate_inflight`: PNG/WebP need an animation probe.
@@ -645,6 +652,8 @@ pub struct ImageViewerApp {
     pub(crate) canvas_display_timing: crate::preload_debug::CanvasDisplayTiming,
     /// Per-index RAW OSD metadata (embedded preview, sensor grid, active pixel source).
     pub(crate) raw_metadata: crate::app::view_status::RawMetadataStore,
+    /// Per-index PSD/PSB decode-stage OSD (restored on cache-hit navigation).
+    pub(crate) psd_osd: crate::app::view_status::PsdOsdStore,
     pub(crate) image_status: crate::app::view_status::ImageViewStatus,
     /// File name shown in the image OSD for [`Self::current_index`].
     pub(crate) current_file_name: String,

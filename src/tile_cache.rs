@@ -483,6 +483,32 @@ impl TileManager {
         Arc::clone(&self.source)
     }
 
+    /// Refresh `full_width`/`full_height` from the live source.
+    ///
+    /// PSD v1 async decode may finish with a smaller IR thumbnail (P3) than the
+    /// header size captured at install time. Without this sync, tile requests
+    /// keep using the header canvas and reject the short pixel buffer.
+    pub fn sync_dimensions_from_source(&mut self) -> bool {
+        let w = self.source.width();
+        let h = self.source.height();
+        if w == 0 || h == 0 || (w == self.full_width && h == self.full_height) {
+            return false;
+        }
+        log::info!(
+            "[TileManager] sync dimensions idx={} {}x{} -> {}x{}",
+            self.image_index,
+            self.full_width,
+            self.full_height,
+            w,
+            h
+        );
+        self.full_width = w;
+        self.full_height = h;
+        self.pending_tiles.clear();
+        self.drop_gpu_tiles();
+        true
+    }
+
     pub fn retain_pending_tiles(&mut self, visible_coords: &HashSet<TileCoord>) {
         self.pending_tiles
             .retain(|key| visible_coords.contains(&key.coord));

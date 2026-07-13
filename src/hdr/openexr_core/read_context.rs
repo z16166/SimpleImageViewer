@@ -238,7 +238,9 @@ impl OpenExrCoreReadContext {
         y: u32,
         width: u32,
         height: u32,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<OpenExrCoreRgbaTile, String> {
+        crate::loader::check_decode_cancel_str(cancel)?;
         let part = self.part(part_index)?;
         validate_tile_bounds(part.width, part.height, x, y, width, height)?;
         #[cfg(feature = "tile-debug")]
@@ -252,6 +254,7 @@ impl OpenExrCoreReadContext {
         for alpha in rgba.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
             *alpha = 1.0;
         }
+        const CANCEL_POLL_CHUNKS: usize = 8;
 
         match part.storage {
             sys::EXR_STORAGE_SCANLINE => {
@@ -259,7 +262,10 @@ impl OpenExrCoreReadContext {
 
                 let mut decoded_starts = std::collections::BTreeSet::new();
                 let mut chunk_work = Vec::<(sys::ExrChunkInfo, u32, u32)>::new();
-                for source_y in y..y + height {
+                for (row_i, source_y) in (y..y + height).enumerate() {
+                    if row_i % CANCEL_POLL_CHUNKS == 0 {
+                        crate::loader::check_decode_cancel_str(cancel)?;
+                    }
                     let mut chunk = sys::ExrChunkInfo::default();
                     exr_result(unsafe {
                         sys::exr_read_scanline_chunk_info(
@@ -289,6 +295,7 @@ impl OpenExrCoreReadContext {
                     chunk_work.push((chunk, chunk_origin_x, chunk_origin_y));
                 }
 
+                crate::loader::check_decode_cancel_str(cancel)?;
                 let fetched = chunk_work
                     .par_iter()
                     .map(|(chunk, ox, oy)| self.fetch_decoded_chunk(part_index, chunk, (*ox, *oy)))
@@ -296,8 +303,9 @@ impl OpenExrCoreReadContext {
 
                 let tile_rect = (x, y, width, height);
                 for (i, fetch) in fetched.iter().enumerate() {
-                    #[cfg(not(feature = "tile-debug"))]
-                    let _ = i;
+                    if i % CANCEL_POLL_CHUNKS == 0 {
+                        crate::loader::check_decode_cancel_str(cancel)?;
+                    }
                     let copy_ms = copy_decoded_chunk_to_tile(&fetch.decoded, tile_rect, &mut rgba)?;
                     #[cfg(feature = "tile-debug")]
                     {
@@ -345,8 +353,13 @@ impl OpenExrCoreReadContext {
                 let end_tile_y = (y + height - 1) / tile_grid.tile_height;
 
                 let mut chunk_work = Vec::<(sys::ExrChunkInfo, u32, u32)>::new();
+                let mut tile_i = 0usize;
                 for tile_y_index in start_tile_y..=end_tile_y {
                     for tile_x_index in start_tile_x..=end_tile_x {
+                        if tile_i % CANCEL_POLL_CHUNKS == 0 {
+                            crate::loader::check_decode_cancel_str(cancel)?;
+                        }
+                        tile_i += 1;
                         if tile_x_index >= tile_grid.count_x || tile_y_index >= tile_grid.count_y {
                             continue;
                         }
@@ -373,6 +386,7 @@ impl OpenExrCoreReadContext {
                     }
                 }
 
+                crate::loader::check_decode_cancel_str(cancel)?;
                 let fetched = chunk_work
                     .par_iter()
                     .map(|(chunk, ox, oy)| self.fetch_decoded_chunk(part_index, chunk, (*ox, *oy)))
@@ -380,8 +394,9 @@ impl OpenExrCoreReadContext {
 
                 let tile_rect = (x, y, width, height);
                 for (i, fetch) in fetched.iter().enumerate() {
-                    #[cfg(not(feature = "tile-debug"))]
-                    let _ = i;
+                    if i % CANCEL_POLL_CHUNKS == 0 {
+                        crate::loader::check_decode_cancel_str(cancel)?;
+                    }
                     let copy_ms = copy_decoded_chunk_to_tile(&fetch.decoded, tile_rect, &mut rgba)?;
                     #[cfg(feature = "tile-debug")]
                     {

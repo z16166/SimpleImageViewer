@@ -148,6 +148,7 @@ pub(crate) fn parse_radiance_dimensions_line(line: &str) -> Result<RadianceRaste
 pub(crate) fn decode_radiance_rgba32f_from_mmap(
     mmap: &[u8],
     params_override: Option<crate::hdr::decode::RadianceHeaderParams>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<HdrImageBuffer, String> {
     let mut params = params_override.unwrap_or_default();
     let mut reader = Cursor::new(mmap);
@@ -162,9 +163,13 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
 
     let mut file_reader = Cursor::new(mmap);
     let mut scanline = vec![Rgbe8Pixel::default(); raster.inner_len as usize];
+    const CANCEL_POLL_ROWS: u32 = 64;
 
     if raster.is_row_major_top_left() {
         for ly in 0..height {
+            if ly % CANCEL_POLL_ROWS == 0 {
+                crate::loader::check_decode_cancel_str(cancel)?;
+            }
             file_reader.set_position(scanline_offsets[ly as usize] as u64);
             read_scanline(&mut file_reader, &mut scanline)?;
             let row_off = ly as usize * width as usize * 4;
@@ -180,6 +185,9 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
         if plan.outer_major_is_y {
             let mut y = plan.y_start;
             for outer_i in 0..plan.outer_len {
+                if outer_i % CANCEL_POLL_ROWS == 0 {
+                    crate::loader::check_decode_cancel_str(cancel)?;
+                }
                 file_reader.set_position(scanline_offsets[outer_i as usize] as u64);
                 read_scanline(&mut file_reader, &mut scanline)?;
                 let mut x = plan.x_start;
@@ -195,6 +203,9 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
         } else {
             let mut x = plan.x_start;
             for outer_i in 0..plan.outer_len {
+                if outer_i % CANCEL_POLL_ROWS == 0 {
+                    crate::loader::check_decode_cancel_str(cancel)?;
+                }
                 file_reader.set_position(scanline_offsets[outer_i as usize] as u64);
                 read_scanline(&mut file_reader, &mut scanline)?;
                 let xu = x as usize;

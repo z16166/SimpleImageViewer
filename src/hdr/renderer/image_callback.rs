@@ -16,6 +16,37 @@
 
 use super::*;
 
+/// Cap for synchronous `queue.write_texture` during egui `prepare` on animated HDR frames.
+/// Matches the tiled burst upload budget (~16 MiB/frame) so a single high-res animation
+/// frame cannot stall the render thread; larger planes fall back to async pending upload.
+const MAX_SYNC_ANIM_PLANE_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
+
+/// Estimated texel payload for [`upload_image_plane_with_sink`] (not including empty targets).
+fn estimated_plane_upload_bytes(image: &HdrImageBuffer) -> usize {
+    if let Some(raw) = image.metadata.raw_gpu_source.as_ref() {
+        return raw
+            .raw_pixels
+            .len()
+            .saturating_mul(std::mem::size_of::<u16>());
+    }
+    if let Some(gain_map) = image.metadata.gain_map.as_ref() {
+        if let Some(iso) = gain_map.iso_deferred.as_ref() {
+            return iso.sdr_rgba.len().saturating_add(iso.gain_rgba.len());
+        }
+        if let Some(apple) = gain_map.apple_heic_deferred.as_ref() {
+            return apple.gain_rgba.len();
+        }
+    }
+    image
+        .rgba_f32
+        .len()
+        .saturating_mul(std::mem::size_of::<f32>())
+}
+
+fn allow_sync_plane_upload_on_cache_miss(sync_requested: bool, image: &HdrImageBuffer) -> bool {
+    sync_requested && estimated_plane_upload_bytes(image) <= MAX_SYNC_ANIM_PLANE_UPLOAD_BYTES
+}
+
 /// GPU bindings for static HDR image planes (AVIF/JXL ISO gain-map, etc.).
 /// Page-flip transitions need prev + current + several preloaded neighbors resident at once.
 pub(crate) struct HdrImagePlaneCallback {
@@ -43,7 +74,11 @@ impl HdrImagePlaneCallback {
         resources: &mut HdrCallbackResources,
         image_key: HdrImageKey,
     ) -> bool {
-        if self.sync_plane_upload_on_cache_miss {
+        // Animated playback prefers Immediate upload for the current frame, but only when the
+        // texel payload stays within MAX_SYNC_ANIM_PLANE_UPLOAD_BYTES. Oversized frames use the
+        // same async pending path as static images to avoid prepare-thread stalls.
+        if allow_sync_plane_upload_on_cache_miss(self.sync_plane_upload_on_cache_miss, &self.image)
+        {
             log::debug!("[HDR] Cache miss, performing synchronous upload for animated frame");
             match upload_image_plane_with_sink(
                 device,
@@ -79,6 +114,13 @@ impl HdrImagePlaneCallback {
                 }
             }
         } else {
+            if self.sync_plane_upload_on_cache_miss {
+                log::debug!(
+                    "[HDR] Animated frame plane too large for sync upload ({} bytes > {}); queuing async",
+                    estimated_plane_upload_bytes(&self.image),
+                    MAX_SYNC_ANIM_PLANE_UPLOAD_BYTES
+                );
+            }
             let Some(pending_work) = self.pending_work.as_ref() else {
                 log::debug!("[HDR] Cache miss without pending work queues; deferring plane upload");
                 return false;
@@ -478,5 +520,54 @@ impl CallbackTrait for HdrImagePlaneCallback {
         render_pass.set_pipeline(&resources.pipeline);
         render_pass.set_bind_group(0, bind_group, &[]);
         render_pass.draw(0..3, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod sync_upload_budget_tests {
+    use super::{
+        MAX_SYNC_ANIM_PLANE_UPLOAD_BYTES, allow_sync_plane_upload_on_cache_miss,
+        estimated_plane_upload_bytes,
+    };
+    use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
+    use std::sync::Arc;
+
+    fn composed_rgba32f_image(width: u32, height: u32) -> HdrImageBuffer {
+        let pixel_count = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4);
+        HdrImageBuffer {
+            width,
+            height,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::default(),
+            rgba_f32: Arc::new(vec![0.0_f32; pixel_count]),
+        }
+    }
+
+    #[test]
+    fn sync_upload_allowed_for_small_animated_frame() {
+        // 1024x1024 RGBA32F = 16 MiB -- at the sync budget boundary.
+        let image = composed_rgba32f_image(1024, 1024);
+        assert_eq!(
+            estimated_plane_upload_bytes(&image),
+            MAX_SYNC_ANIM_PLANE_UPLOAD_BYTES
+        );
+        assert!(allow_sync_plane_upload_on_cache_miss(true, &image));
+    }
+
+    #[test]
+    fn sync_upload_forced_async_when_over_budget() {
+        // 1025x1024 RGBA32F exceeds 16 MiB.
+        let image = composed_rgba32f_image(1025, 1024);
+        assert!(estimated_plane_upload_bytes(&image) > MAX_SYNC_ANIM_PLANE_UPLOAD_BYTES);
+        assert!(!allow_sync_plane_upload_on_cache_miss(true, &image));
+    }
+
+    #[test]
+    fn sync_upload_never_when_flag_false() {
+        let image = composed_rgba32f_image(64, 64);
+        assert!(!allow_sync_plane_upload_on_cache_miss(false, &image));
     }
 }

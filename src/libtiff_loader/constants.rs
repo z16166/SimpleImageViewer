@@ -40,6 +40,46 @@ pub(crate) const TILE_CACHE_BUDGET_BYTES: usize = STRIP_CACHE_BUDGET_BYTES;
 /// Maximum pixel count for static full-image HDR decode paths (256 megapixels).
 pub(crate) const MAX_STATIC_HDR_DECODE_PIXELS: u64 = 256 * 1024 * 1024;
 
+/// Poll cooperative cancel every N scanlines in owned TIFF row loops.
+pub(crate) const TIFF_SCANLINE_CANCEL_POLL_INTERVAL: u32 = 64;
+
+#[inline]
+pub(crate) fn poll_tiff_scanline_cancel(
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    y: u32,
+) -> Result<(), String> {
+    if y & (TIFF_SCANLINE_CANCEL_POLL_INTERVAL - 1) == 0 {
+        crate::loader::check_decode_cancel_str(cancel)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cancel_poll_tests {
+    use super::poll_tiff_scanline_cancel;
+    use crate::loader::{DECODE_CANCELLED, DecodeCancelFlag};
+
+    #[test]
+    fn poll_tiff_scanline_cancel_respects_flag_on_interval() {
+        let flag = DecodeCancelFlag::new();
+        assert!(poll_tiff_scanline_cancel(Some(flag.as_atomic()), 0).is_ok());
+        assert!(poll_tiff_scanline_cancel(Some(flag.as_atomic()), 63).is_ok());
+        flag.cancel();
+        assert_eq!(
+            poll_tiff_scanline_cancel(Some(flag.as_atomic()), 0).unwrap_err(),
+            DECODE_CANCELLED
+        );
+        // Off-interval rows skip the atomic load when already cancelled mid-loop;
+        // next interval row will still observe cancel.
+        assert!(poll_tiff_scanline_cancel(Some(flag.as_atomic()), 1).is_ok());
+        assert_eq!(
+            poll_tiff_scanline_cancel(Some(flag.as_atomic()), 64).unwrap_err(),
+            DECODE_CANCELLED
+        );
+    }
+}
+
 /// Upper bound on concurrent libtiff handles per tiled/scanline source (2x img-loader threads).
 pub(crate) const MAX_TIFF_HANDLE_POOL_SIZE: usize = crate::loader::MAX_IMG_LOADER_THREADS * 2;
 

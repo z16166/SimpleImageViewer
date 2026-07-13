@@ -430,9 +430,7 @@ pub(crate) fn hdr_buffer_from_ycbcr(
             let cr_u16 = unsafe { std::slice::from_raw_parts(row_cr as *const u16, cb_w) };
             // 4:2:0 and 4:2:2 share horizontal chroma upsample (xc = x/2);
             // vertical 4:2:0 subsampling is handled by chroma_row_index above.
-            if chroma == libheif_sys::heif_chroma_420
-                || chroma == libheif_sys::heif_chroma_422
-            {
+            if chroma == libheif_sys::heif_chroma_420 || chroma == libheif_sys::heif_chroma_422 {
                 super::ycbcr_hdr_simd::ycbcr_studio_swing_row_420_u16_to_rgba_f32(
                     yuv_matrix,
                     studio_simd,
@@ -470,9 +468,7 @@ pub(crate) fn hdr_buffer_from_ycbcr(
             let y_u16 = unsafe { std::slice::from_raw_parts(row_y as *const u16, y_w) };
             let cb_u16 = unsafe { std::slice::from_raw_parts(row_cb as *const u16, cb_w) };
             let cr_u16 = unsafe { std::slice::from_raw_parts(row_cr as *const u16, cb_w) };
-            if chroma == libheif_sys::heif_chroma_420
-                || chroma == libheif_sys::heif_chroma_422
-            {
+            if chroma == libheif_sys::heif_chroma_420 || chroma == libheif_sys::heif_chroma_422 {
                 super::ycbcr_hdr_simd::ycbcr_full_range_row_420_u16_to_rgba_f32(
                     simd, y_u16, cb_u16, cr_u16, row_dst, y_w,
                 );

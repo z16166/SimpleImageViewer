@@ -47,6 +47,7 @@ impl ImageViewerApp {
         self.invalidate_decode_profile_epoch();
         self.loader.cancel_all();
         self.main_loader_failed_indices.clear();
+        self.main_loader_failed_errors.clear();
         self.texture_cache.clear_all();
         self.clear_hdr_image_state();
         self.prefetched_tiles.clear();
@@ -58,6 +59,7 @@ impl ImageViewerApp {
         self.tile_manager = None;
         self.set_current_image_resolution(None);
         self.raw_metadata.clear();
+        self.psd_osd.clear();
         self.prev_texture = None;
         self.prev_hdr_image = None;
         self.prev_transition_rect = None;
@@ -116,6 +118,9 @@ impl ImageViewerApp {
         if self.main_loader_failed_indices.remove(&from) {
             self.main_loader_failed_indices.insert(to);
         }
+        if let Some(err) = self.main_loader_failed_errors.remove(&from) {
+            self.main_loader_failed_errors.insert(to, err);
+        }
         if self.cpu_raw_refinement_pending_indices.remove(&from) {
             self.cpu_raw_refinement_pending_indices.insert(to);
         }
@@ -134,6 +139,7 @@ impl ImageViewerApp {
             self.deferred_sdr_uploads.insert(to, upload);
         }
         self.raw_metadata.relocate_index(from, to);
+        self.psd_osd.relocate_index(from, to);
 
         if self.hdr_raw_gpu_demosaic_pending_indices.contains(&to)
             && let Some(hdr) = self.hdr_image_cache.get(&to)
@@ -263,6 +269,7 @@ impl ImageViewerApp {
             .retain(|&idx, _| idx == except_idx);
         self.raw_metadata
             .retain_only_indices(|idx| idx == except_idx);
+        self.psd_osd.retain_only_indices(|idx| idx == except_idx);
         self.ultra_hdr_capacity_sensitive_indices
             .retain(|&idx| idx == except_idx);
 
@@ -489,6 +496,7 @@ impl ImageViewerApp {
         permute_usize_set(&mut self.raw_gpu_embedded_bootstrap_indices, old_to_new);
         permute_usize_set(&mut self.gpu_demosaic_failed_indices, old_to_new);
         permute_usize_set(&mut self.main_loader_failed_indices, old_to_new);
+        permute_usize_hashmap(&mut self.main_loader_failed_errors, old_to_new);
         permute_usize_set(&mut self.cpu_raw_refinement_pending_indices, old_to_new);
         permute_usize_set(&mut self.hq_tiled_preview_pending_indices, old_to_new);
         permute_usize_hashmap(&mut self.installed_display_modes, old_to_new);
@@ -496,6 +504,7 @@ impl ImageViewerApp {
         permute_usize_hashmap(&mut self.deferred_sdr_uploads, old_to_new);
 
         self.raw_metadata.permute_indices(old_to_new);
+        self.psd_osd.permute_indices(old_to_new);
         permute_usize_set(&mut self.prefetch_resource_indices, old_to_new);
 
         for value in self.hdr_raw_gpu_demosaic_pending_key_index.values_mut() {
@@ -570,6 +579,7 @@ impl ImageViewerApp {
         );
         permute_usize_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
         permute_usize_hashmap(&mut self.directory_tree_strip_inflight_tokens, old_to_new);
+        permute_usize_hashmap(&mut self.directory_tree_strip_inflight_cancel, old_to_new);
         permute_usize_hashmap(
             &mut self.directory_tree_strip_pending_main_handoff,
             old_to_new,

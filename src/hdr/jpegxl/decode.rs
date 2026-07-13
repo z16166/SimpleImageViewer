@@ -71,25 +71,32 @@ pub(crate) struct JxlHdrLoadOutput {
 }
 
 #[cfg(feature = "jpegxl")]
+pub(crate) struct JxlHdrLoadFromBytesInput<'a> {
+    pub path: &'a std::path::Path,
+    pub bytes: &'a [u8],
+    pub decode_target_hdr_capacity: f32,
+    pub display_hdr_target_capacity: f32,
+    pub tone_map: HdrToneMapSettings,
+    pub bootstrap_animation: bool,
+    pub try_embedded_sdr_master: bool,
+    pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(feature = "jpegxl")]
 pub(crate) fn load_jxl_hdr_with_target_capacity_from_bytes(
-    path: &std::path::Path,
-    bytes: &[u8],
-    decode_target_hdr_capacity: f32,
-    display_hdr_target_capacity: f32,
-    tone_map: HdrToneMapSettings,
-    bootstrap_animation: bool,
-    try_embedded_sdr_master: bool,
+    input: JxlHdrLoadFromBytesInput<'_>,
 ) -> Result<JxlHdrLoadOutput, String> {
     decode_jxl_bytes_to_image_data_impl(JxlDecodeImplInput {
-        bytes,
-        decode_target_hdr_capacity,
-        display_hdr_target_capacity,
-        tone_map,
+        bytes: input.bytes,
+        decode_target_hdr_capacity: input.decode_target_hdr_capacity,
+        display_hdr_target_capacity: input.display_hdr_target_capacity,
+        tone_map: input.tone_map,
         strip_baseline_only: false,
         embedded_sdr_master_load: false,
-        bootstrap_animation,
-        try_embedded_sdr_master,
-        source_path: Some(path),
+        bootstrap_animation: input.bootstrap_animation,
+        try_embedded_sdr_master: input.try_embedded_sdr_master,
+        source_path: Some(input.path),
+        cancel: input.cancel,
     })
     .map(|output| JxlHdrLoadOutput {
         image: output.image,
@@ -318,6 +325,40 @@ fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &mut [f32], source_icc: &[u8
         px[3] = *k_slot;
     }
     true
+}
+
+/// Run CMYK→sRGB via lcms2 when a K plane was captured, and retag metadata as
+/// display-referred sRGB. Shared by the normal `JXL_DEC_SUCCESS` finish path and
+/// the animation-bootstrap early return (which otherwise skipped CMS and left
+/// raw CMY + Unknown ICC -- missing "black" text / lime greens on
+/// `cmyk_layers`).
+#[cfg(feature = "jpegxl")]
+fn jxl_apply_cmyk_cms_and_retag_metadata(
+    rgba: &mut [f32],
+    k_f32: &mut [f32],
+    k_extra_channel_index: Option<u32>,
+    cmyk_source_icc: &[u8],
+    metadata: &mut HdrImageMetadata,
+) {
+    if k_extra_channel_index.is_none() || k_f32.is_empty() {
+        return;
+    }
+    if !apply_cmyk_to_srgb_via_lcms(rgba, k_f32, cmyk_source_icc) {
+        return;
+    }
+    // After lcms2 CMYK→sRGB the float buffer holds sRGB-ENCODED values in 0..1
+    // (PostScript-style 0..100 input mapped through the embedded CMYK ICC +
+    // sRGB output profile, intent=Perceptual). Tag as Srgb so the SDR grade
+    // fallback (`jxl_sdr_grade_fallback_rgba8`) direct-quantizes via
+    // `srgb_unit_to_u8` and does NOT re-apply the OETF.
+    metadata.transfer_function = HdrTransferFunction::Srgb;
+    metadata.color_profile = HdrColorProfile::Cicp {
+        color_primaries: 1,
+        transfer_characteristics: 13,
+        matrix_coefficients: 0,
+        full_range: true,
+    };
+    metadata.luminance.mastering_max_nits = Some(100.0);
 }
 
 #[cfg(feature = "jpegxl")]
@@ -682,6 +723,7 @@ pub(crate) fn decode_jxl_bytes_to_image_data(
         bootstrap_animation: false,
         try_embedded_sdr_master: false,
         source_path: None,
+        cancel: None,
     })
     .map(|output| output.image)
 }
@@ -704,6 +746,7 @@ pub(crate) fn decode_jxl_strip_iso_gain_map_baseline(
         bootstrap_animation: false,
         try_embedded_sdr_master: false,
         source_path: None,
+        cancel: None,
     }) {
         Ok(output) => match output.image {
             ImageData::Static(mut decoded) => {
@@ -739,6 +782,7 @@ pub(crate) fn decode_jxl_embedded_sdr_master_bytes(bytes: &[u8]) -> Result<Image
         bootstrap_animation: false,
         try_embedded_sdr_master: false,
         source_path: None,
+        cancel: None,
     })
     .map(|output| output.image)
 }
@@ -830,6 +874,7 @@ struct JxlDecodeImplInput<'a> {
     bootstrap_animation: bool,
     try_embedded_sdr_master: bool,
     source_path: Option<&'a std::path::Path>,
+    cancel: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(feature = "jpegxl")]
@@ -846,6 +891,7 @@ fn decode_jxl_bytes_to_image_data_impl(
         bootstrap_animation,
         try_embedded_sdr_master,
         source_path,
+        cancel,
     } = input;
     let probe_len = bytes.len().clamp(2, 16);
     if !is_jxl_header(&bytes[..probe_len]) {
@@ -958,6 +1004,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
     let mut cmyk_source_icc: Vec<u8> = Vec::new();
 
     loop {
+        crate::loader::check_decode_cancel_str(cancel)?;
         match unsafe { libjxl_sys::JxlDecoderProcessInput(decoder.0) } {
             libjxl_sys::JXL_DEC_SUCCESS => {
                 // libjxl: keep calling ProcessInput after each FULL_IMAGE until SUCCESS
@@ -1036,27 +1083,13 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                         expected_len
                     ));
                 }
-                if k_extra_channel_index.is_some() && !k_f32.is_empty() {
-                    let cmyk_converted =
-                        apply_cmyk_to_srgb_via_lcms(&mut rgba, &mut k_f32, &cmyk_source_icc);
-                    if cmyk_converted {
-                        // After lcms2 CMYK→sRGB the float buffer holds sRGB-
-                        // ENCODED values in 0..1 (PostScript-style 0..100 input
-                        // mapped through the embedded CMYK ICC + sRGB output
-                        // profile, intent=Perceptual). Tag as Srgb so the SDR
-                        // grade fallback (`jxl_sdr_grade_fallback_rgba8`)
-                        // direct-quantizes via `srgb_unit_to_u8` and does NOT
-                        // re-apply the OETF.
-                        metadata.transfer_function = HdrTransferFunction::Srgb;
-                        metadata.color_profile = HdrColorProfile::Cicp {
-                            color_primaries: 1,
-                            transfer_characteristics: 13,
-                            matrix_coefficients: 0,
-                            full_range: true,
-                        };
-                        metadata.luminance.mastering_max_nits = Some(100.0);
-                    }
-                }
+                jxl_apply_cmyk_cms_and_retag_metadata(
+                    &mut rgba,
+                    &mut k_f32,
+                    k_extra_channel_index,
+                    &cmyk_source_icc,
+                    &mut metadata,
+                );
                 jxl_sanitize_straight_alpha(&mut rgba);
                 jxl_tag_display_referred_when_sdr_grade(&mut metadata);
                 return Ok(jxl_wrap_decode_output(
@@ -1356,6 +1389,10 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 if bootstrap_animation && !strip_baseline_only && !embedded_sdr_master_load {
                     let peek = unsafe { libjxl_sys::JxlDecoderProcessInput(decoder.0) };
                     if peek == libjxl_sys::JXL_DEC_SUCCESS {
+                        // Single-frame still image reached via the animation-
+                        // bootstrap probe: must still run CMYK→sRGB (same as
+                        // the JXL_DEC_SUCCESS finish path). The app always
+                        // loads `.jxl` with bootstrap_animation=true.
                         let mut rgba = captured_frames
                             .pop()
                             .map(|(buf, _)| buf)
@@ -1367,6 +1404,13 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                                 expected_len
                             ));
                         }
+                        jxl_apply_cmyk_cms_and_retag_metadata(
+                            &mut rgba,
+                            &mut k_f32,
+                            k_extra_channel_index,
+                            &cmyk_source_icc,
+                            &mut metadata,
+                        );
                         jxl_sanitize_straight_alpha(&mut rgba);
                         jxl_tag_display_referred_when_sdr_grade(&mut metadata);
                         return Ok(jxl_wrap_decode_output(

@@ -50,23 +50,35 @@ impl ScaleMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
-pub enum PairedRawJpegHandling {
+pub enum PairedJpegHandling {
     #[default]
     ShowBoth,
-    SkipRaw,
+    #[serde(alias = "skip_raw")]
+    SkipPrimary,
     SkipJpeg,
 }
 
-impl PairedRawJpegHandling {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairedJpegPrimaryKind {
+    Raw,
+    Psd,
+}
+
+impl PairedJpegHandling {
     pub fn needs_pair_index(self) -> bool {
         !matches!(self, Self::ShowBoth)
     }
 
-    pub fn label(self) -> String {
-        match self {
-            Self::ShowBoth => rust_i18n::t!("paired_raw_jpeg.show_both").to_string(),
-            Self::SkipRaw => rust_i18n::t!("paired_raw_jpeg.skip_raw").to_string(),
-            Self::SkipJpeg => rust_i18n::t!("paired_raw_jpeg.skip_jpeg").to_string(),
+    pub fn label(self, primary: PairedJpegPrimaryKind) -> String {
+        match (self, primary) {
+            (Self::ShowBoth, _) => rust_i18n::t!("paired_raw_jpeg.show_both").to_string(),
+            (Self::SkipJpeg, _) => rust_i18n::t!("paired_raw_jpeg.skip_jpeg").to_string(),
+            (Self::SkipPrimary, PairedJpegPrimaryKind::Raw) => {
+                rust_i18n::t!("paired_raw_jpeg.skip_raw").to_string()
+            }
+            (Self::SkipPrimary, PairedJpegPrimaryKind::Psd) => {
+                rust_i18n::t!("paired_psd_jpeg.skip_psd").to_string()
+            }
         }
     }
 }
@@ -145,6 +157,45 @@ pub enum RawDemosaicMode {
     Cpu,
     #[default]
     Gpu,
+}
+
+/// P2.5b strategy when PSD/PSB strict visibility has nothing drawable.
+///
+/// Both variants intentionally reveal designer-hidden layers so a preview can
+/// still be produced; that may differ from the file's authored visibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PsdHiddenLayerStrategy {
+    /// Top-N max-bbox reveal (up to [`crate::psb_p25_reveal::P25B_MAX_CANDIDATES`]).
+    /// May show layers/groups the designer left hidden.
+    #[default]
+    Heuristic,
+    /// Force-open every drawable leaf and composite the full stack (slow fallback).
+    /// Shows all designer-hidden layers; may diverge from design intent.
+    ShowAllLayers,
+}
+
+impl PsdHiddenLayerStrategy {
+    pub fn label(self) -> String {
+        match self {
+            Self::Heuristic => rust_i18n::t!("psd_hidden_layer.heuristic").to_string(),
+            Self::ShowAllLayers => rust_i18n::t!("psd_hidden_layer.show_all_layers").to_string(),
+        }
+    }
+
+    /// Stable ASCII id for logs / preload-debug (not localized).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Heuristic => "heuristic",
+            Self::ShowAllLayers => "show_all_layers",
+        }
+    }
+}
+
+impl std::fmt::Display for PsdHiddenLayerStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 impl RawDemosaicMode {
@@ -265,7 +316,9 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub preload: bool,
     #[serde(default)]
-    pub paired_raw_jpeg_handling: PairedRawJpegHandling,
+    pub paired_raw_jpeg_handling: PairedJpegHandling,
+    #[serde(default)]
+    pub paired_psd_jpeg_handling: PairedJpegHandling,
 
     // Session resumption
     #[serde(default)]
@@ -328,6 +381,10 @@ pub struct Settings {
     pub raw_demosaic_mode: RawDemosaicMode,
     #[serde(default = "default_raw_demosaic_method")]
     pub raw_demosaic_method: RawDemosaicMethod,
+
+    /// P2.5b strategy when PSD/PSB layers are all hidden / not drawable.
+    #[serde(default)]
+    pub psd_hidden_layer_strategy: PsdHiddenLayerStrategy,
 
     // HDR tone mapping
     /// Request a native HDR swap chain (Windows scRGB / macOS EDR / Wayland HDR10).
@@ -486,7 +543,8 @@ impl Default for Settings {
             font_family: default_font_family(),
             font_size: default_font_size(),
             preload: true,
-            paired_raw_jpeg_handling: PairedRawJpegHandling::ShowBoth,
+            paired_raw_jpeg_handling: PairedJpegHandling::ShowBoth,
+            paired_psd_jpeg_handling: PairedJpegHandling::ShowBoth,
             resume_last_image: false,
             last_viewed_image: None,
             show_osd: true,
@@ -499,6 +557,7 @@ impl Default for Settings {
             raw_high_quality: false,
             raw_demosaic_mode: default_raw_demosaic_mode(),
             raw_demosaic_method: default_raw_demosaic_method(),
+            psd_hidden_layer_strategy: PsdHiddenLayerStrategy::Heuristic,
             hdr_native_surface_enabled: default_hdr_native_surface_enabled(),
             hdr_exposure_ev_native: 0.0,
             hdr_exposure_ev_sdr: 0.0,
@@ -946,7 +1005,28 @@ impl Settings {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{BrowseMode, DirectoryTreeNavStyle, PairedRawJpegHandling, Settings};
+    use super::{BrowseMode, DirectoryTreeNavStyle, PairedJpegHandling, Settings};
+
+    #[test]
+    fn psd_hidden_layer_strategy_defaults_heuristic() {
+        use super::PsdHiddenLayerStrategy;
+        let settings = Settings::default();
+        assert_eq!(
+            settings.psd_hidden_layer_strategy,
+            PsdHiddenLayerStrategy::Heuristic
+        );
+        let settings: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
+        assert_eq!(
+            settings.psd_hidden_layer_strategy,
+            PsdHiddenLayerStrategy::Heuristic
+        );
+        let settings: Settings = serde_yaml::from_str("psd_hidden_layer_strategy: show_all_layers")
+            .expect("deserialize show_all_layers");
+        assert_eq!(
+            settings.psd_hidden_layer_strategy,
+            PsdHiddenLayerStrategy::ShowAllLayers
+        );
+    }
 
     #[test]
     fn default_settings_expose_hdr_tone_map_controls() {
@@ -965,12 +1045,16 @@ mod tests {
     }
 
     #[test]
-    fn paired_raw_jpeg_handling_defaults_to_show_both() {
+    fn paired_jpeg_handling_defaults_to_show_both() {
         let settings: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
 
         assert_eq!(
             settings.paired_raw_jpeg_handling,
-            PairedRawJpegHandling::ShowBoth
+            PairedJpegHandling::ShowBoth
+        );
+        assert_eq!(
+            settings.paired_psd_jpeg_handling,
+            PairedJpegHandling::ShowBoth
         );
     }
 
@@ -1053,7 +1137,29 @@ mod tests {
 
         assert_eq!(
             settings.paired_raw_jpeg_handling,
-            PairedRawJpegHandling::SkipJpeg
+            PairedJpegHandling::SkipJpeg
+        );
+    }
+
+    #[test]
+    fn paired_raw_jpeg_handling_deserializes_legacy_skip_raw() {
+        let settings: Settings = serde_yaml::from_str("paired_raw_jpeg_handling: skip_raw")
+            .expect("deserialize legacy skip_raw");
+
+        assert_eq!(
+            settings.paired_raw_jpeg_handling,
+            PairedJpegHandling::SkipPrimary
+        );
+    }
+
+    #[test]
+    fn paired_psd_jpeg_handling_deserializes_skip_primary() {
+        let settings: Settings = serde_yaml::from_str("paired_psd_jpeg_handling: skip_primary")
+            .expect("deserialize psd skip_primary");
+
+        assert_eq!(
+            settings.paired_psd_jpeg_handling,
+            PairedJpegHandling::SkipPrimary
         );
     }
 

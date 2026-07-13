@@ -57,10 +57,19 @@ pub(crate) fn open_raw_processor_with_preview(
     let open_started = std::time::Instant::now();
     let mut processor =
         RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
+    // Map once up front so LibRaw open and EXIF orientation fallback share the same bytes
+    // (avoids a second mmap when LibRaw flip() is out of range after path-based open).
+    let mut retained_mmap_for_exif: Option<memmap2::Mmap> = None;
     let opened_from_bytes = if let Some(bytes) = file_bytes {
         processor.open_buffer(bytes).is_ok()
     } else if let Ok((mmap, _)) = crate::mmap_util::map_file(path) {
-        processor.open_buffer_mmap(mmap).is_ok()
+        match processor.open_buffer_mmap(mmap) {
+            Ok(()) => true,
+            Err((_err, mmap)) => {
+                retained_mmap_for_exif = Some(mmap);
+                false
+            }
+        }
     } else {
         false
     };
@@ -83,7 +92,10 @@ pub(crate) fn open_raw_processor_with_preview(
         _ => {
             if let Some(bytes) = processor.open_backing_bytes().or(file_bytes) {
                 crate::metadata_utils::get_exif_orientation_from_bytes(bytes, Some(path))
+            } else if let Some(ref mmap) = retained_mmap_for_exif {
+                crate::metadata_utils::get_exif_orientation_from_bytes(mmap.as_ref(), Some(path))
             } else {
+                // Last resort: initial map_file failed entirely.
                 crate::mmap_util::map_file(path)
                     .map(|(mmap, _)| {
                         crate::metadata_utils::get_exif_orientation_from_bytes(
@@ -127,12 +139,17 @@ fn load_raw_hq_static_hdr(
     #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] hdr_target_capacity: f32,
     _hdr_tone_map: &HdrToneMapSettings,
     osd_ctx: &RawOsdContext,
+    cancel: &crate::loader::DecodeCancelFlag,
 ) -> Option<Result<RawLoadOutput, String>> {
     crate::preload_debug!(
         "[PreloadDebug][RAW] path={:?} hq_static_preview -> StaticHdrToneMap hdr_cap={:.3}",
         path.file_name().unwrap_or_default(),
         hdr_target_capacity
     );
+    // Stage boundary before LibRaw unpack / dcraw_process (cannot interrupt mid-OpenMP).
+    if let Err(err) = crate::loader::check_decode_cancel_str(Some(cancel.as_atomic())) {
+        return Some(Err(err));
+    }
     match develop_scene_linear_hdr_timed(processor) {
         Ok((hdr, cpu_ms)) => {
             let width = hdr.width;
@@ -243,6 +260,8 @@ pub(crate) struct RawLoadRequest<'a> {
     pub(crate) raw_open_prefetch: Option<&'a RawOpenPrefetch>,
     /// When set, LibRaw opens from memory instead of re-reading the file path.
     pub(crate) file_bytes: Option<&'a [u8]>,
+    /// Cooperative cancel; polled at stage boundaries (not mid-OpenMP).
+    pub(crate) cancel: crate::loader::DecodeCancelFlag,
 }
 
 fn emit_raw_hq_bootstrap_preview(
@@ -287,12 +306,16 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
         hdr_tone_map,
         raw_open_prefetch,
         file_bytes,
+        cancel,
     } = request;
+    crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
+
     let (mut processor, preview_opt, open_timings, final_lr_flip, prefetched) = if let Some(
         session,
     ) =
         raw_open_prefetch.and_then(|cache| cache.take_or_wait(path))
     {
+        crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
         let final_lr_flip = session.final_lr_flip;
         (
             session.processor,
@@ -302,8 +325,11 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
             true,
         )
     } else {
+        // Stage boundary before LibRaw open (cannot interrupt mid-OpenMP).
+        crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
         match open_raw_processor_with_preview(path, file_bytes) {
             Ok((processor, preview, timings, final_lr_flip)) => {
+                crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
                 (processor, preview, timings, final_lr_flip, false)
             }
             Err(e) => {
@@ -318,19 +344,27 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
                     "[Loader] Falling back to Rule 2 (WIC/ImageIO) for performance-mode RAW."
                 );
                 #[cfg(target_os = "windows")]
-                return crate::wic::load_via_wic(path, high_quality, None).map(|image| {
-                    RawLoadOutput {
-                        image,
-                        osd: RawOsdInfo::empty(),
-                    }
+                return crate::wic::load_via_wic(
+                    path,
+                    high_quality,
+                    None,
+                    Some(cancel.as_atomic()),
+                )
+                .map(|image| RawLoadOutput {
+                    image,
+                    osd: RawOsdInfo::empty(),
                 });
                 #[cfg(target_os = "macos")]
-                return crate::macos_image_io::load_via_image_io(path, high_quality, None).map(
-                    |image| RawLoadOutput {
-                        image,
-                        osd: RawOsdInfo::empty(),
-                    },
-                );
+                return crate::macos_image_io::load_via_image_io(
+                    path,
+                    high_quality,
+                    None,
+                    Some(cancel.as_atomic()),
+                )
+                .map(|image| RawLoadOutput {
+                    image,
+                    osd: RawOsdInfo::empty(),
+                });
                 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
                 return Err(format!(
                     "LibRaw failed and no platform fallback available: {}",
@@ -407,6 +441,7 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
                 hdr_target_capacity,
                 hdr_tone_map,
                 osd_ctx: &osd_ctx,
+                cancel: &cancel,
             },
         );
     }
@@ -451,9 +486,12 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
                 "GPU",
             );
         }
+        // Stage boundary before GPU demosaic extract / dispatch.
+        crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
         let extract_started = std::time::Instant::now();
         match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg) {
             Ok(mut raw_gpu_source) => {
+                crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
                 let extract_ms = crate::loader::elapsed_ms_u32(extract_started);
                 // scene_color_scale stays [1,1,1]: linear baseline matches CPU develop (no auto_bright).
                 log::debug!(
@@ -532,6 +570,7 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
                     hdr_target_capacity,
                     &hdr_tone_map,
                     &osd_ctx,
+                    &cancel,
                 ) {
                     return result;
                 }
@@ -591,6 +630,7 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
                     hdr_target_capacity,
                     &hdr_tone_map,
                     &osd_ctx,
+                    &cancel,
                 ) {
                     return result;
                 }
@@ -631,5 +671,6 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
         hdr_target_capacity,
         hdr_tone_map,
         &osd_ctx,
+        &cancel,
     )
 }

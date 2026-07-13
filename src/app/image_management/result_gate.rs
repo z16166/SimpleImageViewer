@@ -218,6 +218,7 @@ mod tests {
     fn sample_profile(intent: LoadIntent) -> DecodeProfile {
         DecodeProfile {
             raw_high_quality: false,
+            psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy::Heuristic,
             raw_demosaic_mode: RawDemosaicMode::Gpu,
             output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
             ultra_hdr_decode_capacity: 1.0,
@@ -230,6 +231,7 @@ mod tests {
     fn sample_display(intent: LoadIntent) -> DisplayRequirements {
         DisplayRequirements {
             raw_high_quality: false,
+            psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy::Heuristic,
             raw_demosaic_mode: RawDemosaicMode::Gpu,
             output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
             ultra_hdr_decode_capacity: 1.0,
@@ -265,6 +267,7 @@ mod tests {
             sdr_fallback_is_placeholder: false,
             target_hdr_capacity: 1.0,
             raw_osd: None,
+            psd_osd: None,
             uploaded_planes: None,
             staged_gpu_plane_upload: false,
             device_id: None,
@@ -303,6 +306,7 @@ mod tests {
             sdr_fallback_is_placeholder: false,
             target_hdr_capacity: 1.0,
             raw_osd: None,
+            psd_osd: None,
             uploaded_planes: None,
             staged_gpu_plane_upload: false,
             device_id: None,
@@ -337,6 +341,7 @@ mod tests {
             sdr_fallback_is_placeholder: false,
             target_hdr_capacity: 1.0,
             raw_osd: None,
+            psd_osd: None,
             uploaded_planes: None,
             staged_gpu_plane_upload: false,
             device_id: Some(999),
@@ -424,6 +429,7 @@ mod tests {
         let files = vec![PathBuf::from("img0.exr")];
         let tm_profile = DecodeProfile {
             raw_high_quality: true,
+            psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy::Heuristic,
             raw_demosaic_mode: RawDemosaicMode::Gpu,
             output_mode: crate::hdr::types::HdrOutputMode::WindowsScRgb,
             ultra_hdr_decode_capacity: 2.0,

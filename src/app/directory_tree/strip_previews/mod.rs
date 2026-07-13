@@ -95,10 +95,15 @@ impl ImageViewerApp {
     ///
     /// Must be called without holding `directory_tree.list`; this function briefly locks it
     /// to snapshot `image_list_generation` for stale-result rejection.
+    ///
+    /// Returns the job key and a clone of the strip-local cancel flag for the worker.
     pub(super) fn begin_directory_tree_strip_job(
         &mut self,
         index: usize,
-    ) -> Option<crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey> {
+    ) -> Option<(
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey,
+        crate::loader::DecodeCancelFlag,
+    )> {
         debug_assert!(
             !self.directory_tree_strip_generate_inflight.contains(&index),
             "begin_directory_tree_strip_job called while strip job is already in-flight"
@@ -123,17 +128,21 @@ impl ImageViewerApp {
             .wrapping_add(1)
             .max(1);
         let job_token = NonZeroU64::new(self.directory_tree_strip_next_job_token)?;
+        let cancel = crate::loader::DecodeCancelFlag::new();
         self.directory_tree_strip_generate_inflight.insert(index);
         self.directory_tree_strip_inflight_tokens
             .insert(index, job_token);
-        Some(
+        self.directory_tree_strip_inflight_cancel
+            .insert(index, cancel.clone());
+        Some((
             crate::app::directory_tree_strip_cache::DirectoryTreeStripJobKey {
                 index,
                 path,
                 image_list_generation,
                 job_token: DirectoryTreeStripJobToken::Worker(job_token),
             },
-        )
+            cancel,
+        ))
     }
 
     /// Build a strip upload key for pixels produced synchronously from the current list.
@@ -203,6 +212,7 @@ impl ImageViewerApp {
             .remove(&index);
         self.directory_tree_strip_generate_inflight.remove(&index);
         self.directory_tree_strip_inflight_tokens.remove(&index);
+        self.directory_tree_strip_inflight_cancel.remove(&index);
         self.directory_tree_strip_static_full_decode_inflight
             .remove(&index);
         self.directory_tree_strip_tiled_attempted.remove(&index);
@@ -274,6 +284,69 @@ impl ImageViewerApp {
         }
     }
 
+    /// Retry main loads for strip rows still awaiting install after a capacity miss.
+    ///
+    /// Neighbor prefetch fills at most [`crate::loader::MAX_IMG_LOADER_THREADS`] slots and
+    /// never schedules the circular-window hole (comment on
+    /// [`Self::request_main_load_for_strip_deferred_index`]); without a per-frame retry the
+    /// hole index stays on a strip placeholder until the user navigates to it.
+    fn retry_strip_cold_awaiting_main_loads(&mut self) {
+        if self
+            .directory_tree_strip_cold_awaiting_main_loader
+            .is_empty()
+        {
+            return;
+        }
+        self.strip_cold_awaiting_scratch.clear();
+        self.strip_cold_awaiting_scratch.extend(
+            self.directory_tree_strip_cold_awaiting_main_loader
+                .iter()
+                .copied(),
+        );
+        for i in 0..self.strip_cold_awaiting_scratch.len() {
+            let index = self.strip_cold_awaiting_scratch[i];
+            self.request_main_load_for_strip_deferred_index(index);
+        }
+    }
+
+    /// Cancel strip worker jobs whose index falls outside the visible/neighbor priority window.
+    ///
+    /// Uses strip-local [`DecodeCancelFlag`]s -- independent of ImageLoader main/prefetch cancel.
+    /// Only signals cancel; workers clear inflight bookkeeping via release when they exit.
+    pub(super) fn cancel_strip_jobs_outside_priority_window(
+        &mut self,
+        current_index: usize,
+        image_count: usize,
+        visible_row_range: Option<(usize, usize)>,
+    ) {
+        if image_count == 0 || self.directory_tree_strip_inflight_cancel.is_empty() {
+            return;
+        }
+        let mut retain = std::collections::HashSet::new();
+        if let Some((start, end)) = visible_row_range {
+            for idx in start..end.min(image_count) {
+                retain.insert(idx);
+            }
+        }
+        if current_index < image_count {
+            retain.insert(current_index);
+            for delta in 1..=DIRECTORY_TREE_COLD_NEIGHBOR_RADIUS {
+                if let Some(idx) = current_index.checked_sub(delta) {
+                    retain.insert(idx);
+                }
+                let idx = current_index + delta;
+                if idx < image_count {
+                    retain.insert(idx);
+                }
+            }
+        }
+        for (idx, flag) in &self.directory_tree_strip_inflight_cancel {
+            if !retain.contains(idx) {
+                flag.cancel();
+            }
+        }
+    }
+
     pub(crate) fn ensure_directory_tree_strip_thumbnails(&mut self, ctx: &egui::Context) {
         if !self.directory_tree_list_previews_active() {
             return;
@@ -298,6 +371,11 @@ impl ImageViewerApp {
                 self.defer_directory_tree_file_list_sync();
                 (None, false)
             };
+        self.cancel_strip_jobs_outside_priority_window(
+            self.current_index,
+            self.image_files.len(),
+            visible_row_range,
+        );
         let bootstrap_visible = self.directory_tree_strip_bootstrap_after_scan;
         // Cooldown: once all preload slots fill, schedule_preloads(true) is idempotent;
         // skip for a few frames to avoid redundant per-frame scheduling overhead.
@@ -319,18 +397,22 @@ impl ImageViewerApp {
             self.strip_preload_cooldown_frames =
                 self.strip_preload_cooldown_frames.saturating_sub(1);
         }
+        // After neighbor preload may have freed slots (and without canceling strip-deferred
+        // hole loads), retry any cold-awaiting main loads that missed capacity earlier.
+        self.retry_strip_cold_awaiting_main_loads();
         let max_inflight = if bootstrap_visible {
             MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP
         } else {
             MAX_STRIP_GENERATE_INFLIGHT
         };
 
-        // Do not drop `cold_attempted` here when cache is empty: failed decodes (e.g. motion-video
-        // JPG) stay out of cache but must remain attempted so they do not monopolize cold slots.
-        self.directory_tree_strip_tiled_attempted.retain(|index| {
-            self.directory_tree_strip_cache.contains(*index)
-                || self.directory_tree_strip_generate_inflight.contains(index)
-        });
+        // Keep `tiled_attempted` even when the strip cache is still empty. Async PSD v1 sources
+        // return empty previews until composite pixels land; pruning here used to clear the flag
+        // every frame after PermanentFailure and respawn thousands of strip jobs.
+        // Entries are dropped on list invalidate / explicit invalidate_for_index.
+        let file_count_for_tiled = self.image_files.len();
+        self.directory_tree_strip_tiled_attempted
+            .retain(|index| *index < file_count_for_tiled);
 
         self.strip_indices_scratch.clear();
         self.strip_indices_scratch
@@ -643,6 +725,10 @@ impl ImageViewerApp {
             &mut self.directory_tree_strip_inflight_tokens,
             &old_to_new,
         );
+        crate::app::index_cache_permute::permute_usize_hashmap(
+            &mut self.directory_tree_strip_inflight_cancel,
+            &old_to_new,
+        );
         permute_usize_set(
             &mut self.directory_tree_strip_static_full_decode_inflight,
             &old_to_new,
@@ -674,6 +760,10 @@ impl ImageViewerApp {
         permute_usize_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
         crate::app::index_cache_permute::permute_usize_hashmap(
             &mut self.directory_tree_strip_inflight_tokens,
+            old_to_new,
+        );
+        crate::app::index_cache_permute::permute_usize_hashmap(
+            &mut self.directory_tree_strip_inflight_cancel,
             old_to_new,
         );
         permute_usize_set(
@@ -802,6 +892,10 @@ impl ImageViewerApp {
             &mut self.directory_tree_strip_inflight_tokens,
             &old_to_new,
         );
+        crate::app::index_cache_permute::permute_usize_hashmap(
+            &mut self.directory_tree_strip_inflight_cancel,
+            &old_to_new,
+        );
         permute_usize_set(
             &mut self.directory_tree_strip_static_full_decode_inflight,
             &old_to_new,
@@ -832,9 +926,13 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn invalidate_directory_tree_strip_after_image_list_reorder(&mut self) {
+        for flag in self.directory_tree_strip_inflight_cancel.values() {
+            flag.cancel();
+        }
         self.directory_tree_strip_cache.clear_all();
         self.directory_tree_strip_generate_inflight.clear();
         self.directory_tree_strip_inflight_tokens.clear();
+        self.directory_tree_strip_inflight_cancel.clear();
         self.directory_tree_strip_static_full_decode_inflight
             .clear();
         self.directory_tree_strip_tiled_attempted.clear();

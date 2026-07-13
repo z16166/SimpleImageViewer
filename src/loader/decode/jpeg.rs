@@ -21,6 +21,7 @@ use crate::loader::{DecodedImage, ImageData};
 use crate::loader::{hdr_gain_map_decode_capacity, hdr_sdr_fallback_rgba8_or_placeholder};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use super::assemble::{make_hdr_image_data, make_image_data};
 use crate::loader::tiled_sources::MemoryImageSource;
@@ -32,13 +33,16 @@ fn finish_ultra_hdr_loaded(
     _path: &Path,
     hdr: HdrImageBuffer,
     orientation: u16,
+    cancel: Option<&AtomicBool>,
 ) -> Result<ImageData, String> {
+    crate::loader::check_decode_cancel_str(cancel)?;
     let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, orientation);
     let fallback = DecodedImage::from_hdr_sdr_fallback(
         hdr.width,
         hdr.height,
         hdr_sdr_fallback_rgba8_or_placeholder(&hdr)?,
     );
+    crate::loader::check_decode_cancel_str(cancel)?;
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
@@ -49,6 +53,7 @@ pub(crate) fn load_jpeg(path: &Path) -> Result<ImageData, String> {
         HdrToneMapSettings::default().target_hdr_capacity(),
         HdrToneMapSettings::default(),
         false,
+        None,
     )
 }
 
@@ -58,6 +63,7 @@ pub(crate) fn load_jpeg_with_target_capacity(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
+    cancel: Option<&AtomicBool>,
 ) -> Result<ImageData, String> {
     let (mmap, _) = crate::mmap_util::map_file(path)?;
     load_jpeg_from_mapped(
@@ -66,6 +72,7 @@ pub(crate) fn load_jpeg_with_target_capacity(
         hdr_target_capacity,
         hdr_tone_map,
         prefer_embedded_sdr_master,
+        cancel,
     )
 }
 
@@ -74,6 +81,7 @@ pub(crate) fn load_jpeg_primary_attempt(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
+    cancel: Option<&AtomicBool>,
 ) -> super::detect::PrimaryDecodeAttempt {
     use super::detect::PrimaryDecodeAttempt;
     match crate::mmap_util::map_file(path) {
@@ -85,6 +93,7 @@ pub(crate) fn load_jpeg_primary_attempt(
                 hdr_target_capacity,
                 hdr_tone_map,
                 prefer_embedded_sdr_master,
+                cancel,
             );
             PrimaryDecodeAttempt::with_mmap(result, Some(arc))
         }
@@ -98,7 +107,9 @@ pub(crate) fn load_jpeg_from_mapped(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     prefer_embedded_sdr_master: bool,
+    cancel: Option<&AtomicBool>,
 ) -> Result<ImageData, String> {
+    crate::loader::check_decode_cancel_str(cancel)?;
     let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
     if mmap.len() < 3 || !mmap.starts_with(&[0xFF, 0xD8, 0xFF]) {
         if let Some(brand) = super::detect::bmff_ftyp_brand(mmap)
@@ -112,7 +123,7 @@ pub(crate) fn load_jpeg_from_mapped(
         ));
     }
     // Sole orientation pass for all JPEG decodes (baseline SDR, **JPEG_R / Ultra HDR**). Do not
-    // combine with [`apply_exif_orientation_to_image_data`] — that would double-rotate.
+    // combine with [`apply_exif_orientation_to_image_data`] -- that would double-rotate.
     let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(&mmap[..], Some(path));
     // Apply EXIF Orientation per TIFF/EXIF rules (same transform family as Pillow `exif_transpose`).
     // Some reference JPEGs (e.g. libavif `paris_exif_orientation_5.jpg`) store a raster that already
@@ -122,6 +133,7 @@ pub(crate) fn load_jpeg_from_mapped(
         .ok()
         .is_some_and(|info| info.is_ultra_hdr);
     if is_ultra_hdr {
+        crate::loader::check_decode_cancel_str(cancel)?;
         let try_embedded_sdr_master = crate::loader::should_use_embedded_sdr_master_load(
             prefer_embedded_sdr_master,
             hdr_target_capacity,
@@ -132,8 +144,10 @@ pub(crate) fn load_jpeg_from_mapped(
             orientation,
             try_embedded_sdr_master,
             Some(path),
+            cancel,
         ) {
             Ok(hdr) => {
+                crate::loader::check_decode_cancel_str(cancel)?;
                 let pixel_count = hdr.width as u64 * hdr.height as u64;
                 let tiled_limit = crate::tile_cache::get_tiled_threshold();
                 let max_side = hdr.width.max(hdr.height);
@@ -151,7 +165,7 @@ pub(crate) fn load_jpeg_from_mapped(
                             path.display()
                         );
                         // fall through to non-tiled path below
-                        return finish_ultra_hdr_loaded(path, hdr, orientation);
+                        return finish_ultra_hdr_loaded(path, hdr, orientation, cancel);
                     };
                     if let Ok(hdr_source) =
                         crate::hdr::ultra_hdr::UltraHdrTiledImageSource::open_from_iso_deferred(
@@ -174,9 +188,12 @@ pub(crate) fn load_jpeg_from_mapped(
                     }
                 }
 
-                return finish_ultra_hdr_loaded(path, hdr, orientation);
+                return finish_ultra_hdr_loaded(path, hdr, orientation, cancel);
             }
             Err(err) => {
+                if err == crate::loader::DECODE_CANCELLED {
+                    return Err(err);
+                }
                 log::warn!(
                     "[Loader] Ultra HDR JPEG decode failed for {}: {err}; falling back to baseline SDR (no HDR OSD)",
                     path.display()
@@ -185,7 +202,10 @@ pub(crate) fn load_jpeg_from_mapped(
         }
     }
 
+    // Stage boundary before baseline turbo JPEG decode.
+    crate::loader::check_decode_cancel_str(cancel)?;
     let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(mmap)?;
+    crate::loader::check_decode_cancel_str(cancel)?;
 
     if orientation > 1 {
         let (out_w, out_h, out_pixels) =
@@ -207,7 +227,7 @@ pub(crate) fn try_decode_jpeg_strip_dct(
     max_side: u32,
 ) -> OptionalJpegStripResult {
     // Use the bytes variant to avoid re-opening the already mmap'd file
-    // (checklist #29 — "avoid opening the same file multiple times").
+    // (checklist #29 -- "avoid opening the same file multiple times").
     let orientation = crate::metadata_utils::get_exif_orientation_from_bytes(jpeg_data, None);
     let (orig_w, orig_h, scaled_w, scaled_h, pixels) =
         match libjpeg_turbo::decode_to_rgba_with_max_side(jpeg_data, max_side) {
@@ -291,6 +311,7 @@ mod tests {
             settings.target_hdr_capacity(),
             settings,
             false,
+            None,
         ) {
             Err(err) => err,
             Ok(_) => panic!("expected QuickTime mislabeled JPG to fail"),

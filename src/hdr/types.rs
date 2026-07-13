@@ -205,6 +205,23 @@ impl HdrImageMetadata {
                 .is_some_and(|gm| gm.gpu_compose_pending())
     }
 
+    /// Viewer display policy: SDR-grade content (`mastering_max_nits` / JXL `intensity_target`
+    /// in `(0, 255]`, non-PQ/HLG) should clamp float RGB to `[0, 1]` before transfer decode on
+    /// the native HDR plane so EV=0 matches 8-bit `ref.png` / CPU SDR fallback.
+    ///
+    /// This is **not** an ISO clamp mandate -- libjxl allows float outside `0..1`; relative
+    /// spaces still treat `(1,1,1)` as `intensity_target` nits. We clamp for screen parity.
+    pub(crate) fn is_sdr_grade_for_display(&self) -> bool {
+        let peak = self.luminance.mastering_max_nits.unwrap_or(0.0);
+        peak.is_finite()
+            && peak > 0.0
+            && peak <= 255.0
+            && !matches!(
+                self.transfer_function,
+                HdrTransferFunction::Pq | HdrTransferFunction::Hlg
+            )
+    }
+
     pub fn from_color_space(color_space: HdrColorSpace) -> Self {
         Self {
             color_profile: HdrColorProfile::from_color_space(color_space),
@@ -517,6 +534,53 @@ mod tests {
         assert!(metadata.luminance.mastering_max_nits.is_none());
         assert!(metadata.luminance.sdr_white_nits.is_none());
         assert!(metadata.gain_map.is_none());
+    }
+
+    #[test]
+    fn sdr_grade_for_display_true_for_peak_255_srgb_false_for_pq_or_high_peak() {
+        use super::HdrLuminanceMetadata;
+
+        let sdr = HdrImageMetadata {
+            transfer_function: HdrTransferFunction::Srgb,
+            luminance: HdrLuminanceMetadata {
+                mastering_max_nits: Some(255.0),
+                ..Default::default()
+            },
+            ..HdrImageMetadata::default()
+        };
+        assert!(sdr.is_sdr_grade_for_display());
+
+        let linear_sdr = HdrImageMetadata {
+            transfer_function: HdrTransferFunction::Linear,
+            luminance: HdrLuminanceMetadata {
+                mastering_max_nits: Some(255.0),
+                ..Default::default()
+            },
+            ..HdrImageMetadata::default()
+        };
+        assert!(linear_sdr.is_sdr_grade_for_display());
+
+        let pq = HdrImageMetadata {
+            transfer_function: HdrTransferFunction::Pq,
+            luminance: HdrLuminanceMetadata {
+                mastering_max_nits: Some(255.0),
+                ..Default::default()
+            },
+            ..HdrImageMetadata::default()
+        };
+        assert!(!pq.is_sdr_grade_for_display());
+
+        let hdr_peak = HdrImageMetadata {
+            transfer_function: HdrTransferFunction::Srgb,
+            luminance: HdrLuminanceMetadata {
+                mastering_max_nits: Some(1000.0),
+                ..Default::default()
+            },
+            ..HdrImageMetadata::default()
+        };
+        assert!(!hdr_peak.is_sdr_grade_for_display());
+
+        assert!(!HdrImageMetadata::default().is_sdr_grade_for_display());
     }
 
     #[test]

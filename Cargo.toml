@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "2.9.1"
+version = "3.0.0"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
@@ -41,6 +41,7 @@ rayon = "1.10"
 log = "0.4"
 flexi_logger = { version = "0.29", features = ["async"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 serde_yaml = "0.9"
 font-kit = "0.14"
 ttf-parser = "0.25"
@@ -50,7 +51,6 @@ wallpaper = "3.2.0"
 interprocess = "2.4.0"
 trash = "5"
 tray-icon = { version = "0.19", default-features = false }
-psd = "0.3"
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 xmpkit = { version = "0.1", default-features = false, features = ["gif", "jpeg", "png", "psd", "tiff", "webp"] }
 quick-xml = "0.39"
@@ -81,6 +81,7 @@ libjxl-sys = { path = "libraries/libjxl-sys", optional = true }
 bytemuck = "1.25.0"
 half = { version = "2.6", default-features = false }
 miniz_oxide = "0.8.9"
+memchr = "2.8"
 
 [features]
 # OpenEXR + AVIF/HEIF/JPEG XL native HDR paths are on by default so CI and release

@@ -4287,15 +4287,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
-name = "psd"
-version = "0.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a25f9b8cfffd65d911baf31a033239f7a0facb755faa2481575b70db5dc9195"
-dependencies = [
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "pxfm"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5000,7 +4991,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "simple-image-viewer"
-version = "2.9.1"
+version = "3.0.0"
 dependencies = [
  "arc-swap",
  "bytemuck",
@@ -5031,6 +5022,7 @@ dependencies = [
  "libtiff-viewer",
  "lofty",
  "log",
+ "memchr",
  "memmap2",
  "mimalloc",
  "miniz_oxide",
@@ -5041,7 +5033,6 @@ dependencies = [
  "parking_lot",
  "pollster",
  "printpdf",
- "psd",
  "quick-xml",
  "rand 0.8.6",
  "rayon",
@@ -5049,6 +5040,7 @@ dependencies = [
  "rodio",
  "rust-i18n",
  "serde",
+ "serde_json",
  "serde_yaml",
  "symphonia",
  "sysinfo",

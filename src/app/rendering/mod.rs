@@ -58,25 +58,27 @@ fn canvas_drawable_kind(app: &ImageViewerApp) -> &'static str {
     }
 }
 
+fn canvas_centered_error_label_rect(canvas_rect: Rect, text_size: Vec2) -> Rect {
+    Rect::from_center_size(canvas_rect.center(), text_size).intersect(canvas_rect)
+}
+
 fn draw_canvas_centered_error(ui: &mut egui::Ui, canvas_rect: Rect, text: String) {
-    ui.scope_builder(egui::UiBuilder::new().max_rect(canvas_rect), |ui| {
-        ui.with_layout(
-            egui::Layout::centered_and_justified(egui::Direction::TopDown),
-            |ui| {
-                ui.set_max_width((canvas_rect.width() * 0.9).max(64.0));
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(text)
-                            .font(FontId::proportional(16.0))
-                            .color(Color32::from_rgb(255, 100, 100)),
-                    )
-                    .selectable(true)
-                    .wrap()
-                    .halign(egui::Align::Center),
-                );
-            },
-        );
-    });
+    // Keep the Label selectable (copyable), but size its hit target to the text
+    // only. A centered_and_justified Label fills the canvas and steals primary
+    // clicks from `canvas_resp`, which breaks "click canvas to close settings".
+    let max_w = (canvas_rect.width() * 0.9).max(64.0);
+    let color = Color32::from_rgb(255, 100, 100);
+    let font = FontId::proportional(16.0);
+    let galley = ui
+        .painter()
+        .layout(text.clone(), font.clone(), color, max_w);
+    let label_rect = canvas_centered_error_label_rect(canvas_rect, galley.size());
+    ui.put(
+        label_rect,
+        egui::Label::new(RichText::new(text).font(font).color(color))
+            .selectable(true)
+            .wrap(),
+    );
 }
 
 impl ImageViewerApp {
@@ -349,6 +351,20 @@ mod tests {
         let (paint, _) = main_window_canvas_rects(available, 0.0, Some(panel));
         assert_ne!(paint.center().x, available.center().x);
         assert_eq!(paint.center().x, 600.0);
+    }
+
+    #[test]
+    fn canvas_error_label_hit_target_stays_content_sized() {
+        let canvas = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1000.0, 800.0));
+        let text_size = Vec2::new(240.0, 48.0);
+        let label = canvas_centered_error_label_rect(canvas, text_size);
+        assert_eq!(label.center(), canvas.center());
+        assert!(label.width() < canvas.width() * 0.5);
+        assert!(label.height() < canvas.height() * 0.5);
+        assert!(
+            label.area() < canvas.area() * 0.1,
+            "selectable error label must not swallow the whole canvas click area"
+        );
     }
 
     #[test]

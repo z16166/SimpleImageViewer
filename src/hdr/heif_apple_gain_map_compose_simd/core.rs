@@ -66,19 +66,19 @@ pub(crate) struct ComposeRowTransform<'a> {
     pub(crate) weight: f32,
 }
 
-const SRGB_LINEAR_SEGMENT_END: f32 = 0.04045;
-const SRGB_DIVISOR: f32 = 12.92;
-const SRGB_OFFSET: f32 = 0.055;
-const SRGB_SCALE: f32 = 1.055;
-const SRGB_GAMMA: f32 = 2.4;
+pub(crate) const SRGB_LINEAR_SEGMENT_END: f32 = 0.04045;
+pub(crate) const SRGB_DIVISOR: f32 = 12.92;
+pub(crate) const SRGB_OFFSET: f32 = 0.055;
+pub(crate) const SRGB_SCALE: f32 = 1.055;
+pub(crate) const SRGB_GAMMA: f32 = 2.4;
 
-const BT709_LINEAR_SEGMENT_BREAK: f32 = 0.018 * 4.5;
-const BT709_DIVISOR: f32 = 4.5;
-const BT709_OFFSET: f32 = 0.099;
-const BT709_SCALE: f32 = 1.099;
-const BT709_GAMMA: f32 = 1.0 / 0.45;
+pub(crate) const BT709_LINEAR_SEGMENT_BREAK: f32 = 0.018 * 4.5;
+pub(crate) const BT709_DIVISOR: f32 = 4.5;
+pub(crate) const BT709_OFFSET: f32 = 0.099;
+pub(crate) const BT709_SCALE: f32 = 1.099;
+pub(crate) const BT709_GAMMA: f32 = 1.0 / 0.45;
 
-const DISPLAY_P3_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
+pub(crate) const DISPLAY_P3_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
     [1.2249401, -0.2249402, 0.0],
     [-0.0420569, 1.0420571, 0.0],
     [-0.0196376, -0.0786507, 1.0982884],
@@ -271,7 +271,7 @@ pub(crate) fn classify_fast_path(
     }
 }
 
-fn compose_pixel_scalar(
+pub(crate) fn compose_pixel_scalar(
     row_in: &[f32],
     row_out: &mut [f32],
     x: u32,
@@ -326,7 +326,7 @@ pub(crate) fn compose_row_scalar(
     }
 }
 
-fn path_applies_display_p3_matrix(path: ComposeFastPath) -> bool {
+pub(crate) fn path_applies_display_p3_matrix(path: ComposeFastPath) -> bool {
     matches!(
         path,
         ComposeFastPath::SrgbDisplayP3

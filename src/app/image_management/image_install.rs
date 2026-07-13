@@ -1169,13 +1169,57 @@ impl ImageViewerApp {
             path_str
         );
         self.main_loader_failed_indices.insert(idx);
+        self.main_loader_failed_errors
+            .insert(idx, error.to_string());
+        // Async PSD/PSB installs a tiled shell before pixels exist; tear it down on
+        // failure so navigation does not restore a black placeholder with no error.
+        self.uninstall_failed_main_loader_asset(idx);
+        let message = t!("status.load_failed", path = path_str, err = error).to_string();
         if idx == self.current_index {
-            self.error_message =
-                Some(t!("status.load_failed", path = path_str, err = error).to_string());
+            self.error_message = Some(message);
         }
+    }
+
+    /// Drop any "successful" shell left behind after an async main-loader failure.
+    fn uninstall_failed_main_loader_asset(&mut self, idx: usize) {
+        self.prefetched_tiles.remove(&idx);
+        self.deferred_sdr_uploads.remove(&idx);
+        self.hq_tiled_preview_pending_indices.remove(&idx);
+        self.texture_cache.remove(idx);
+        self.clear_installed_display_mode(idx);
+        crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
+        self.directory_tree_strip_cache.remove_index(idx);
+        self.directory_tree_strip_tiled_attempted.remove(&idx);
+        self.directory_tree_strip_cold_attempted.remove(&idx);
+        self.directory_tree_strip_cold_awaiting_main_loader
+            .remove(&idx);
+        if self
+            .tile_manager
+            .as_ref()
+            .is_some_and(|tm| tm.image_index == idx)
+        {
+            self.tile_manager = None;
+            self.pixel_data_source = None;
+        }
+        self.sync_prefetch_resource_index(idx);
     }
 
     pub(super) fn note_main_loader_install_success(&mut self, idx: usize) {
         self.main_loader_failed_indices.remove(&idx);
+        self.main_loader_failed_errors.remove(&idx);
+    }
+
+    pub(super) fn surface_main_loader_failure_for_current(&mut self) {
+        let idx = self.current_index;
+        let Some(error) = self.main_loader_failed_errors.get(&idx).cloned() else {
+            return;
+        };
+        let path_str = self
+            .image_files
+            .get(idx)
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| format!("[index {idx} absent after rescan]"));
+        self.error_message =
+            Some(t!("status.load_failed", path = path_str, err = error).to_string());
     }
 }

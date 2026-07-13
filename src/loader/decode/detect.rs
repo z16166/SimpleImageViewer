@@ -88,13 +88,13 @@ fn load_bmff_ftyp_container(
     );
 
     #[cfg(target_os = "windows")]
-    if let Ok(image) = crate::wic::load_via_wic_stream_sniff(path, true, None) {
+    if let Ok(image) = crate::wic::load_via_wic_stream_sniff(path, true, None, None) {
         // WIC applies EXIF orientation during decode; do not chain apply_exif (double-rotate).
         return Ok(image);
     }
 
     #[cfg(target_os = "macos")]
-    if let Ok(image) = crate::macos_image_io::load_via_image_io(path, true, None) {
+    if let Ok(image) = crate::macos_image_io::load_via_image_io(path, true, None, None) {
         // ImageIO applies EXIF orientation during decode; do not chain apply_exif.
         return Ok(image);
     }
@@ -120,19 +120,20 @@ fn load_by_image_format_from_mmap(
     let bytes = mmap.as_ref();
     match format {
         image::ImageFormat::Png => {
-            load_png_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map)
+            load_png_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map, None)
         }
         image::ImageFormat::Gif => {
-            load_gif_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map)
+            load_gif_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map, None)
         }
         image::ImageFormat::WebP => {
-            load_webp_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map)
+            load_webp_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map, None)
         }
         image::ImageFormat::Tiff => crate::libtiff_loader::load_via_libtiff_from_mmap(
             path,
             Arc::clone(mmap),
             hdr_target_capacity,
             hdr_tone_map,
+            None,
         ),
         image::ImageFormat::Jpeg => load_jpeg_from_mapped(
             path,
@@ -140,6 +141,7 @@ fn load_by_image_format_from_mmap(
             hdr_target_capacity,
             hdr_tone_map,
             false,
+            None,
         ),
         image::ImageFormat::Bmp
         | image::ImageFormat::Ico
@@ -148,7 +150,7 @@ fn load_by_image_format_from_mmap(
         | image::ImageFormat::Dds
         | image::ImageFormat::Farbfeld
         | image::ImageFormat::Qoi => {
-            load_static_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map)
+            load_static_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map, None)
         }
         image::ImageFormat::Avif => load_avif_with_target_capacity_from_mmap(
             path,
@@ -156,11 +158,16 @@ fn load_by_image_format_from_mmap(
             hdr_target_capacity,
             hdr_tone_map,
             false,
+            crate::loader::DecodeCancelFlag::new(),
         ),
-        image::ImageFormat::Hdr => {
-            load_hdr_from_mmap(path, Arc::clone(mmap), hdr_target_capacity, hdr_tone_map)
-        }
-        image::ImageFormat::OpenExr => load_detected_exr_from_mmap(path, Arc::clone(mmap)),
+        image::ImageFormat::Hdr => load_hdr_from_mmap(
+            path,
+            Arc::clone(mmap),
+            hdr_target_capacity,
+            hdr_tone_map,
+            None,
+        ),
+        image::ImageFormat::OpenExr => load_detected_exr_from_mmap(path, Arc::clone(mmap), None),
         _ => Err(rust_i18n::t!(
             "error.unsupported_detected_format",
             format = format!("{:?}", format)
@@ -247,8 +254,9 @@ pub(crate) fn recover_via_platform_and_content_detection(
             std::sync::Arc::clone(mmap),
             high_quality,
             None,
+            None,
         ),
-        None => crate::wic::load_via_wic_stream_sniff(path, high_quality, None),
+        None => crate::wic::load_via_wic_stream_sniff(path, high_quality, None, None),
     } {
         log::info!(
             "[{}] Recovered via WIC after extension-first decode failed",
@@ -264,8 +272,9 @@ pub(crate) fn recover_via_platform_and_content_detection(
             std::sync::Arc::clone(mmap),
             high_quality,
             None,
+            None,
         ),
-        None => crate::macos_image_io::load_via_image_io(path, high_quality, None),
+        None => crate::macos_image_io::load_via_image_io(path, high_quality, None, None),
     } {
         log::info!(
             "[{}] Recovered via ImageIO after extension-first decode failed",
@@ -294,7 +303,19 @@ pub(crate) fn recover_via_platform_and_content_detection(
     }
 }
 
+/// Successful primary decode plus an optional retained mmap for post-decode reuse
+/// (e.g. EXIF thumbnail without a second `map_file`).
+pub(crate) struct PrimaryLoadOutcome {
+    pub result: Result<ImageData, String>,
+    /// Present when the primary path mapped the file and decode succeeded.
+    /// Cleared after recovery consumes the mmap (checklist #29).
+    pub retained_mmap: Option<Arc<memmap2::Mmap>>,
+}
+
 /// Run the extension-matched loader first; only mislabeled or mismatched files pay sniffing cost.
+///
+/// On success, [`PrimaryLoadOutcome::retained_mmap`] keeps the primary mmap so callers can
+/// extract EXIF thumbnails without mapping the file again.
 pub(crate) fn load_primary_with_detection_fallback(
     path: &Path,
     file_name: &str,
@@ -302,27 +323,33 @@ pub(crate) fn load_primary_with_detection_fallback(
     hdr_tone_map: HdrToneMapSettings,
     high_quality: bool,
     primary: impl FnOnce() -> PrimaryDecodeAttempt,
-) -> Result<ImageData, String> {
+) -> PrimaryLoadOutcome {
     let PrimaryDecodeAttempt {
         result,
         detection_mmap,
     } = primary();
     match result {
-        Ok(image) => Ok(image),
+        Ok(image) => PrimaryLoadOutcome {
+            result: Ok(image),
+            retained_mmap: detection_mmap,
+        },
         Err(primary_err) => {
             log::debug!(
                 "[{}] Extension-first decode failed ({primary_err}); trying recovery loaders",
                 file_name
             );
-            recover_via_platform_and_content_detection(
-                path,
-                file_name,
-                hdr_target_capacity,
-                hdr_tone_map,
-                high_quality,
-                detection_mmap,
-                primary_err,
-            )
+            PrimaryLoadOutcome {
+                result: recover_via_platform_and_content_detection(
+                    path,
+                    file_name,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                    high_quality,
+                    detection_mmap,
+                    primary_err,
+                ),
+                retained_mmap: None,
+            }
         }
     }
 }
@@ -358,6 +385,7 @@ pub(crate) fn load_via_content_detection(
             hdr_target_capacity,
             hdr_tone_map,
             false,
+            crate::loader::DecodeCancelFlag::new(),
         );
     }
 
@@ -371,6 +399,7 @@ pub(crate) fn load_via_content_detection(
                 hdr_target_capacity,
                 hdr_tone_map,
                 false,
+                crate::loader::DecodeCancelFlag::new(),
             );
         }
         if crate::hdr::heif::is_heif_brand(brand) {
@@ -384,6 +413,7 @@ pub(crate) fn load_via_content_detection(
                     path: Some(path),
                 },
                 false,
+                None,
             );
         }
         return load_bmff_ftyp_container(path, hdr_target_capacity, hdr_tone_map, brand);

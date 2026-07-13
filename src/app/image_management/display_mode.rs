@@ -124,7 +124,8 @@ impl ImageViewerApp {
         Some(anim.repaint_after())
     }
 
-    /// Animated HDR planes use synchronous GPU upload on cache miss (main-branch behavior).
+    /// Animated HDR planes prefer synchronous GPU upload on cache miss (main-branch behavior).
+    /// Oversized frames still fall back to async pending upload inside the HDR prepare callback.
     pub(crate) fn hdr_plane_sync_upload_on_cache_miss(&self) -> bool {
         self.animation_needs_repaint_wake()
     }
@@ -339,6 +340,7 @@ mod tests {
     fn sample_tiled_profile() -> DecodeProfile {
         DecodeProfile {
             raw_high_quality: false,
+            psd_hidden_layer_strategy: crate::settings::PsdHiddenLayerStrategy::Heuristic,
             raw_demosaic_mode: RawDemosaicMode::Cpu,
             output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
             ultra_hdr_decode_capacity: 1.0,

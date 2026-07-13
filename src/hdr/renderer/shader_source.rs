@@ -56,8 +56,9 @@ struct ToneMapSettings {
     /// `1`: `Rgba8Unorm` / `Bgra8Unorm` target — WGSL emits **IEC 61966‑2‑1** codes in `encode_sdr`.
     /// `0`: `*UnormSrgb` (**GPU encodes**) or float/native paths — WGSL emits **linear** (~0–1) for writes.
     sdr_manual_srgb_encode: u32,
-    // WGSL aligns vec2<f32> to 8 bytes; implicit padding before uv_min.
-    _wgsl_pad_before_uv: u32,
+    /// `1`: SDR-grade (`intensity_target` / mastering peak ≤ 255, non-PQ/HLG) — clamp RGB to
+    /// `[0,1]` before transfer decode so EV=0 native HDR matches 8-bit ref / CPU fallback.
+    sdr_grade_clamp: u32,
     uv_min: vec2<f32>,
     uv_max: vec2<f32>,
     /// `1` when [`AppleHeicGainMapGpuSource`] planes are bound (GPU gain-map compose).
@@ -349,10 +350,23 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let src_a = clamp(hdr.a, 0.0, 1.0);
     let display_referred_srgb = tone_map.input_transfer_function == INPUT_TRANSFER_SRGB &&
         tone_map.input_reference != INPUT_REFERENCE_SCENE_LINEAR;
-    let decoded_rgb = decode_input_transfer(hdr.rgb, tone_map.input_transfer_function, tone_map);
+    // Viewer policy for SDR-grade (intensity_target ≤ 255, non-PQ/HLG):
+    // 1) Clamp RGB to [0,1] before EOTF (match 8-bit ref.png / CPU fallback ceiling).
+    // 2) Premultiply in *encoded* space before EOTF, then un-premultiply after, so
+    //    ALPHA_BLENDING yields lin(enc*a) instead of lin(enc)*a. Linear-space alpha
+    //    looks much brighter in low-alpha regions (e.g. alpha_nonpremultiplied top rows)
+    //    than egui/PNG gamma-space coverage. EV still applies after this.
+    var src_rgb = hdr.rgb;
+    if (tone_map.sdr_grade_clamp != 0u) {
+        src_rgb = clamp(src_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+        src_rgb = src_rgb * src_a;
+    }
+    let decoded_rgb = decode_input_transfer(src_rgb, tone_map.input_transfer_function, tone_map);
     var source_rgb = convert_input_to_linear_srgb(decoded_rgb, tone_map.input_color_space);
     if (src_a <= 0.0) {
         source_rgb = vec3<f32>(0.0);
+    } else if (tone_map.sdr_grade_clamp != 0u) {
+        source_rgb = source_rgb / src_a;
     }
     var source_rgb_exposed = source_rgb;
     if (display_referred_srgb) {

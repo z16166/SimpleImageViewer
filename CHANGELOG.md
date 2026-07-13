@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.0] - 2026-07-13
+
+### Added
+- **PSD/PSB+JPEG pair handling**: New Library setting lets you show both files, hide PSD/PSB, or hide JPG/JPEG when a Photoshop document and a JPEG share the same name in a folder.
+- **Hidden-layer recovery for PSD/PSB**: When every layer is hidden, choose how to recover a preview — heuristic search of large groups, or show all layers (slower).
+
+### Improved
+- **Faster, more capable Photoshop browsing**: PSD and PSB files open with GPU-accelerated layer compositing and SIMD decode paths, including high bit-depth HDR documents and very large PSB files via on-demand tiling.
+- **More responsive browsing while switching images**: Decode work for the main view and navigation-strip thumbnails stops promptly when you move on, so flipping through folders stays snappy instead of waiting on abandoned loads.
+
 ## [2.9.1] - 2026-07-08
 
 ### Improved

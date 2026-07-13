@@ -229,6 +229,10 @@ pub trait TiledImageSource: Send + Sync {
     fn wait_for_async_pixels(&self, _timeout: std::time::Duration) -> Result<(), String> {
         Ok(())
     }
+
+    /// Cooperative cancel for long async decode work owned by this source (e.g. PSD composite).
+    /// Default no-op; directory switch / eviction should call this before dropping the source.
+    fn request_cancel(&self) {}
 }
 
 /// A single frame of an animated image. RGBA8 lives in a shared [`Arc`] so frame lists and
@@ -564,7 +568,7 @@ pub struct LoadResult {
     pub index: usize,
     pub decode_profile: DecodeProfile,
     pub source_key: SourceKey,
-    pub result: Result<ImageData, String>,
+    pub result: Result<ImageData, crate::loader::DecodeError>,
     pub preview_bundle: PreviewBundle,
     pub ultra_hdr_capacity_sensitive: bool,
     /// True when [`ImageData::Hdr`] used a cheap SDR placeholder because the display HDR target
@@ -574,6 +578,8 @@ pub struct LoadResult {
     pub target_hdr_capacity: f32,
     /// RAW-only OSD metadata (embedded preview, sensor grid, active pixel source).
     pub raw_osd: Option<RawOsdInfo>,
+    /// PSD/PSB decode-stage OSD (P1/P2/P2.5/P3 and compat-reveal disclosure).
+    pub psd_osd: Option<crate::loader::PsdOsdInfo>,
     /// GPU textures uploaded on a background loader thread (static HDR plane only).
     ///
     /// `ImagePlaneUpload` contains `Send` wgpu handles; the loader worker fills this field and
@@ -604,6 +610,7 @@ impl Clone for LoadResult {
             sdr_fallback_is_placeholder: self.sdr_fallback_is_placeholder,
             target_hdr_capacity: self.target_hdr_capacity,
             raw_osd: self.raw_osd.clone(),
+            psd_osd: self.psd_osd.clone(),
             uploaded_planes: None,
             device_id: self.device_id,
             staged_gpu_plane_upload: false,
