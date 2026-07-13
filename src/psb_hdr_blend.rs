@@ -110,7 +110,10 @@ pub fn blend_separable_span_f32(dst: &mut [f32], src: &[f32], kind: SeparableBle
         return;
     }
 
-    blend_separable_span_f32_scalar(dst, src, kind);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        blend_separable_span_f32_scalar(dst, src, kind);
+    }
 }
 
 fn blend_separable_span_f32_scalar(dst: &mut [f32], src: &[f32], kind: SeparableBlendKind) {

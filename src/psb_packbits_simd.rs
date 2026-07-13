@@ -50,7 +50,10 @@ pub fn fill_bytes(dst: &mut [u8], val: u8) {
         return;
     }
 
-    dst.fill(val);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        dst.fill(val);
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -97,21 +100,19 @@ unsafe fn fill_bytes_avx2(dst: &mut [u8], val: u8) {
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn fill_bytes_neon(dst: &mut [u8], val: u8) {
+unsafe fn fill_bytes_neon(dst: &mut [u8], val: u8) { unsafe {
     use core::arch::aarch64::*;
     let mut i = 0usize;
     let n = dst.len();
     let pattern = vdupq_n_u8(val);
     while i + 16 <= n {
-        unsafe {
-            vst1q_u8(dst.as_mut_ptr().add(i), pattern);
-        }
+        vst1q_u8(dst.as_mut_ptr().add(i), pattern);
         i += 16;
     }
     if i < n {
         dst[i..].fill(val);
     }
-}
+}}
 
 #[cfg(test)]
 mod tests {

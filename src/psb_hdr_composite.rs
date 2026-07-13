@@ -186,9 +186,13 @@ fn apply_base_alpha_mask_f32(group: &mut [f32], base_alpha: &[f32]) {
         return;
     }
 
-    apply_base_alpha_mask_f32_scalar(group, base_alpha);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        apply_base_alpha_mask_f32_scalar(group, base_alpha);
+    }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn apply_base_alpha_mask_f32_scalar(group: &mut [f32], base_alpha: &[f32]) {
     let (pixels, _) = group.as_chunks_mut::<4>();
     for (px, &mask) in pixels.iter_mut().zip(base_alpha.iter()) {

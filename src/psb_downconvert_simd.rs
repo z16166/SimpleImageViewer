@@ -68,8 +68,11 @@ pub fn u16be_to_u8(dst: &mut [u8], src: &[u8]) {
         return;
     }
 
-    u16be_to_u8_scalar(head, src_head);
-    tail.fill(0);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        u16be_to_u8_scalar(head, src_head);
+        tail.fill(0);
+    }
 }
 
 /// Convert `dst.len()` big-endian f32 samples in `src` to 8-bit display values.
@@ -106,8 +109,11 @@ pub fn f32be_to_u8(dst: &mut [u8], src: &[u8]) {
         return;
     }
 
-    f32be_to_u8_scalar(head, src_head);
-    tail.fill(0);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        f32be_to_u8_scalar(head, src_head);
+        tail.fill(0);
+    }
 }
 
 #[inline]
@@ -286,7 +292,7 @@ unsafe fn u16be_to_u8_neon(dst: &mut [u8], src: &[u8]) {
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn f32be_to_u8_neon(dst: &mut [u8], src: &[u8]) {
+unsafe fn f32be_to_u8_neon(dst: &mut [u8], src: &[u8]) { unsafe {
     use core::arch::aarch64::*;
     let mut i = 0usize;
     let n = dst.len();
@@ -294,28 +300,26 @@ unsafe fn f32be_to_u8_neon(dst: &mut [u8], src: &[u8]) {
     let one = vdupq_n_f32(1.0);
     let scale = vdupq_n_f32(255.0);
     while i + NEON_F32_SAMPLES <= n {
-        unsafe {
-            let be_bytes = vld1q_u8(src.as_ptr().add(i * F32_BYTES));
-            // Rev 4-byte groups: 0123->3210, 4567->7654, ...
-            let le_bytes = vrev32q_u8(be_bytes);
-            let f = vreinterpretq_f32_u8(le_bytes);
-            // Same order as scalar: clamp to [0,1], then *255, then round.
-            let clamped = vminq_f32(vmaxq_f32(f, zero), one);
-            let scaled = vmulq_f32(clamped, scale);
-            // Ties away from zero: matches scalar `.round()` (not ties-to-even).
-            let i32s = vcvtaq_s32_f32(scaled);
-            let u16s = vqmovun_s32(i32s);
-            let u8s = vqmovn_u16(vcombine_u16(u16s, u16s));
-            let mut tmp = [0u8; 8];
-            vst1_u8(tmp.as_mut_ptr(), u8s);
-            dst[i..i + NEON_F32_SAMPLES].copy_from_slice(&tmp[..NEON_F32_SAMPLES]);
-        }
+        let be_bytes = vld1q_u8(src.as_ptr().add(i * F32_BYTES));
+        // Rev 4-byte groups: 0123->3210, 4567->7654, ...
+        let le_bytes = vrev32q_u8(be_bytes);
+        let f = vreinterpretq_f32_u8(le_bytes);
+        // Same order as scalar: clamp to [0,1], then *255, then round.
+        let clamped = vminq_f32(vmaxq_f32(f, zero), one);
+        let scaled = vmulq_f32(clamped, scale);
+        // Ties away from zero: matches scalar `.round()` (not ties-to-even).
+        let i32s = vcvtaq_s32_f32(scaled);
+        let u16s = vqmovun_s32(i32s);
+        let u8s = vqmovn_u16(vcombine_u16(u16s, u16s));
+        let mut tmp = [0u8; 8];
+        vst1_u8(tmp.as_mut_ptr(), u8s);
+        dst[i..i + NEON_F32_SAMPLES].copy_from_slice(&tmp[..NEON_F32_SAMPLES]);
         i += NEON_F32_SAMPLES;
     }
     if i < n {
         f32be_to_u8_scalar(&mut dst[i..], &src[i * F32_BYTES..]);
     }
-}
+}}
 
 #[cfg(test)]
 mod tests {

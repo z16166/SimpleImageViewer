@@ -356,6 +356,7 @@ impl PsbHdrTiledFlatSource {
 }
 
 /// Open a disk-backed tiled HDR source for PSD/PSB flattened Image Data.
+#[allow(dead_code)] // Production callers use `open_hdr_tiled_flat_source_from_mmap`.
 pub fn open_hdr_tiled_flat_source(path: &Path) -> Result<PsbHdrTiledFlatSource, String> {
     let file = {
         let mut opts = std::fs::OpenOptions::new();

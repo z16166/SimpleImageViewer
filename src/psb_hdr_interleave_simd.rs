@@ -72,7 +72,10 @@ pub fn interleave_planar_u16be_rgba_f32(
         return;
     }
 
-    interleave_u16be_scalar(r, g, b, a, dst, pixel_count);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        interleave_u16be_scalar(r, g, b, a, dst, pixel_count);
+    }
 }
 
 /// Planar BE f32 RGB(+A) -> interleaved RGBA f32 (endian-swapped passthrough).
@@ -114,7 +117,10 @@ pub fn interleave_planar_f32be_rgba_f32(
         return;
     }
 
-    interleave_f32be_scalar(r, g, b, a, dst, pixel_count);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        interleave_f32be_scalar(r, g, b, a, dst, pixel_count);
+    }
 }
 
 /// Planar BE u16 gray(+A) -> interleaved RGBA f32 (gray replicated to RGB).
@@ -473,7 +479,7 @@ unsafe fn interleave_f32be_avx2(
 unsafe fn load_u16be_f32x4_neon(
     channel: Option<&[u8]>,
     i: usize,
-) -> core::arch::aarch64::float32x4_t {
+) -> core::arch::aarch64::float32x4_t { unsafe {
     use core::arch::aarch64::*;
     let Some(ch) = channel else {
         return vdupq_n_f32(0.0);
@@ -482,19 +488,17 @@ unsafe fn load_u16be_f32x4_neon(
     if off + PIXELS_PER_SSE_OR_NEON * U16_BYTES > ch.len() {
         return vdupq_n_f32(0.0);
     }
-    unsafe {
-        let be = vld1_u8(ch.as_ptr().add(off));
-        // Rev each 2-byte pair: [hi,lo] -> [lo,hi] then reinterpret as host u16.
-        let le_bytes = vrev16_u8(be);
-        let u16s = vreinterpret_u16_u8(le_bytes);
-        let widened = vmovl_u16(u16s);
-        vmulq_n_f32(vcvtq_f32_u32(widened), INV_U16)
-    }
-}
+    let be = vld1_u8(ch.as_ptr().add(off));
+    // Rev each 2-byte pair: [hi,lo] -> [lo,hi] then reinterpret as host u16.
+    let le_bytes = vrev16_u8(be);
+    let u16s = vreinterpret_u16_u8(le_bytes);
+    let widened = vmovl_u16(u16s);
+    vmulq_n_f32(vcvtq_f32_u32(widened), INV_U16)
+}}
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
-unsafe fn load_f32be_x4_neon(channel: Option<&[u8]>, i: usize) -> core::arch::aarch64::float32x4_t {
+unsafe fn load_f32be_x4_neon(channel: Option<&[u8]>, i: usize) -> core::arch::aarch64::float32x4_t { unsafe {
     use core::arch::aarch64::*;
     let Some(ch) = channel else {
         return vdupq_n_f32(0.0);
@@ -503,12 +507,10 @@ unsafe fn load_f32be_x4_neon(channel: Option<&[u8]>, i: usize) -> core::arch::aa
     if off + PIXELS_PER_SSE_OR_NEON * F32_BYTES > ch.len() {
         return vdupq_n_f32(0.0);
     }
-    unsafe {
-        let be = vld1q_u8(ch.as_ptr().add(off));
-        let le = vrev32q_u8(be);
-        vreinterpretq_f32_u8(le)
-    }
-}
+    let be = vld1q_u8(ch.as_ptr().add(off));
+    let le = vrev32q_u8(be);
+    vreinterpretq_f32_u8(le)
+}}
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]

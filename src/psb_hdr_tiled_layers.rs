@@ -159,6 +159,7 @@ impl PsbHdrTiledLayerSource {
 /// Returns `Err` when the document is not eligible (non-HDR depth, unsupported
 /// color mode) or has no drawable visible layers, so the caller can degrade to
 /// the SDR state machine.
+#[allow(dead_code)] // Production callers use `open_hdr_tiled_layers_source_from_mmap`.
 pub fn open_hdr_tiled_layers_source(
     path: &Path,
     strategy: crate::settings::PsdHiddenLayerStrategy,

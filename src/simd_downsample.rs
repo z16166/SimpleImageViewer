@@ -117,6 +117,7 @@ fn debug_assert_box_lane_in_bounds(
 }
 
 #[inline]
+#[cfg(not(target_arch = "aarch64"))]
 unsafe fn box_accumulate_lane_scalar(
     src: &[u8],
     row_stride: usize,

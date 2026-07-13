@@ -190,9 +190,13 @@ fn interleave_byte_planes(dst: &mut [u8], planar: &[u8], width: usize) {
         return;
     }
 
-    interleave_byte_planes_scalar(dst, planar, width);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        interleave_byte_planes_scalar(dst, planar, width);
+    }
 }
 
+#[cfg(any(not(target_arch = "aarch64"), test))]
 fn interleave_byte_planes_scalar(dst: &mut [u8], planar: &[u8], width: usize) {
     for x in 0..width {
         dst[x * 4] = planar[x];
@@ -307,10 +311,14 @@ fn prefix_sum_u16be_inplace(row: &mut [u8]) {
         return;
     }
 
-    prefix_sum_u16be_scalar(row);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        prefix_sum_u16be_scalar(row);
+    }
 }
 
 #[inline]
+#[cfg(any(not(target_arch = "aarch64"), test))]
 fn prefix_sum_u16be_scalar(row: &mut [u8]) {
     assert!(
         row.len().is_multiple_of(2),
@@ -490,10 +498,14 @@ fn prefix_sum_u8_inplace(row: &mut [u8]) {
         return;
     }
 
-    prefix_sum_u8_scalar(row);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        prefix_sum_u8_scalar(row);
+    }
 }
 
 #[inline]
+#[cfg(any(not(target_arch = "aarch64"), test))]
 fn prefix_sum_u8_scalar(row: &mut [u8]) {
     if row.is_empty() {
         return;

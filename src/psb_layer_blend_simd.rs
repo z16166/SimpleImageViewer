@@ -200,7 +200,10 @@ pub fn blend_separable_span(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind
         return;
     }
 
-    blend_separable_span_scalar(dst, src, kind);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        blend_separable_span_scalar(dst, src, kind);
+    }
 }
 
 fn blend_separable_span_scalar(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind) {

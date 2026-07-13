@@ -74,7 +74,10 @@ pub fn fold_opacity_mask_into_alpha(rgba: &mut [u8], opacity: u8, mask: Option<&
         return;
     }
 
-    fold_opacity_mask_into_alpha_scalar(rgba, opacity, mask);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        fold_opacity_mask_into_alpha_scalar(rgba, opacity, mask);
+    }
 }
 
 fn fold_opacity_mask_into_alpha_scalar(rgba: &mut [u8], opacity: u8, mask: Option<&[u8]>) {

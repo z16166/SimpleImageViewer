@@ -505,6 +505,7 @@ fn rgba8_any_rgb_alpha_scalar(
     Ok((any_rgb, any_a))
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn rgba8_absolutely_blank_scalar(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
@@ -599,7 +600,7 @@ unsafe fn rgba8_absolutely_blank_neon(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
     use_rgb0: bool,
-) -> Result<bool, crate::loader::DecodeError> {
+) -> Result<bool, crate::loader::DecodeError> { unsafe {
     use core::arch::aarch64::*;
     let mut any_rgb = false;
     let mut any_a = false;
@@ -611,7 +612,7 @@ unsafe fn rgba8_absolutely_blank_neon(
         if i & RGBA8_CANCEL_POLL_MASK == 0 {
             check_decode_cancel(cancel)?;
         }
-        let v = unsafe { vld1q_u8(pixels.as_ptr().add(i)) };
+        let v = vld1q_u8(pixels.as_ptr().add(i));
         let vu = vreinterpretq_u32_u8(v);
         if use_rgb0 {
             let rgb = vandq_u32(vu, rgb_mask);
@@ -631,7 +632,7 @@ unsafe fn rgba8_absolutely_blank_neon(
     let (any_rgb, any_a) =
         rgba8_any_rgb_alpha_scalar(&pixels[i..], cancel, any_rgb, any_a, use_rgb0)?;
     Ok(if use_rgb0 { !any_rgb || !any_a } else { !any_a })
-}
+}}
 
 /// Zero-information barrier for P2 strict layer composites (RGBA8).
 ///
@@ -711,6 +712,7 @@ fn rgba8_rgb_varies_any_alpha_scalar(
     Ok((rgb_varies, any_a))
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn rgba8_zero_information_scalar(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
@@ -824,7 +826,7 @@ unsafe fn rgba8_zero_information_avx2(
 unsafe fn rgba8_zero_information_neon(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<bool, crate::loader::DecodeError> {
+) -> Result<bool, crate::loader::DecodeError> { unsafe {
     use core::arch::aarch64::*;
     let ref_r = pixels[0];
     let ref_g = pixels[1];
@@ -840,7 +842,7 @@ unsafe fn rgba8_zero_information_neon(
         if i & RGBA8_CANCEL_POLL_MASK == 0 {
             check_decode_cancel(cancel)?;
         }
-        let v = unsafe { vld1q_u8(pixels.as_ptr().add(i)) };
+        let v = vld1q_u8(pixels.as_ptr().add(i));
         let vu = vreinterpretq_u32_u8(v);
         let rgb = vandq_u32(vu, rgb_mask);
         let alpha = vandq_u32(vu, a_mask);
@@ -867,7 +869,7 @@ unsafe fn rgba8_zero_information_neon(
         any_a,
     )?;
     Ok(!any_a || !rgb_varies)
-}
+}}
 
 pub fn extract_icc_profile_from_ir(bytes: &[u8], ir_start: u64, ir_end: u64) -> Option<Vec<u8>> {
     for_each_image_resource(bytes, ir_start, ir_end, |rid, data| {
