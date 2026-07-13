@@ -66,11 +66,16 @@ pub(crate) const PSD_CHANNEL_ID_COLOR_MAX: i16 = 3;
 
 /// Adobe Photoshop PSD/PSB maximum canvas dimension (pixels per side).
 pub(crate) const PSD_MAX_DIMENSION: u32 = 300_000;
-/// Hard cap on document canvas total pixels for P1 / P2 / HDR paths.
+/// Hard cap on document canvas total pixels for P1 / P2 / HDR *full-canvas*
+/// allocations ([`checked_pixel_count`], HDR flat decode, layer budgets).
 ///
 /// `PSD_MAX_DIMENSION` alone still allows `300_000 x 300_000`. This matches the
 /// per-layer pixel budget so a single canvas allocation cannot reserve tens of
 /// GB before any pixel data is read.
+///
+/// Do **not** apply this in [`validate_psd_dimensions`]: Hubble-class PSB
+/// documents exceed this cap but must still parse so `load_psd` can open them
+/// via on-demand disk tiling instead of a full RGBA buffer.
 pub(crate) const MAX_DOCUMENT_PIXELS: u64 = 1024 * 1024 * 1024;
 /// Adobe Photoshop PSD/PSB maximum channel count.
 const PSD_MAX_CHANNELS: u32 = 56;
@@ -1324,14 +1329,12 @@ pub(crate) fn validate_psd_dimensions(
             "PSD/PSB dimensions {width}x{height} exceed maximum {PSD_MAX_DIMENSION}"
         ));
     }
-    let pixels = (width as u64)
+    // Structural only: per-side Photoshop limit + channel count. Total-pixel
+    // budget ([`MAX_DOCUMENT_PIXELS`]) applies to full-canvas decode paths, not
+    // header/section parsing (disk-tiled Hubble-class PSB exceeds that budget).
+    (width as u64)
         .checked_mul(height as u64)
         .ok_or_else(|| "PSD/PSB pixel count overflow".to_string())?;
-    if pixels > MAX_DOCUMENT_PIXELS {
-        return Err(format!(
-            "PSD/PSB dimensions {width}x{height} exceed maximum {MAX_DOCUMENT_PIXELS} pixels"
-        ));
-    }
     if channels == 0 || channels > PSD_MAX_CHANNELS {
         return Err(format!(
             "PSD/PSB channel count {channels} is out of range (1..={PSD_MAX_CHANNELS})"
@@ -1584,10 +1587,11 @@ mod tests {
         HDR_RGBA_F32_BYTES_PER_PIXEL, MAX_DOCUMENT_PIXELS, MAX_ZIP_PLANAR_INFLATE_BYTES,
         PACKBITS_MAX_NOOPS_PER_ROW, PACKBITS_TOO_MANY_NOOPS, PSD_COMPRESSION_RAW,
         PSD_COMPRESSION_ZIP, PSD_COMPRESSION_ZIP_PREDICTION, PSD_MAX_DIMENSION,
-        RGBA_BYTES_PER_PIXEL, channel_is_used, cmyk_to_rgb, downconvert_samples_to_u8,
-        ensure_supported_color_mode, estimate_memory_from_bytes, for_each_image_resource,
-        max_rle_compressed_row_bytes, read_composite_from_bytes_with_cancel, seek_rle_channel_skip,
-        unpack_bits_into, validate_psd_dimensions, validate_rle_row_counts,
+        RGBA_BYTES_PER_PIXEL, channel_is_used, checked_pixel_count, cmyk_to_rgb,
+        downconvert_samples_to_u8, ensure_supported_color_mode, estimate_memory_from_bytes,
+        for_each_image_resource, max_rle_compressed_row_bytes,
+        read_composite_from_bytes_with_cancel, seek_rle_channel_skip, unpack_bits_into,
+        validate_psd_dimensions, validate_rle_row_counts,
     };
     use std::io::Cursor;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1606,12 +1610,32 @@ mod tests {
     }
 
     #[test]
-    fn validate_psd_dimensions_rejects_over_document_pixel_cap() {
-        assert!(validate_psd_dimensions(32_768, 32_768, 3).is_ok());
-        let err = validate_psd_dimensions(32_769, 32_769, 3).unwrap_err();
+    fn validate_psd_dimensions_allows_hubble_class_over_full_canvas_cap() {
+        // Structural validation must accept canvases above MAX_DOCUMENT_PIXELS so
+        // load_psd can open them via disk tiling (e.g. Hubble heic1502a.psb).
+        assert!(validate_psd_dimensions(69_536, 22_230, 3).is_ok());
+        assert!(validate_psd_dimensions(32_769, 32_769, 3).is_ok());
+        let err = validate_psd_dimensions(PSD_MAX_DIMENSION + 1, 1, 3).unwrap_err();
+        assert!(err.contains(&PSD_MAX_DIMENSION.to_string()), "err={err}");
+    }
+
+    #[test]
+    fn checked_pixel_count_rejects_over_document_pixel_cap() {
+        assert!(checked_pixel_count(32_768, 32_768).is_ok());
+        let err = checked_pixel_count(32_769, 32_769).unwrap_err();
         assert!(err.contains(&MAX_DOCUMENT_PIXELS.to_string()), "err={err}");
-        let err = validate_psd_dimensions(PSD_MAX_DIMENSION, PSD_MAX_DIMENSION, 3).unwrap_err();
+        let err = checked_pixel_count(PSD_MAX_DIMENSION, PSD_MAX_DIMENSION).unwrap_err();
         assert!(err.contains("exceed maximum"), "err={err}");
+    }
+
+    #[test]
+    fn estimate_memory_accepts_hubble_class_dimensions() {
+        let header = minimal_psd_header(69_536, 22_230, 3, 8);
+        let (w, h, ch, estimated) = estimate_memory_from_bytes(&header).unwrap();
+        assert_eq!((w, h, ch), (69_536, 22_230, 3));
+        let pixels = 69_536u64 * 22_230u64;
+        assert_eq!(estimated, pixels * 4 + pixels * 3);
+        assert!(pixels > MAX_DOCUMENT_PIXELS);
     }
 
     #[test]

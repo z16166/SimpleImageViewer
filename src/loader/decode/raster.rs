@@ -319,29 +319,38 @@ pub(crate) fn load_psd(
         crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
     let mmap = std::sync::Arc::new(mmap);
 
-    // Step 2: Estimate memory requirement from header bytes
+    // Step 2: Read header dims / full-decode peak estimate. Disk-tiled PSB does not
+    // allocate that peak; the RAM gate below applies only to full-canvas paths.
     let (width, height, _channels, estimated_bytes) =
         crate::psb_reader::estimate_memory_from_bytes(&mmap)?;
-    let estimated_mb = estimated_bytes / BYTES_PER_MB;
+    let version = u16::from_be_bytes([mmap[4], mmap[5]]);
+    let oversized_psb = version == 2 && psd_header_requires_disk_tiled(width, height);
 
-    // Step 3: Check available RAM (cached snapshot; refreshed on the logic thread / monitor changes).
-    let available_mb = crate::system_memory::available_memory_mb();
-
-    // Reserve at least 1GB for the OS + app overhead
-    let safe_available = available_mb.saturating_sub(BYTES_PER_GB / BYTES_PER_MB);
-    if estimated_mb > safe_available {
-        return Err(format!(
-            "Image requires ~{estimated_mb} MB RAM but only ~{safe_available} MB is available. \
-             Please close other applications or convert to a smaller format."
-        )
-        .into());
+    // Step 3: Full-decode OOM guard (cached RAM snapshot). Skip for Hubble-class
+    // PSB that will open via on-demand disk tiling instead of a full RGBA canvas.
+    if !oversized_psb {
+        let estimated_mb = estimated_bytes / BYTES_PER_MB;
+        let available_mb = crate::system_memory::available_memory_mb();
+        let safe_available = available_mb.saturating_sub(BYTES_PER_GB / BYTES_PER_MB);
+        if estimated_mb > safe_available {
+            return Err(format!(
+                "Image requires ~{estimated_mb} MB RAM but only ~{safe_available} MB is available. \
+                 Please close other applications or convert to a smaller format."
+            )
+            .into());
+        }
+        log::debug!(
+            "PSD/PSB {}x{}: estimated {estimated_mb} MB, available {available_mb} MB -- proceeding",
+            width,
+            height
+        );
+    } else {
+        log::debug!(
+            "PSD/PSB {}x{}: skipping full-decode RAM gate (disk-tiled path)",
+            width,
+            height
+        );
     }
-
-    log::debug!(
-        "PSD/PSB {}x{}: estimated {estimated_mb} MB, available {available_mb} MB -- proceeding",
-        width,
-        height
-    );
 
     // Step 4: Large PSB keeps on-demand disk tiling (Hubble-class files). Header size is
     // used only as an OOM guard before full decode; PSD and smaller PSB decode first, then
@@ -350,7 +359,6 @@ pub(crate) fn load_psd(
     // Disk tiling only reads flattened Image Data. Layers-only / blank-flat documents must
     // probe that flat first and degrade to P2/P3 (skipping a second full-canvas P1 decode).
     // When the HDR content gate is active, skip the SDR disk-tiled shortcut.
-    let version = u16::from_be_bytes([mmap[4], mmap[5]]);
     let depth = u16::from_be_bytes([mmap[22], mmap[23]]);
     // Parse once here; HDR/SDR decode reuses this index instead of walking again.
     let section_index = crate::psb_section_index::PsdSectionIndex::parse(&mmap[..]);
@@ -364,7 +372,6 @@ pub(crate) fn load_psd(
     );
 
     let mut skip_flattened_for_disk_tiled_degrade = false;
-    let oversized_psb = version == 2 && psd_header_requires_disk_tiled(width, height);
     if oversized_psb {
         log::debug!(
             "Using PSB disk tiled source for header {}x{} (exceeds tiled limits)",
