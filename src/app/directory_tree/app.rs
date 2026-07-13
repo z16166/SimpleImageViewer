@@ -482,16 +482,18 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn current_browse_directory(&self) -> Option<PathBuf> {
+        // Transient double-click browse (keep-gallery mode) wins over both tree
+        // selection and the persisted YAML gallery directory.
+        if let Some(dir) = self.settings.transient_image_dir.clone() {
+            return Some(dir);
+        }
         if self.directory_tree_settings_active() {
             self.settings
                 .tree_nav_selected_dir
                 .clone()
                 .or_else(|| self.settings.last_image_dir.clone())
         } else {
-            self.settings
-                .transient_image_dir
-                .clone()
-                .or_else(|| self.settings.last_image_dir.clone())
+            self.settings.last_image_dir.clone()
         }
     }
 
@@ -522,7 +524,13 @@ impl ImageViewerApp {
         if !self.directory_tree_settings_active() {
             return;
         }
-        let Some(dir) = self.saved_directory_tree_selection_dir() else {
+        let Some(dir) = self
+            .settings
+            .tree_nav_selected_dir
+            .clone()
+            .or_else(|| self.current_browse_directory())
+            .or_else(|| self.saved_directory_tree_selection_dir())
+        else {
             return;
         };
         let requests = {
@@ -548,17 +556,27 @@ impl ImageViewerApp {
         if !self.directory_tree_settings_active() {
             return;
         }
-        let Some(dir) = self.saved_directory_tree_selection_dir() else {
+        let Some(dir) = self
+            .current_browse_directory()
+            .or_else(|| self.saved_directory_tree_selection_dir())
+        else {
             return;
         };
+        // Keep namespace only when the tree selection already points at this browse folder.
+        // Transient loads clear namespace; a mismatched prior selection must not keep gallery B's key.
+        let namespace = if self.settings.tree_nav_selected_dir.as_ref() == Some(&dir) {
+            self.settings.tree_nav_selected_namespace_path.clone()
+        } else {
+            None
+        };
         self.settings.tree_nav_selected_dir = Some(dir.clone());
+        self.settings.tree_nav_selected_namespace_path = namespace.clone();
         {
             let mut tree = self.directory_tree.tree.lock();
-            let saved_namespace = self.settings.tree_nav_selected_namespace_path.clone();
             let needs_restore = tree.selected_fs_path.as_ref() != Some(&dir)
-                || tree.selected_namespace_path.as_deref() != saved_namespace.as_deref();
+                || tree.selected_namespace_path.as_deref() != namespace.as_deref();
             if needs_restore {
-                tree.restore_tree_selection(dir.clone(), saved_namespace);
+                tree.restore_tree_selection(dir.clone(), namespace);
             }
         }
         self.reveal_directory_tree_for_saved_selection();

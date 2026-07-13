@@ -4098,6 +4098,48 @@ fn reloading_current_transient_directory_keeps_saved_gallery_directory() {
 }
 
 #[test]
+fn tree_nav_active_current_browse_prefers_transient_directory() {
+    let mut app = make_test_app();
+    let saved = std::env::temp_dir().join("siv_saved_gallery_tree_prefers_transient");
+    let transient = std::env::temp_dir().join("siv_transient_gallery_tree_prefers");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::create_dir_all(&transient).unwrap();
+
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.settings.last_image_dir = Some(saved.clone());
+    app.settings.tree_nav_selected_dir = Some(saved);
+    app.settings.transient_image_dir = Some(transient.clone());
+
+    assert_eq!(app.current_browse_directory(), Some(transient));
+}
+
+#[test]
+fn revealing_tree_nav_keeps_transient_double_click_directory() {
+    let ctx = egui::Context::default();
+    let mut app = make_test_app();
+    let saved = std::env::temp_dir().join("siv_saved_gallery_before_reveal");
+    let transient = std::env::temp_dir().join("siv_transient_gallery_before_reveal");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::create_dir_all(&transient).unwrap();
+
+    app.settings.browse_mode = crate::settings::BrowseMode::Tree;
+    app.settings.show_directory_tree_nav = true;
+    app.settings.keep_gallery_dir_on_double_click = true;
+    app.settings.last_image_dir = Some(saved.clone());
+    app.settings.tree_nav_selected_dir = Some(saved.clone());
+    app.load_directory_for_transient_gallery(transient.clone());
+    app.auto_hidden_directory_tree_nav = true;
+
+    app.show_directory_tree_nav(&ctx);
+
+    assert_eq!(app.settings.tree_nav_selected_dir, Some(transient.clone()));
+    assert_eq!(app.current_browse_directory(), Some(transient.clone()));
+    assert_eq!(app.settings.transient_image_dir, Some(transient));
+    assert_eq!(app.settings.last_image_dir, Some(saved));
+}
+
+#[test]
 fn picked_directory_with_tree_nav_replaces_transient_double_click_directory() {
     let mut app = make_test_app();
     let saved = std::env::temp_dir().join("siv_saved_gallery_before_tree_pick");

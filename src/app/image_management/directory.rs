@@ -124,8 +124,12 @@ impl ImageViewerApp {
 
         if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
             self.settings.tree_nav_selected_dir = Some(dir.clone());
-            // Namespace branch is cleared by non-tree entry points (file dialog, drag-drop, etc.).
-            // Tree selection and startup rescan must preserve tree_nav_selected_namespace_path.
+            // Transient double-click opens are not tree selections; drop any prior gallery
+            // namespace so Ctrl+T reveal does not keep a branch key from last_image_dir.
+            // Persisted loads still preserve namespace (tree SelectDirectory / startup rescan).
+            if !persist_gallery_dir {
+                self.settings.tree_nav_selected_namespace_path = None;
+            }
         }
         // Keep Settings folder path and folder-picker default in sync even in tree mode.
         self.settings
