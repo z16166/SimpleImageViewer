@@ -2,14 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [3.0.0] - 2026-07-13
 
-### Fixed
-- **Giant Hubble-style PSB files**: Ultra-large Photoshop Big documents (for example multi-gigapixel astronomy images) open again with on-demand tiling instead of being rejected for exceeding an internal pixel budget.
-- **More accurate HDR PSD/PSB color**: Wide-gamut and CMYK high bit-depth Photoshop files keep their embedded color profile when opening in HDR, so colors match the document more closely.
-- **PSD layer fill opacity and masks**: Fill opacity and empty layer masks with “show all” defaults are respected, so fewer layered files look washed out or incorrectly blank.
-- **PSD blend modes**: Overlay, Soft Light, Hard Light, and Color blend more correctly instead of silently acting like Normal (Color fills no longer paint opaque blue/brand slabs over the whole page).
-- **Hidden-layer reveal for clipped groups**: When revealing hidden art, clipped layers keep their base layer so clipping relationships stay intact.
+### Added
+- **PSD/PSB+JPEG pair handling**: New Library setting lets you show both files, hide PSD/PSB, or hide JPG/JPEG when a Photoshop document and a JPEG share the same name in a folder.
+- **Hidden-layer recovery for PSD/PSB**: When every layer is hidden, choose how to recover a preview — heuristic search of large groups, or show all layers (slower).
+
+### Improved
+- **Faster, more capable Photoshop browsing**: PSD and PSB files open with GPU-accelerated layer compositing and SIMD decode paths, including high bit-depth HDR documents and very large PSB files via on-demand tiling.
+- **More responsive browsing while switching images**: Decode work for the main view and navigation-strip thumbnails stops promptly when you move on, so flipping through folders stays snappy instead of waiting on abandoned loads.
 
 ## [2.9.1] - 2026-07-08
 
@@ -23,11 +24,6 @@ All notable changes to this project will be documented in this file.
 - **Animation strip thumbnails**: File-list previews for animated images no longer stay blank when the main view already shows a larger frame than the strip size.
 
 ### Fixed
-- **More reliable PSD/PSB decoding**: Damaged or truncated channel data no longer opens as a silent black/transparent image; corrupt layers are skipped so the rest of the file can still display.
-- **Large HDR PSB files**: Oversized high bit-depth PSB files with a usable flattened preview can open in HDR without loading the entire image into memory at once.
-- **Large HDR layers-only PSB files**: Oversized high bit-depth documents with an empty flattened preview can still open in HDR by compositing visible tiles on demand.
-- **16/32-bit layers-only PSD/PSB on SDR displays**: High bit-depth documents that only store pixels in layers (empty flattened preview) now still open on standard displays, including common 16-bit RGB/CMYK print files.
-- **Large layers-only PSB files**: Oversized PSB documents with an empty flattened preview no longer stay blank; the viewer falls back to layer composite or the embedded thumbnail when available.
 - **RAW navigation strip previews**: Strip thumbnails for RAW files load more reliably, including when the viewer opens files from memory-mapped data.
 - **Slideshow interval setting**: Changing the slideshow interval with the slider saves once when you release the control, not on every drag step.
 - **Faster quit**: The tray icon disappears immediately on exit, and background shutdown finishes sooner.

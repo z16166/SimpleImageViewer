@@ -858,10 +858,12 @@ fn raw_strip_libraw_fallback(
 fn platform_still_image_fallback(
     path: &Path,
     opened_processor: Option<crate::raw_processor::RawProcessor>,
-    _file_mmap: Option<&memmap2::Mmap>,
+    file_mmap: Option<&memmap2::Mmap>,
 ) -> Result<ImageData, String> {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     let file_bytes = file_mmap.map(|m| m.as_ref());
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let _ = file_mmap;
     #[cfg(target_os = "windows")]
     {
         match crate::wic::load_via_wic(path, false, None, None) {
