@@ -86,7 +86,13 @@ impl ImageViewerApp {
 
         if matches!(
             action,
-            Some(AppAction::Next | AppAction::Prev | AppAction::First | AppAction::Last)
+            Some(
+                AppAction::Next
+                    | AppAction::Prev
+                    | AppAction::First
+                    | AppAction::Last
+                    | AppAction::RefreshFileList
+            )
         ) && self.directory_tree_embedded_list_captures_main_navigation()
         {
             action = None;

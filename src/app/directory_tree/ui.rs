@@ -34,6 +34,7 @@ use crate::theme::ThemePalette;
 use crate::ui::osd::FORMAT_FILE_SIZE_WIDTH_SAMPLES;
 
 use super::domains::DirectoryTreeTreeState;
+use super::keyboard_nav::try_handle_folder_tree_keys;
 use super::view::{DirectoryTreeUiChrome, DirectoryTreeView};
 use super::{
     DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH, DIRECTORY_TREE_COL_NAME_MIN_WIDTH,
@@ -734,7 +735,7 @@ fn draw_directory_tree_top_panels(
         ui.set_clip_rect(left_rect);
         ui.set_width(left_w);
         ui.painter().rect_filled(left_rect, 0.0, palette.panel_bg);
-        draw_folder_panel(ui, view, chrome, command_tx, root_wake, palette);
+        draw_folder_panel(ui, view, chrome, command_tx, root_wake, palette, embedded);
     });
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect), |ui| {
@@ -927,7 +928,9 @@ fn draw_folder_panel(
     command_tx: &Sender<DirectoryTreeCommand>,
     root_wake: Option<&crate::app::RootRedrawWake>,
     palette: &ThemePalette,
+    embedded: bool,
 ) {
+    try_handle_folder_tree_keys(ui, view, chrome, command_tx, embedded);
     let scroll_height = ui.available_height();
     chrome.folder_selected_row_rect = None;
 
@@ -1120,6 +1123,8 @@ fn draw_directory_node(
                 });
             }
             if name_response.clicked() {
+                chrome.folder_tree_keyboard_active = true;
+                chrome.image_list_keyboard_active = false;
                 if is_places_sentinel_namespace_path(path) {
                     send_directory_tree_command(
                         command_tx,
@@ -1635,6 +1640,7 @@ pub(super) fn image_list_home_end_index(
 
 fn apply_image_list_row_selection(chrome: &mut DirectoryTreeUiChrome, index: usize) {
     chrome.image_list_keyboard_active = true;
+    chrome.folder_tree_keyboard_active = false;
     chrome.current_index = index;
     chrome.scroll_image_list_to_current = true;
 }

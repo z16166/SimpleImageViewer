@@ -187,6 +187,7 @@ pub(crate) struct DirectoryTreeUiChrome {
     pub(super) image_list_scroll_offset_y: f32,
     pub(super) image_list_visible_row_range: Option<(usize, usize)>,
     pub(super) image_list_keyboard_active: bool,
+    pub(super) folder_tree_keyboard_active: bool,
     pub(super) current_index: usize,
     pub(super) scroll_image_list_to_current: bool,
     pub(super) folder_scroll_offset_y: f32,
@@ -210,6 +211,7 @@ impl DirectoryTreeUiChrome {
             image_list_scroll_offset_y: list.image_list_scroll_offset_y,
             image_list_visible_row_range: list.image_list_visible_row_range,
             image_list_keyboard_active: list.image_list_keyboard_active,
+            folder_tree_keyboard_active: list.folder_tree_keyboard_active,
             current_index: list.current_index,
             scroll_image_list_to_current: list.scroll_image_list_to_current,
             folder_scroll_offset_y: tree.folder_scroll_offset_y,
@@ -230,6 +232,7 @@ impl DirectoryTreeUiChrome {
         &mut self,
         view: &DirectoryTreeView,
         list_keyboard_active: bool,
+        folder_tree_keyboard_active: bool,
     ) {
         self.left_panel_width = view.left_panel_width();
         // Keep keyboard-driven list selection in chrome while the RCU snapshot may still
@@ -245,6 +248,7 @@ impl DirectoryTreeUiChrome {
             self.scroll_folder_tree_to_selected = true;
         }
         self.image_list_keyboard_active = list_keyboard_active;
+        self.folder_tree_keyboard_active = folder_tree_keyboard_active;
     }
 
     pub(super) fn record_folder_row_visible(&mut self, row_index: usize) {
@@ -276,6 +280,7 @@ impl DirectoryTreeUiChrome {
         list.image_list_scroll_offset_y = self.image_list_scroll_offset_y;
         list.image_list_visible_row_range = self.image_list_visible_row_range;
         list.image_list_keyboard_active = self.image_list_keyboard_active;
+        list.folder_tree_keyboard_active = self.folder_tree_keyboard_active;
         if list.current_index != self.current_index {
             list.current_index = self.current_index;
             list.mark_snapshot_dirty();

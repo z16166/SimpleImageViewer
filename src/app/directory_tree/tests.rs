@@ -182,6 +182,133 @@ fn apply_children_result_merges_children_and_clears_loading() {
 }
 
 #[test]
+fn refresh_children_forces_reload_without_changing_selection() {
+    let mut tree = DirectoryTreeTreeState::default();
+    let root = this_pc_namespace_path();
+    tree.nodes
+        .or_insert_with(root.clone(), MAX_DIRECTORY_TREE_NODES, || {
+            let mut node = directory_tree_node("This PC", PathBuf::from("ThisPc"));
+            node.children_loaded = true;
+            node.expanded = true;
+            node.children.push(PathBuf::from("stale-child"));
+            node
+        })
+        .expect("insert root");
+    tree.set_selected_namespace_node(root.clone(), PathBuf::from("ThisPc"));
+
+    let request = tree.refresh_children(&root).expect("request");
+
+    assert_eq!(request.namespace_path, root);
+    let node = tree.nodes.get(&root).expect("root");
+    assert!(node.loading);
+    assert!(!node.children_loaded);
+    assert!(node.children.is_empty());
+    assert_eq!(tree.selected_namespace_path.as_ref(), Some(&root));
+    assert!(tree.scroll_folder_tree_to_selected);
+}
+
+#[test]
+fn take_pending_first_child_after_load() {
+    let mut tree = DirectoryTreeTreeState::default();
+    let root = this_pc_namespace_path();
+    let child = PathBuf::from("C:\\");
+    tree.nodes
+        .or_insert_with(root.clone(), MAX_DIRECTORY_TREE_NODES, || {
+            directory_tree_node("This PC", PathBuf::from("ThisPc"))
+        })
+        .expect("insert root");
+    tree.set_selected_namespace_node(root.clone(), PathBuf::from("ThisPc"));
+    tree.set_pending_select_first_child(root.clone());
+
+    tree.apply_children_result(DirectoryChildrenResult {
+        namespace_path: root.clone(),
+        generation: tree.generation,
+        result: Ok(vec![child.clone()]),
+    });
+
+    let child_namespace =
+        super::namespace::namespace_child_path(&root, Path::new("ThisPc"), &child);
+    assert_eq!(
+        tree.take_pending_first_child_selection(&root),
+        Some((child_namespace, child))
+    );
+    assert!(tree.pending_select_first_child_of.is_none());
+}
+
+#[test]
+fn take_pending_first_child_clears_after_empty_children_or_error() {
+    let root = this_pc_namespace_path();
+
+    let mut empty_tree = DirectoryTreeTreeState::default();
+    empty_tree
+        .nodes
+        .or_insert_with(root.clone(), MAX_DIRECTORY_TREE_NODES, || {
+            directory_tree_node("This PC", PathBuf::from("ThisPc"))
+        })
+        .expect("insert empty root");
+    empty_tree.set_selected_namespace_node(root.clone(), PathBuf::from("ThisPc"));
+    empty_tree.set_pending_select_first_child(root.clone());
+    empty_tree.apply_children_result(DirectoryChildrenResult {
+        namespace_path: root.clone(),
+        generation: empty_tree.generation,
+        result: Ok(Vec::new()),
+    });
+    assert_eq!(empty_tree.take_pending_first_child_selection(&root), None);
+    assert!(empty_tree.pending_select_first_child_of.is_none());
+
+    let mut error_tree = DirectoryTreeTreeState::default();
+    error_tree
+        .nodes
+        .or_insert_with(root.clone(), MAX_DIRECTORY_TREE_NODES, || {
+            directory_tree_node("This PC", PathBuf::from("ThisPc"))
+        })
+        .expect("insert error root");
+    error_tree.set_selected_namespace_node(root.clone(), PathBuf::from("ThisPc"));
+    error_tree.set_pending_select_first_child(root.clone());
+    error_tree.apply_children_result(DirectoryChildrenResult {
+        namespace_path: root.clone(),
+        generation: error_tree.generation,
+        result: Err("permission denied".to_string()),
+    });
+    assert_eq!(error_tree.take_pending_first_child_selection(&root), None);
+    assert!(error_tree.pending_select_first_child_of.is_none());
+}
+
+#[test]
+fn expand_toward_first_child_keeps_pending_while_loading() {
+    let mut tree = DirectoryTreeTreeState::default();
+    let root = this_pc_namespace_path();
+    let child = PathBuf::from("C:\\");
+    tree.nodes
+        .or_insert_with(root.clone(), MAX_DIRECTORY_TREE_NODES, || {
+            let mut node = directory_tree_node("This PC", PathBuf::from("ThisPc"));
+            node.expanded = true;
+            node.loading = true;
+            node.children_loaded = false;
+            node
+        })
+        .expect("insert root");
+    tree.set_selected_namespace_node(root.clone(), PathBuf::from("ThisPc"));
+
+    let (request, immediate) = tree.begin_expand_toward_first_child(&root);
+    assert!(request.is_none());
+    assert!(immediate.is_none());
+    assert_eq!(tree.pending_select_first_child_of.as_ref(), Some(&root));
+
+    tree.apply_children_result(DirectoryChildrenResult {
+        namespace_path: root.clone(),
+        generation: tree.generation,
+        result: Ok(vec![child.clone()]),
+    });
+    let child_namespace =
+        super::namespace::namespace_child_path(&root, Path::new("ThisPc"), &child);
+    assert_eq!(
+        tree.take_pending_first_child_selection(&root),
+        Some((child_namespace, child))
+    );
+}
+
+#[test]
 fn apply_children_result_records_read_error() {
     let root = PathBuf::from("/tmp/siv-dir-tree-test-missing");
 
@@ -2037,7 +2164,7 @@ fn begin_paint_frame_preserves_folder_scroll_offset_from_chrome() {
         Arc::new(super::domains::DirectoryTreeListSnapshot::default()),
         Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
     );
-    chrome.begin_paint_frame(&view, false);
+    chrome.begin_paint_frame(&view, false, false);
 
     assert_eq!(chrome.folder_scroll_offset_y, 240.0);
 }
@@ -2060,7 +2187,7 @@ fn begin_paint_frame_preserves_keyboard_list_selection_from_chrome() {
         }),
         Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
     );
-    chrome.begin_paint_frame(&view, true);
+    chrome.begin_paint_frame(&view, true, false);
 
     assert_eq!(chrome.current_index, 1);
 }
@@ -2083,7 +2210,7 @@ fn begin_paint_frame_promotes_folder_scroll_to_selected_without_clobbering_clear
         Arc::new(super::domains::DirectoryTreeListSnapshot::default()),
         Arc::new(super::domains::DirectoryTreePreviewSnapshot::default()),
     );
-    chrome.begin_paint_frame(&view, false);
+    chrome.begin_paint_frame(&view, false, false);
 
     assert!(chrome.scroll_folder_tree_to_selected);
 }
