@@ -1079,9 +1079,9 @@ pub(crate) const PACKBITS_TOO_MANY_NOOPS: &str = "PSD/PSB PackBits RLE exceeds n
 /// PackBits RLE decompression (Macintosh PackBits variant) into an existing buffer.
 ///
 /// Fail-closed: truncated literals/runs or early EOF before `expected_len` return
-/// [`Err`]. Exceeding [`PACKBITS_MAX_NOOPS_PER_ROW`] also returns [`Err`].
-/// On error, `result` is zero-filled to `expected_len`. Trailing bytes after a
-/// successful fill are ignored (Photoshop row payloads may be padded).
+/// [`Err`] (empty `result`). Exceeding [`PACKBITS_MAX_NOOPS_PER_ROW`] also
+/// returns [`Err`]. Trailing bytes after a successful fill are ignored (Photoshop
+/// row payloads may be padded).
 pub(crate) fn unpack_bits_into(
     result: &mut Vec<u8>,
     data: &[u8],
@@ -1094,7 +1094,6 @@ pub(crate) fn unpack_bits_into(
 
     let fail = |result: &mut Vec<u8>, msg: &str| -> Result<(), String> {
         result.clear();
-        result.resize(expected_len, 0);
         Err(msg.to_string())
     };
 

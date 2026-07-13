@@ -809,6 +809,18 @@ pub(crate) fn decode_one_layer(
         }
     }
 
+    // Verify that the total declared channel data exactly fills the layer's
+    // data slice.  A mismatch (under- or over-run) means the channel-length
+    // table is inconsistent with the Layer Info section size, which may lead
+    // to channel-data cross-contamination.
+    if *cursor != channel_data.len() {
+        return Err(crate::loader::DecodeError::Message(
+            "PSD/PSB layer channel data total length mismatch: declared channel \
+             data sizes do not fill the available layer section"
+                .into(),
+        ));
+    }
+
     if !can_decode || layer_failed {
         return Ok(None);
     }
