@@ -404,25 +404,27 @@ unsafe fn pack_adobe_cmyk_inverted_avx2(c: &[u8], m: &[u8], y: &[u8], k: &[u8], 
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn pack_adobe_cmyk_inverted_neon(c: &[u8], m: &[u8], y: &[u8], k: &[u8], dst: &mut [u8]) { unsafe {
-    use core::arch::aarch64::*;
-    let n = c.len();
-    let mut i = 0usize;
-    let ones = vdup_n_u8(255);
-    while i + NEON_PIXELS <= n {
-        let cv = veor_u8(vld1_u8(c.as_ptr().add(i)), ones);
-        let mv = veor_u8(vld1_u8(m.as_ptr().add(i)), ones);
-        let yv = veor_u8(vld1_u8(y.as_ptr().add(i)), ones);
-        let kv = veor_u8(vld1_u8(k.as_ptr().add(i)), ones);
-        // vst4 stores C,M,Y,K interleaved for 8 pixels.
-        let lanes = uint8x8x4_t(cv, mv, yv, kv);
-        vst4_u8(dst.as_mut_ptr().add(i * 4), lanes);
-        i += NEON_PIXELS;
+unsafe fn pack_adobe_cmyk_inverted_neon(c: &[u8], m: &[u8], y: &[u8], k: &[u8], dst: &mut [u8]) {
+    unsafe {
+        use core::arch::aarch64::*;
+        let n = c.len();
+        let mut i = 0usize;
+        let ones = vdup_n_u8(255);
+        while i + NEON_PIXELS <= n {
+            let cv = veor_u8(vld1_u8(c.as_ptr().add(i)), ones);
+            let mv = veor_u8(vld1_u8(m.as_ptr().add(i)), ones);
+            let yv = veor_u8(vld1_u8(y.as_ptr().add(i)), ones);
+            let kv = veor_u8(vld1_u8(k.as_ptr().add(i)), ones);
+            // vst4 stores C,M,Y,K interleaved for 8 pixels.
+            let lanes = uint8x8x4_t(cv, mv, yv, kv);
+            vst4_u8(dst.as_mut_ptr().add(i * 4), lanes);
+            i += NEON_PIXELS;
+        }
+        if i < n {
+            pack_adobe_cmyk_inverted_scalar(&c[i..], &m[i..], &y[i..], &k[i..], &mut dst[i * 4..]);
+        }
     }
-    if i < n {
-        pack_adobe_cmyk_inverted_scalar(&c[i..], &m[i..], &y[i..], &k[i..], &mut dst[i * 4..]);
-    }
-}}
+}
 
 /// Write planar alpha samples into the A channel of interleaved RGBA8 (`dst[i*4+3]`).
 ///

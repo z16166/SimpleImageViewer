@@ -600,39 +600,41 @@ unsafe fn rgba8_absolutely_blank_neon(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
     use_rgb0: bool,
-) -> Result<bool, crate::loader::DecodeError> { unsafe {
-    use core::arch::aarch64::*;
-    let mut any_rgb = false;
-    let mut any_a = false;
-    let n = pixels.len();
-    let mut i = 0usize;
-    let rgb_mask = vdupq_n_u32(0x00FF_FFFF);
-    let a_mask = vdupq_n_u32(0xFF00_0000);
-    while i + 16 <= n {
-        if i & RGBA8_CANCEL_POLL_MASK == 0 {
-            check_decode_cancel(cancel)?;
-        }
-        let v = vld1q_u8(pixels.as_ptr().add(i));
-        let vu = vreinterpretq_u32_u8(v);
-        if use_rgb0 {
-            let rgb = vandq_u32(vu, rgb_mask);
-            if vmaxvq_u32(rgb) != 0 {
-                any_rgb = true;
+) -> Result<bool, crate::loader::DecodeError> {
+    unsafe {
+        use core::arch::aarch64::*;
+        let mut any_rgb = false;
+        let mut any_a = false;
+        let n = pixels.len();
+        let mut i = 0usize;
+        let rgb_mask = vdupq_n_u32(0x00FF_FFFF);
+        let a_mask = vdupq_n_u32(0xFF00_0000);
+        while i + 16 <= n {
+            if i & RGBA8_CANCEL_POLL_MASK == 0 {
+                check_decode_cancel(cancel)?;
             }
+            let v = vld1q_u8(pixels.as_ptr().add(i));
+            let vu = vreinterpretq_u32_u8(v);
+            if use_rgb0 {
+                let rgb = vandq_u32(vu, rgb_mask);
+                if vmaxvq_u32(rgb) != 0 {
+                    any_rgb = true;
+                }
+            }
+            let alpha = vandq_u32(vu, a_mask);
+            if vmaxvq_u32(alpha) != 0 {
+                any_a = true;
+            }
+            if any_a && (!use_rgb0 || any_rgb) {
+                return Ok(false);
+            }
+            i += 16;
         }
-        let alpha = vandq_u32(vu, a_mask);
-        if vmaxvq_u32(alpha) != 0 {
-            any_a = true;
-        }
-        if any_a && (!use_rgb0 || any_rgb) {
-            return Ok(false);
-        }
-        i += 16;
+        let (any_rgb, any_a) =
+            rgba8_any_rgb_alpha_scalar(&pixels[i..], cancel, any_rgb, any_a, use_rgb0)?;
+        Ok(if use_rgb0 { !any_rgb || !any_a } else { !any_a })
     }
-    let (any_rgb, any_a) =
-        rgba8_any_rgb_alpha_scalar(&pixels[i..], cancel, any_rgb, any_a, use_rgb0)?;
-    Ok(if use_rgb0 { !any_rgb || !any_a } else { !any_a })
-}}
+}
 
 /// Zero-information barrier for P2 strict layer composites (RGBA8).
 ///
@@ -826,50 +828,52 @@ unsafe fn rgba8_zero_information_avx2(
 unsafe fn rgba8_zero_information_neon(
     pixels: &[u8],
     cancel: Option<&AtomicBool>,
-) -> Result<bool, crate::loader::DecodeError> { unsafe {
-    use core::arch::aarch64::*;
-    let ref_r = pixels[0];
-    let ref_g = pixels[1];
-    let ref_b = pixels[2];
-    let ref_rgb = vdupq_n_u32(u32::from_le_bytes([ref_r, ref_g, ref_b, 0]));
-    let rgb_mask = vdupq_n_u32(0x00FF_FFFF);
-    let a_mask = vdupq_n_u32(0xFF00_0000);
-    let mut rgb_varies = false;
-    let mut any_a = false;
-    let n = pixels.len();
-    let mut i = 0usize;
-    while i + 16 <= n {
-        if i & RGBA8_CANCEL_POLL_MASK == 0 {
-            check_decode_cancel(cancel)?;
+) -> Result<bool, crate::loader::DecodeError> {
+    unsafe {
+        use core::arch::aarch64::*;
+        let ref_r = pixels[0];
+        let ref_g = pixels[1];
+        let ref_b = pixels[2];
+        let ref_rgb = vdupq_n_u32(u32::from_le_bytes([ref_r, ref_g, ref_b, 0]));
+        let rgb_mask = vdupq_n_u32(0x00FF_FFFF);
+        let a_mask = vdupq_n_u32(0xFF00_0000);
+        let mut rgb_varies = false;
+        let mut any_a = false;
+        let n = pixels.len();
+        let mut i = 0usize;
+        while i + 16 <= n {
+            if i & RGBA8_CANCEL_POLL_MASK == 0 {
+                check_decode_cancel(cancel)?;
+            }
+            let v = vld1q_u8(pixels.as_ptr().add(i));
+            let vu = vreinterpretq_u32_u8(v);
+            let rgb = vandq_u32(vu, rgb_mask);
+            let alpha = vandq_u32(vu, a_mask);
+            // Any lane differing from ref => RGB variance.
+            let eq = vceqq_u32(rgb, ref_rgb);
+            if vminvq_u32(eq) == 0 {
+                rgb_varies = true;
+            }
+            if vmaxvq_u32(alpha) != 0 {
+                any_a = true;
+            }
+            if rgb_varies && any_a {
+                return Ok(false);
+            }
+            i += 16;
         }
-        let v = vld1q_u8(pixels.as_ptr().add(i));
-        let vu = vreinterpretq_u32_u8(v);
-        let rgb = vandq_u32(vu, rgb_mask);
-        let alpha = vandq_u32(vu, a_mask);
-        // Any lane differing from ref => RGB variance.
-        let eq = vceqq_u32(rgb, ref_rgb);
-        if vminvq_u32(eq) == 0 {
-            rgb_varies = true;
-        }
-        if vmaxvq_u32(alpha) != 0 {
-            any_a = true;
-        }
-        if rgb_varies && any_a {
-            return Ok(false);
-        }
-        i += 16;
+        let (rgb_varies, any_a) = rgba8_rgb_varies_any_alpha_scalar(
+            &pixels[i..],
+            cancel,
+            ref_r,
+            ref_g,
+            ref_b,
+            rgb_varies,
+            any_a,
+        )?;
+        Ok(!any_a || !rgb_varies)
     }
-    let (rgb_varies, any_a) = rgba8_rgb_varies_any_alpha_scalar(
-        &pixels[i..],
-        cancel,
-        ref_r,
-        ref_g,
-        ref_b,
-        rgb_varies,
-        any_a,
-    )?;
-    Ok(!any_a || !rgb_varies)
-}}
+}
 
 pub fn extract_icc_profile_from_ir(bytes: &[u8], ir_start: u64, ir_end: u64) -> Option<Vec<u8>> {
     for_each_image_resource(bytes, ir_start, ir_end, |rid, data| {

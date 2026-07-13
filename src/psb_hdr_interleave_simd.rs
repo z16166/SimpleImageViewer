@@ -479,38 +479,42 @@ unsafe fn interleave_f32be_avx2(
 unsafe fn load_u16be_f32x4_neon(
     channel: Option<&[u8]>,
     i: usize,
-) -> core::arch::aarch64::float32x4_t { unsafe {
-    use core::arch::aarch64::*;
-    let Some(ch) = channel else {
-        return vdupq_n_f32(0.0);
-    };
-    let off = i * U16_BYTES;
-    if off + PIXELS_PER_SSE_OR_NEON * U16_BYTES > ch.len() {
-        return vdupq_n_f32(0.0);
+) -> core::arch::aarch64::float32x4_t {
+    unsafe {
+        use core::arch::aarch64::*;
+        let Some(ch) = channel else {
+            return vdupq_n_f32(0.0);
+        };
+        let off = i * U16_BYTES;
+        if off + PIXELS_PER_SSE_OR_NEON * U16_BYTES > ch.len() {
+            return vdupq_n_f32(0.0);
+        }
+        let be = vld1_u8(ch.as_ptr().add(off));
+        // Rev each 2-byte pair: [hi,lo] -> [lo,hi] then reinterpret as host u16.
+        let le_bytes = vrev16_u8(be);
+        let u16s = vreinterpret_u16_u8(le_bytes);
+        let widened = vmovl_u16(u16s);
+        vmulq_n_f32(vcvtq_f32_u32(widened), INV_U16)
     }
-    let be = vld1_u8(ch.as_ptr().add(off));
-    // Rev each 2-byte pair: [hi,lo] -> [lo,hi] then reinterpret as host u16.
-    let le_bytes = vrev16_u8(be);
-    let u16s = vreinterpret_u16_u8(le_bytes);
-    let widened = vmovl_u16(u16s);
-    vmulq_n_f32(vcvtq_f32_u32(widened), INV_U16)
-}}
+}
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
-unsafe fn load_f32be_x4_neon(channel: Option<&[u8]>, i: usize) -> core::arch::aarch64::float32x4_t { unsafe {
-    use core::arch::aarch64::*;
-    let Some(ch) = channel else {
-        return vdupq_n_f32(0.0);
-    };
-    let off = i * F32_BYTES;
-    if off + PIXELS_PER_SSE_OR_NEON * F32_BYTES > ch.len() {
-        return vdupq_n_f32(0.0);
+unsafe fn load_f32be_x4_neon(channel: Option<&[u8]>, i: usize) -> core::arch::aarch64::float32x4_t {
+    unsafe {
+        use core::arch::aarch64::*;
+        let Some(ch) = channel else {
+            return vdupq_n_f32(0.0);
+        };
+        let off = i * F32_BYTES;
+        if off + PIXELS_PER_SSE_OR_NEON * F32_BYTES > ch.len() {
+            return vdupq_n_f32(0.0);
+        }
+        let be = vld1q_u8(ch.as_ptr().add(off));
+        let le = vrev32q_u8(be);
+        vreinterpretq_f32_u8(le)
     }
-    let be = vld1q_u8(ch.as_ptr().add(off));
-    let le = vrev32q_u8(be);
-    vreinterpretq_f32_u8(le)
-}}
+}
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
