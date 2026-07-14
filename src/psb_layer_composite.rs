@@ -120,6 +120,13 @@ pub struct LayerMaskInfo {
     /// set, extra parameter bytes sit between the user-mask header and any
     /// real-user-mask rect in the mask data block.
     pub has_parameters_applied: bool,
+    /// Mask density (0-255): 255 = full opacity (no change), 0 = fully
+    /// transparent (mask becomes all zeros).  Parsed from the density/feather
+    /// parameter prefix when `has_parameters_applied` is true.
+    pub density: u8,
+    /// Mask feather radius in pixels (0.0 = no feather).  Parsed from the
+    /// density/feather parameter prefix when `has_parameters_applied` is true.
+    pub feather: f64,
 }
 
 impl LayerMaskInfo {
@@ -140,6 +147,100 @@ impl LayerMaskInfo {
             0
         } else {
             self.bottom.saturating_sub(self.top) as u32
+        }
+    }
+
+    /// Returns `true` when the mask needs density scaling or feather blur.
+    pub fn needs_post_process(&self) -> bool {
+        self.density < 255 || self.feather > 0.0
+    }
+}
+
+/// Apply density scaling (0-255) to a layer-sized mask buffer.
+/// Density 255 = no change, density 0 = all zero (fully transparent).
+pub(crate) fn apply_mask_density(mask: &mut [u8], density: u8) {
+    if density >= 255 {
+        return;
+    }
+    if density == 0 {
+        mask.fill(0);
+        return;
+    }
+    // Scale each byte: mask[i] = mask[i] * density / 255
+    let d = u16::from(density);
+    for b in mask.iter_mut() {
+        *b = ((u16::from(*b) * d + 127) / 255) as u8;
+    }
+}
+
+/// Apply a separable box-blur approximation of Gaussian feather to a
+/// layer-sized mask buffer.  `feather` is the pixel radius; values ≤ 0.5
+/// produce a no-op (the blur kernel would be smaller than 1 px).
+/// Uses a simple 2-pass (horizontal + vertical) moving-average filter.
+pub(crate) fn apply_mask_feather(mask: &mut [u8], w: u32, h: u32, feather: f64) {
+    if feather <= 0.5 || w < 2 || h < 2 {
+        return;
+    }
+    let radius = feather.round() as u32;
+    if radius == 0 {
+        return;
+    }
+    let kernel_len = (radius * 2 + 1) as usize;
+
+    // Work buffer for the horizontal pass result.
+    let mut tmp = vec![0u16; (w as usize) * (h as usize)];
+
+    // Horizontal pass: for each row, compute a moving sum.
+    for row in 0..h as usize {
+        let src_off = row * w as usize;
+        let dst_off = src_off;
+        // Initial sum for the first pixel.
+        let mut sum: u32 = 0;
+        let mut count: u32 = 0;
+        for k in 0..kernel_len.min(w as usize) {
+            sum += u32::from(mask[src_off + k]);
+            count += 1;
+        }
+        tmp[dst_off] = ((sum + count / 2) / count) as u16;
+        for col in 1..w as usize {
+            let add_col = col + radius as usize;
+            if add_col < w as usize {
+                sum += u32::from(mask[src_off + add_col]);
+                count += 1;
+            }
+            let sub_col = col.wrapping_sub(radius as usize + 1);
+            if sub_col < w as usize {
+                sum -= u32::from(mask[src_off + sub_col]);
+                count -= 1;
+            }
+            let c = if count > 0 { count } else { 1 };
+            tmp[dst_off + col] = ((sum + c / 2) / c) as u16;
+        }
+    }
+
+    // Vertical pass: for each column, read from tmp, write to mask.
+    for col in 0..w as usize {
+        let mut sum: u32 = 0;
+        let mut count: u32 = 0;
+        for k in 0..kernel_len.min(h as usize) {
+            sum += u32::from(tmp[col + k * w as usize]);
+            count += 1;
+        }
+        let idx = col;
+        mask[idx] = ((sum + count / 2) / count) as u8;
+        for row in 1..h as usize {
+            let add_row = row + radius as usize;
+            if add_row < h as usize {
+                sum += u32::from(tmp[col + add_row * w as usize]);
+                count += 1;
+            }
+            let sub_row = row.wrapping_sub(radius as usize + 1);
+            if sub_row < h as usize {
+                sum -= u32::from(tmp[col + sub_row * w as usize]);
+                count -= 1;
+            }
+            let c = if count > 0 { count } else { 1 };
+            mask[row * w as usize + col] = ((sum + c / 2) / c) as u8;
         }
     }
 }
@@ -612,9 +713,21 @@ fn parse_layer_mask_data(
     r: &mut std::io::Cursor<&[u8]>,
     mask_end: u64,
 ) -> Result<(Option<LayerMaskInfo>, Option<LayerMaskInfo>), String> {
-    let Some(mask) = parse_layer_mask_rect(r, mask_end)? else {
+    let Some(mut mask) = parse_layer_mask_rect(r, mask_end)? else {
         return Ok((None, None));
     };
+
+    // Read density/feather parameters when present; store in user mask.
+    if mask.has_parameters_applied {
+        let (density, feather, ok) = read_mask_parameters_prefix(r, mask_end)?;
+        mask.density = density;
+        mask.feather = feather;
+        if !ok {
+            // Parameter layout is untrustworthy — skip real mask.
+            return Ok((Some(mask), None));
+        }
+    }
+
     // Spec pads the user-mask header to 20 bytes (2 bytes after flags).
     const USER_MASK_PAD: u64 = 2;
     if checked_end(r.position(), USER_MASK_PAD, mask_end, "layer mask pad").is_ok() {
@@ -640,12 +753,16 @@ fn parse_real_user_mask_rect(
 ) -> Result<Option<LayerMaskInfo>, String> {
     const REAL_MASK_RECT_LEN: u64 = 4 * 4;
     const REAL_MASK_FULL_LEN: u64 = REAL_MASK_RECT_LEN + 1 + 1;
-    if user_mask.has_parameters_applied && !skip_mask_parameters_prefix(r, mask_end)? {
-        return Ok(None);
-    }
+    // Density/feather parameters were already consumed by
+    // `parse_layer_mask_data` if `has_parameters_applied` was set.
     let remaining = mask_end.saturating_sub(r.position());
     if remaining >= REAL_MASK_FULL_LEN {
-        return parse_layer_mask_rect(r, mask_end);
+        let mut real = parse_layer_mask_rect(r, mask_end)?;
+        if let Some(ref mut r) = real {
+            r.density = user_mask.density;
+            r.feather = user_mask.feather;
+        }
+        return Ok(real);
     }
     if remaining < REAL_MASK_RECT_LEN {
         return Ok(None);
@@ -662,52 +779,63 @@ fn parse_real_user_mask_rect(
         default_color: 0,
         disabled: false,
         has_parameters_applied: false,
+        density: user_mask.density,
+        feather: user_mask.feather,
     }))
 }
 
-/// Skip the density/feather parameter prefix that follows the user-mask
-/// header when flags bit 4 is set. Returns `true` when the cursor is left
-/// at a plausible real-mask header (or section end with nothing left).
-///
-/// **Known limitation**: the density (0-255 scaling) and feather (pixel
-/// radius) values are *skipped* but never applied to the decoded mask.
-/// This can produce visible differences from Photoshop on documents that
-/// rely on mask feathering.  A future commit should read the density byte
-/// and feather uint64 fixed-point value, then soften / scale the mask
-/// bitmap after rasterisation.
-fn skip_mask_parameters_prefix(
+/// Read the density/feather parameter prefix that follows the user-mask
+/// header when flags bit 4 is set, and return the parsed values.
+/// Returns `(density, feather, plausible_header_found)`.
+/// When a flag bit is absent, density defaults to 255 and feather to 0.0.
+fn read_mask_parameters_prefix(
     r: &mut std::io::Cursor<&[u8]>,
     mask_end: u64,
-) -> Result<bool, String> {
+) -> Result<(u8, f64, bool), String> {
     let remaining_before = mask_end.saturating_sub(r.position());
     if remaining_before < 1 {
-        return Ok(false);
+        return Ok((255, 0.0, false));
     }
     let mut present = [0u8; 1];
     r.read_exact(&mut present)
         .map_err(|e| format!("Read layer mask parameters flags: {e}"))?;
-    // Bit 0: user density, bit 1: user feather, bit 2: vector density,
-    // bit 3: vector feather.
+    // Bit 0: user density (1 byte), bit 1: user feather (8 bytes),
+    // bit 2: vector density (1 byte), bit 3: vector feather (8 bytes).
+    // We read user density and feather; vector values are ignored
+    // (handled by the vector-mask path).
+    let mut density: u8 = 255;
+    let mut feather: f64 = 0.0;
     let mut need = 0u64;
+
     if present[0] & 0x01 != 0 {
-        need = need.saturating_add(1);
+        let mut buf = [0u8; 1];
+        r.read_exact(&mut buf)
+            .map_err(|e| format!("Read layer mask density: {e}"))?;
+        density = buf[0];
     }
     if present[0] & 0x02 != 0 {
-        need = need.saturating_add(8);
+        let mut buf = [0u8; 8];
+        r.read_exact(&mut buf)
+            .map_err(|e| format!("Read layer mask feather: {e}"))?;
+        // f64 stored big-endian per PSD convention.
+        feather = f64::from_be_bytes(buf).max(0.0);
     }
+    // Consume vector density/feather bytes without storing them.
     if present[0] & 0x04 != 0 {
         need = need.saturating_add(1);
     }
     if present[0] & 0x08 != 0 {
         need = need.saturating_add(8);
     }
-    if checked_end(r.position(), need, mask_end, "layer mask parameters").is_err() {
-        return Ok(false);
+    if need > 0 {
+        if checked_end(r.position(), need, mask_end, "layer mask parameters").is_err() {
+            return Ok((density, feather, false));
+        }
+        crate::psb_reader::seek_forward(r, need)?;
     }
-    crate::psb_reader::seek_forward(r, need)?;
     let remaining = mask_end.saturating_sub(r.position());
-    // Real mask may be rect-only (16) or rect+color+flags (18).
-    Ok(remaining == 0 || remaining >= 4 * 4)
+    let ok = remaining == 0 || remaining >= 4 * 4;
+    Ok((density, feather, ok))
 }
 
 /// Parse the rect + default color + flags fields at the start of a layer's
@@ -751,6 +879,8 @@ fn parse_layer_mask_rect(
         default_color: default_color[0],
         disabled,
         has_parameters_applied,
+        density: 255,
+        feather: 0.0,
     }))
 }
 
@@ -1994,6 +2124,8 @@ mod tests {
             default_color: 255,
             disabled: false,
             has_parameters_applied: false,
+            density: 255,
+            feather: 0.0,
         });
         assert!(strict_visibility_has_drawable_output(
             4,

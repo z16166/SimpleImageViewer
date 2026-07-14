@@ -490,14 +490,29 @@ pub(crate) fn decode_mask_channel_to_layer(
         return Ok(None);
     }
     let mask_pixels = decode_channel_image(slice, mask_w, mask_h, depth, is_psb, cancel)?;
-    Ok(Some(build_layer_sized_mask(
+    let mut layer_mask = build_layer_sized_mask(
         mask_info,
         &mask_pixels,
         layer_left,
         layer_top,
         layer_w,
         layer_h,
-    )))
+    );
+    // Apply mask density scaling and feather blur when present.
+    if mask_info.needs_post_process() {
+        if mask_info.density < 255 {
+            crate::psb_layer_composite::apply_mask_density(&mut layer_mask, mask_info.density);
+        }
+        if mask_info.feather > 0.0 {
+            crate::psb_layer_composite::apply_mask_feather(
+                &mut layer_mask,
+                layer_w,
+                layer_h,
+                mask_info.feather,
+            );
+        }
+    }
+    Ok(Some(layer_mask))
 }
 
 /// Blit a decoded mask (its own `mask_info` rect, which may differ from the
@@ -1540,6 +1555,8 @@ mod tests {
             default_color: 0,
             disabled: false,
             has_parameters_applied: false,
+            density: 255,
+            feather: 0.0,
         });
         record.channels = vec![LayerChannel {
             id: -2,
@@ -1712,6 +1729,8 @@ mod tests {
             default_color: 0,
             disabled: false,
             has_parameters_applied: false,
+            density: 255,
+            feather: 0.0,
         };
         let mask_pixels = vec![10, 20, 30, 40];
 
@@ -1738,6 +1757,8 @@ mod tests {
             default_color: 255,
             disabled: false,
             has_parameters_applied: false,
+            density: 255,
+            feather: 0.0,
         };
         let mask_pixels = vec![99];
 
