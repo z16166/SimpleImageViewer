@@ -525,11 +525,8 @@ unsafe fn feather_horizontal_neon(mask: &[u8], tmp: &mut [f32], wp: usize, hp: u
             for (k, &kw) in kernel.iter().enumerate() {
                 let src_base = row_off + col + k - radius;
                 let u8vals = vld1_u8(mask.as_ptr().add(src_base));
-                let u16vals = vmovl_u8(u8vals);
-                let u32lo = vmovl_u16(vget_low_u16(u16vals));
-                let u32hi = vmovl_u16(vget_high_u16(u16vals));
-                // u32 → f32
-                let f32vals = vcvtq_f32_u32(vcombine_u32(u32lo, u32hi));
+                // 4 u8 → u16 → u32 → f32 via single widening chain
+                let f32vals = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(u8vals))));
                 let kw4 = vdupq_n_f32(kw);
                 acc = vmlaq_f32(acc, f32vals, kw4);
             }
