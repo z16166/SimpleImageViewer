@@ -220,7 +220,10 @@ impl ImageViewerApp {
         let path = result.key.path.clone();
         #[cfg(feature = "preload-debug")]
         crate::preload_debug_throttled!(
-            &format!("strip:poll_success:{}:{:?}:{:?}", result.key.index, result.stage, result.buffer_tag),
+            &format!(
+                "strip:poll_success:{}:{:?}:{:?}",
+                result.key.index, result.stage, result.buffer_tag
+            ),
             crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
             "[PreloadDebug][StripPoll] poll_successful idx={} path={} decoded={}x{} logical={}x{} stage={:?} tag={:?}",
             result.key.index,
@@ -235,7 +238,10 @@ impl ImageViewerApp {
         let Some(&current_index) = self.image_strip_path_index().get(&path) else {
             #[cfg(feature = "preload-debug")]
             {
-                let at_same_idx = self.image_files.get(result.key.index).map(|p| p.display().to_string());
+                let at_same_idx = self
+                    .image_files
+                    .get(result.key.index)
+                    .map(|p| p.display().to_string());
                 let list_gen = self.directory_tree.list.lock().image_list_generation;
                 crate::preload_debug!(
                     "[PreloadDebug][StripPoll] poll_successful idx={} path={} early_return=path_not_found \

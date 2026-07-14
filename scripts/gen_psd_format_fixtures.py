@@ -160,8 +160,10 @@ def solid_plane(w: int, h: int, value: int, depth: int = 8) -> bytes:
 
 
 def rgb_layer_channels(w: int, h: int, r: int, g: int, b: int, a: int,
-                       comp: int = 0, depth: int = 8) -> bytes:
-    """4 channels: alpha(-1), R(0), G(1), B(2)."""
+                       comp: int = 0, depth: int = 8) -> tuple[bytes, list[int]]:
+    """4 channels: alpha(-1), R(0), G(1), B(2).
+    Returns (concatenated_data, per_channel_compressed_lengths).
+    """
     a_plane = solid_plane(w, h, a, depth)
     r_plane = solid_plane(w, h, r, depth)
     g_plane = solid_plane(w, h, g, depth)
@@ -170,16 +172,20 @@ def rgb_layer_channels(w: int, h: int, r: int, g: int, b: int, a: int,
 
 
 def gray_layer_channels(w: int, h: int, gray: int, a: int,
-                        comp: int = 0, depth: int = 8) -> bytes:
-    """2 channels: alpha(-1), gray(0)."""
+                        comp: int = 0, depth: int = 8) -> tuple[bytes, list[int]]:
+    """2 channels: alpha(-1), gray(0).
+    Returns (concatenated_data, per_channel_compressed_lengths).
+    """
     a_plane = solid_plane(w, h, a, depth)
     g_plane = solid_plane(w, h, gray, depth)
     return _compress_planes(comp, w, h, [a_plane, g_plane])
 
 
 def cmyk_layer_channels(w: int, h: int, c: int, m: int, y: int, k: int,
-                         a: int, comp: int = 0, depth: int = 8) -> bytes:
-    """5 channels: alpha(-1), C(0), M(1), Y(2), K(3)."""
+                         a: int, comp: int = 0, depth: int = 8) -> tuple[bytes, list[int]]:
+    """5 channels: alpha(-1), C(0), M(1), Y(2), K(3).
+    Returns (concatenated_data, per_channel_compressed_lengths).
+    """
     a_plane = solid_plane(w, h, a, depth)
     c_plane = solid_plane(w, h, c, depth)
     m_plane = solid_plane(w, h, m, depth)
@@ -188,21 +194,26 @@ def cmyk_layer_channels(w: int, h: int, c: int, m: int, y: int, k: int,
     return _compress_planes(comp, w, h, [a_plane, c_plane, m_plane, y_plane, k_plane])
 
 
-def _compress_planes(comp: int, w: int, h: int, planes: list[bytes]) -> bytes:
-    """Concatenate compressed planes in channel order."""
+def _compress_planes(comp: int, w: int, h: int, planes: list[bytes]) -> tuple[bytes, list[int]]:
+    """Concatenate compressed planes in channel order.
+    Returns (concatenated_data, per_channel_compressed_lengths).
+    """
     out = bytearray()
+    lengths: list[int] = []
     for plane in planes:
         if comp == 0:
-            out += raw_channel(plane)
+            ch = raw_channel(plane)
         elif comp == 1:
-            out += rle_channel(plane, w, h)
+            ch = rle_channel(plane, w, h)
         elif comp == 2:
-            out += zip_channel(plane)
+            ch = zip_channel(plane)
         elif comp == 3:
-            out += zip_pred_channel(plane, w, h)
+            ch = zip_pred_channel(plane, w, h)
         else:
             raise ValueError(f"unknown compression {comp}")
-    return bytes(out)
+        lengths.append(len(ch))
+        out += ch
+    return bytes(out), lengths
 
 
 def layer_channel_ids(mode_code: int) -> list[int]:
@@ -222,8 +233,10 @@ def channel_count_for_mode(mode_code: int) -> int:
 
 
 def layer_channels_for_data(mode_code: int, w: int, h: int,
-                             colors: dict, comp: int = 0, depth: int = 8) -> bytes:
-    """Dispatch to the correct layer channel builder by colour mode."""
+                             colors: dict, comp: int = 0, depth: int = 8) -> tuple[bytes, list[int]]:
+    """Dispatch to the correct layer channel builder by colour mode.
+    Returns (concatenated_data, per_channel_compressed_lengths).
+    """
     if mode_code == 1:   # Grayscale
         return gray_layer_channels(w, h, colors["g"], colors.get("a", 255), comp, depth)
     elif mode_code == 3:  # RGB
@@ -314,9 +327,9 @@ def build_psd(
 
     if has_blend:
         # Base layer (full canvas)
-        base_ch = layer_channels_for_data(mode_code, CANVAS_W, CANVAS_H,
+        base_ch, base_lens = layer_channels_for_data(mode_code, CANVAS_W, CANVAS_H,
                                           base_colors, comp, depth)
-        ch_lens_base = [len(base_ch) // n_channels] * n_channels
+        ch_lens_base = base_lens
         records += layer_record(
             0, 0, CANVAS_H, CANVAS_W,
             opacity=255, clipping=0, blend_key=b"norm",
@@ -333,9 +346,9 @@ def build_psd(
         extra_tags = b""
         if layer_section_divider is not None:
             extra_tags += tagged_block(b"lsct", layer_section_divider)
-        blend_ch = layer_channels_for_data(mode_code, bw, bh,
+        blend_ch, blend_lens = layer_channels_for_data(mode_code, bw, bh,
                                            blend_colors, comp, depth)
-        ch_lens_blend = [len(blend_ch) // n_channels] * n_channels
+        ch_lens_blend = blend_lens
         records += layer_record(
             top, left, top + bh, left + bw,
             opacity=255, clipping=0, blend_key=blend_key,
