@@ -103,13 +103,17 @@ pub fn blend_separable_span_f32(dst: &mut [f32], src: &[f32], kind: SeparableBle
     }
 
     // Non-separable / per-pixel modes use cross-channel formulas and cannot
-    // be vectorized per-plane. All other modes (including the new separable
-    // ones) fall through to SIMD if available.
-    if !kind.has_simd_kernel()
-        && kind != SeparableBlendKind::Overlay
-        && kind != SeparableBlendKind::SoftLight
-        && kind != SeparableBlendKind::HardLight
-    {
+    // be vectorized per-plane. All other modes (all separable modes including
+    // the 13 new ones) fall through to SIMD if available.
+    if matches!(
+        kind,
+        SeparableBlendKind::Color
+            | SeparableBlendKind::Hue
+            | SeparableBlendKind::Saturation
+            | SeparableBlendKind::Luminosity
+            | SeparableBlendKind::DarkerColor
+            | SeparableBlendKind::LighterColor
+    ) {
         blend_separable_span_f32_scalar(dst, src, kind);
         return;
     }
@@ -340,7 +344,85 @@ unsafe fn blend_plane_f32_sse41(
             let mask = _mm_cmple_ps(sc, half);
             _mm_blendv_ps(hi, lo, mask)
         }
-        _ => sc,
+        // ── New separable modes (13) ────────────────────────────────────
+        SeparableBlendKind::Darken => _mm_min_ps(dc, sc),
+        SeparableBlendKind::Lighten => _mm_max_ps(dc, sc),
+        SeparableBlendKind::LinearBurn => {
+            _mm_max_ps(_mm_add_ps(_mm_add_ps(dc, sc), _mm_set1_ps(-1.0)), zero)
+        }
+        SeparableBlendKind::LinearLight => {
+            _mm_add_ps(dc, _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(2.0), sc), one))
+        }
+        SeparableBlendKind::Difference => {
+            let diff = _mm_sub_ps(dc, sc);
+            _mm_max_ps(diff, _mm_sub_ps(zero, diff))
+        }
+        SeparableBlendKind::Exclusion => {
+            // cb + cs - 2*cb*cs
+            _mm_sub_ps(
+                _mm_add_ps(dc, sc),
+                _mm_mul_ps(_mm_mul_ps(_mm_set1_ps(2.0), dc), sc),
+            )
+        }
+        SeparableBlendKind::Subtract => _mm_max_ps(_mm_sub_ps(dc, sc), zero),
+        SeparableBlendKind::ColorBurn => {
+            // cs > 0 ? 1 - min(1, (1-cb)/cs) : 0
+            let cs_gt_zero = _mm_cmpgt_ps(sc, zero);
+            let safe_cs = _mm_max_ps(sc, _mm_set1_ps(1e-20));
+            let when_cs_gt_zero =
+                _mm_sub_ps(one, _mm_min_ps(one, _mm_div_ps(_mm_sub_ps(one, dc), safe_cs)));
+            _mm_blendv_ps(zero, when_cs_gt_zero, cs_gt_zero)
+        }
+        SeparableBlendKind::ColorDodge => {
+            // cs >= 1 ? 1 : min(1, cb/(1-cs))
+            let cs_ge_one = _mm_cmpge_ps(sc, one);
+            let safe_denom = _mm_max_ps(_mm_sub_ps(one, sc), _mm_set1_ps(1e-20));
+            let when_cs_lt_one = _mm_min_ps(one, _mm_div_ps(dc, safe_denom));
+            _mm_blendv_ps(when_cs_lt_one, one, cs_ge_one)
+        }
+        SeparableBlendKind::VividLight => {
+            let half = _mm_set1_ps(0.5);
+            let two = _mm_set1_ps(2.0);
+            let cs_le_half = _mm_cmple_ps(sc, half);
+            // burn branch: cs <= 0.5 -> color_burn(cb, 2*cs)
+            let two_cs = _mm_mul_ps(two, sc);
+            let cs_le_zero = _mm_cmple_ps(sc, zero);
+            let safe_two_cs = _mm_max_ps(two_cs, _mm_set1_ps(1e-20));
+            let burn =
+                _mm_sub_ps(one, _mm_min_ps(one, _mm_div_ps(_mm_sub_ps(one, dc), safe_two_cs)));
+            let burn = _mm_blendv_ps(burn, zero, cs_le_zero);
+            // dodge branch: cs > 0.5 -> color_dodge(cb, 2*cs-1)
+            let cs_ge_one = _mm_cmpge_ps(sc, one);
+            let safe_denom = _mm_max_ps(_mm_sub_ps(two, two_cs), _mm_set1_ps(1e-20));
+            let dodge = _mm_min_ps(one, _mm_div_ps(dc, safe_denom));
+            let dodge = _mm_blendv_ps(dodge, one, cs_ge_one);
+            _mm_blendv_ps(dodge, burn, cs_le_half)
+        }
+        SeparableBlendKind::PinLight => {
+            let half = _mm_set1_ps(0.5);
+            let two = _mm_set1_ps(2.0);
+            let two_cs = _mm_mul_ps(two, sc);
+            let cs_le_half = _mm_cmple_ps(sc, half);
+            let low = _mm_min_ps(dc, two_cs);
+            let high = _mm_max_ps(dc, _mm_sub_ps(two_cs, one));
+            _mm_blendv_ps(high, low, cs_le_half)
+        }
+        SeparableBlendKind::HardMix => {
+            let ge_one = _mm_cmpge_ps(_mm_add_ps(dc, sc), one);
+            _mm_blendv_ps(zero, one, ge_one)
+        }
+        SeparableBlendKind::Divide => {
+            // cs > 0 ? min(1, cb/cs) : 1
+            let cs_gt_zero = _mm_cmpgt_ps(sc, zero);
+            let safe_cs = _mm_max_ps(sc, _mm_set1_ps(1e-20));
+            let div_result = _mm_min_ps(one, _mm_div_ps(dc, safe_cs));
+            _mm_blendv_ps(one, div_result, cs_gt_zero)
+        }
+        // Dissolve/PassThrough -> Normal; non-separable routed to scalar.
+        SeparableBlendKind::Dissolve | SeparableBlendKind::PassThrough => sc,
+        // Non-separable modes (Color, Hue, Saturation, Luminosity, DarkerColor,
+        // LighterColor) are routed to scalar before reaching here.
+        _ => unreachable!("non-separable modes should not reach SIMD plane blend"),
     };
     let term1 = _mm_mul_ps(_mm_mul_ps(sa, _mm_sub_ps(one, da)), sc);
     let term2 = _mm_mul_ps(_mm_mul_ps(sa, da), v_b);
@@ -537,7 +619,83 @@ unsafe fn blend_plane_f32_avx2(
             let mask = _mm256_cmp_ps(sc, half, _CMP_LE_OQ);
             _mm256_blendv_ps(hi, lo, mask)
         }
-        _ => sc,
+        // ── New separable modes (13) ────────────────────────────────────
+        SeparableBlendKind::Darken => _mm256_min_ps(dc, sc),
+        SeparableBlendKind::Lighten => _mm256_max_ps(dc, sc),
+        SeparableBlendKind::LinearBurn => {
+            _mm256_max_ps(
+                _mm256_add_ps(_mm256_add_ps(dc, sc), _mm256_set1_ps(-1.0)),
+                zero,
+            )
+        }
+        SeparableBlendKind::LinearLight => {
+            _mm256_add_ps(dc, _mm256_sub_ps(_mm256_mul_ps(_mm256_set1_ps(2.0), sc), one))
+        }
+        SeparableBlendKind::Difference => {
+            let diff = _mm256_sub_ps(dc, sc);
+            _mm256_max_ps(diff, _mm256_sub_ps(zero, diff))
+        }
+        SeparableBlendKind::Exclusion => {
+            _mm256_sub_ps(
+                _mm256_add_ps(dc, sc),
+                _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(2.0), dc), sc),
+            )
+        }
+        SeparableBlendKind::Subtract => _mm256_max_ps(_mm256_sub_ps(dc, sc), zero),
+        SeparableBlendKind::ColorBurn => {
+            let cs_gt_zero = _mm256_cmp_ps(sc, zero, _CMP_GT_OQ);
+            let safe_cs = _mm256_max_ps(sc, _mm256_set1_ps(1e-20));
+            let when_cs_gt_zero = _mm256_sub_ps(
+                one,
+                _mm256_min_ps(one, _mm256_div_ps(_mm256_sub_ps(one, dc), safe_cs)),
+            );
+            _mm256_blendv_ps(zero, when_cs_gt_zero, cs_gt_zero)
+        }
+        SeparableBlendKind::ColorDodge => {
+            let cs_ge_one = _mm256_cmp_ps(sc, one, _CMP_GE_OQ);
+            let safe_denom = _mm256_max_ps(_mm256_sub_ps(one, sc), _mm256_set1_ps(1e-20));
+            let when_cs_lt_one = _mm256_min_ps(one, _mm256_div_ps(dc, safe_denom));
+            _mm256_blendv_ps(when_cs_lt_one, one, cs_ge_one)
+        }
+        SeparableBlendKind::VividLight => {
+            let half = _mm256_set1_ps(0.5);
+            let two = _mm256_set1_ps(2.0);
+            let cs_le_half = _mm256_cmp_ps(sc, half, _CMP_LE_OQ);
+            let two_cs = _mm256_mul_ps(two, sc);
+            let cs_le_zero = _mm256_cmp_ps(sc, zero, _CMP_LE_OQ);
+            let safe_two_cs = _mm256_max_ps(two_cs, _mm256_set1_ps(1e-20));
+            let burn = _mm256_sub_ps(one, _mm256_div_ps(_mm256_sub_ps(one, dc), safe_two_cs));
+            let burn = _mm256_blendv_ps(burn, zero, cs_le_zero);
+            let cs_ge_one = _mm256_cmp_ps(sc, one, _CMP_GE_OQ);
+            let safe_denom = _mm256_max_ps(_mm256_sub_ps(two, two_cs), _mm256_set1_ps(1e-20));
+            let dodge = _mm256_div_ps(dc, safe_denom);
+            let dodge = _mm256_blendv_ps(dodge, one, cs_ge_one);
+            _mm256_blendv_ps(dodge, burn, cs_le_half)
+        }
+        SeparableBlendKind::PinLight => {
+            let half = _mm256_set1_ps(0.5);
+            let two = _mm256_set1_ps(2.0);
+            let two_cs = _mm256_mul_ps(two, sc);
+            let cs_le_half = _mm256_cmp_ps(sc, half, _CMP_LE_OQ);
+            let low = _mm256_min_ps(dc, two_cs);
+            let high = _mm256_max_ps(dc, _mm256_sub_ps(two_cs, one));
+            _mm256_blendv_ps(high, low, cs_le_half)
+        }
+        SeparableBlendKind::HardMix => {
+            let ge_one = _mm256_cmp_ps(_mm256_add_ps(dc, sc), one, _CMP_GE_OQ);
+            _mm256_blendv_ps(zero, one, ge_one)
+        }
+        SeparableBlendKind::Divide => {
+            let cs_gt_zero = _mm256_cmp_ps(sc, zero, _CMP_GT_OQ);
+            let safe_cs = _mm256_max_ps(sc, _mm256_set1_ps(1e-20));
+            let div_result = _mm256_min_ps(one, _mm256_div_ps(dc, safe_cs));
+            _mm256_blendv_ps(one, div_result, cs_gt_zero)
+        }
+        // Dissolve/PassThrough -> Normal; non-separable routed to scalar.
+        SeparableBlendKind::Dissolve | SeparableBlendKind::PassThrough => sc,
+        // Non-separable modes (Color, Hue, Saturation, Luminosity, DarkerColor,
+        // LighterColor) are routed to scalar before reaching here.
+        _ => unreachable!("non-separable modes should not reach SIMD plane blend"),
     };
     let term1 = _mm256_mul_ps(_mm256_mul_ps(sa, _mm256_sub_ps(one, da)), sc);
     let term2 = _mm256_mul_ps(_mm256_mul_ps(sa, da), v_b);
@@ -705,7 +863,79 @@ unsafe fn blend_plane_f32_neon(
             let mask = vcleq_f32(cs, half);
             vbslq_f32(mask, lo, hi)
         }
-        _ => sc,
+        // ── New separable modes (13) ────────────────────────────────────
+        SeparableBlendKind::Darken => vminq_f32(dc, sc),
+        SeparableBlendKind::Lighten => vmaxq_f32(dc, sc),
+        SeparableBlendKind::LinearBurn => {
+            vmaxq_f32(vaddq_f32(vaddq_f32(dc, sc), vdupq_n_f32(-1.0)), zero)
+        }
+        SeparableBlendKind::LinearLight => {
+            vaddq_f32(dc, vsubq_f32(vmulq_f32(vdupq_n_f32(2.0), sc), one))
+        }
+        SeparableBlendKind::Difference => vabsq_f32(vsubq_f32(dc, sc)),
+        SeparableBlendKind::Exclusion => {
+            // cb + cs - 2*cb*cs
+            vsubq_f32(
+                vaddq_f32(dc, sc),
+                vmulq_f32(vmulq_f32(vdupq_n_f32(2.0), dc), sc),
+            )
+        }
+        SeparableBlendKind::Subtract => vmaxq_f32(vsubq_f32(dc, sc), zero),
+        SeparableBlendKind::ColorBurn => {
+            // cs > 0 ? 1 - min(1, (1-cb)/cs) : 0
+            let cs_gt_zero = vcgtq_f32(sc, zero);
+            let safe_cs = vmaxq_f32(sc, vdupq_n_f32(1e-20));
+            let when_cs_gt_zero =
+                vsubq_f32(one, vminq_f32(one, vdivq_f32(vsubq_f32(one, dc), safe_cs)));
+            vbslq_f32(cs_gt_zero, when_cs_gt_zero, zero)
+        }
+        SeparableBlendKind::ColorDodge => {
+            // cs >= 1 ? 1 : min(1, cb/(1-cs))
+            let cs_ge_one = vcgeq_f32(sc, one);
+            let safe_denom = vmaxq_f32(vsubq_f32(one, sc), vdupq_n_f32(1e-20));
+            let when_cs_lt_one = vminq_f32(one, vdivq_f32(dc, safe_denom));
+            vbslq_f32(cs_ge_one, one, when_cs_lt_one)
+        }
+        SeparableBlendKind::VividLight => {
+            let half = vdupq_n_f32(0.5);
+            let two = vdupq_n_f32(2.0);
+            let cs_le_half = vcleq_f32(sc, half);
+            let two_cs = vmulq_f32(two, sc);
+            let cs_le_zero = vcleq_f32(sc, zero);
+            let safe_two_cs = vmaxq_f32(two_cs, vdupq_n_f32(1e-20));
+            let burn = vsubq_f32(one, vdivq_f32(vsubq_f32(one, dc), safe_two_cs));
+            let burn = vbslq_f32(cs_le_zero, zero, burn);
+            let cs_ge_one = vcgeq_f32(sc, one);
+            let safe_denom = vmaxq_f32(vsubq_f32(two, two_cs), vdupq_n_f32(1e-20));
+            let dodge = vdivq_f32(dc, safe_denom);
+            let dodge = vbslq_f32(cs_ge_one, one, dodge);
+            vbslq_f32(cs_le_half, burn, dodge)
+        }
+        SeparableBlendKind::PinLight => {
+            let half = vdupq_n_f32(0.5);
+            let two = vdupq_n_f32(2.0);
+            let two_cs = vmulq_f32(two, sc);
+            let cs_le_half = vcleq_f32(sc, half);
+            let low = vminq_f32(dc, two_cs);
+            let high = vmaxq_f32(dc, vsubq_f32(two_cs, one));
+            vbslq_f32(cs_le_half, low, high)
+        }
+        SeparableBlendKind::HardMix => {
+            let ge_one = vcgeq_f32(vaddq_f32(dc, sc), one);
+            vbslq_f32(ge_one, one, zero)
+        }
+        SeparableBlendKind::Divide => {
+            // cs > 0 ? min(1, cb/cs) : 1
+            let cs_gt_zero = vcgtq_f32(sc, zero);
+            let safe_cs = vmaxq_f32(sc, vdupq_n_f32(1e-20));
+            let div_result = vminq_f32(one, vdivq_f32(dc, safe_cs));
+            vbslq_f32(cs_gt_zero, div_result, one)
+        }
+        // Dissolve/PassThrough -> Normal; non-separable routed to scalar.
+        SeparableBlendKind::Dissolve | SeparableBlendKind::PassThrough => sc,
+        // Non-separable modes (Color, Hue, Saturation, Luminosity, DarkerColor,
+        // LighterColor) are routed to scalar before reaching here.
+        _ => unreachable!("non-separable modes should not reach SIMD plane blend"),
     };
     let term1 = vmulq_f32(vmulq_f32(sa, vsubq_f32(one, da)), sc);
     let term2 = vmulq_f32(vmulq_f32(sa, da), v_b);
@@ -851,6 +1081,23 @@ mod tests {
             SeparableBlendKind::Overlay,
             SeparableBlendKind::SoftLight,
             SeparableBlendKind::HardLight,
+            // ── 13 new separable modes ──
+            SeparableBlendKind::Darken,
+            SeparableBlendKind::Lighten,
+            SeparableBlendKind::LinearBurn,
+            SeparableBlendKind::LinearLight,
+            SeparableBlendKind::Difference,
+            SeparableBlendKind::Exclusion,
+            SeparableBlendKind::Subtract,
+            SeparableBlendKind::ColorBurn,
+            SeparableBlendKind::ColorDodge,
+            SeparableBlendKind::VividLight,
+            SeparableBlendKind::PinLight,
+            SeparableBlendKind::HardMix,
+            SeparableBlendKind::Divide,
+            // Dissolve/PassThrough also use SIMD (treated as Normal).
+            SeparableBlendKind::Dissolve,
+            SeparableBlendKind::PassThrough,
         ] {
             let mut dst_simd = [
                 0.1f32, 0.2, 0.3, 1.0, 0.5, 0.5, 0.5, 0.5, 2.0, 1.5, 0.8, 1.0, 0.0, 0.0, 0.0, 0.0,
