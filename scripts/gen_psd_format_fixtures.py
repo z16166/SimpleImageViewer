@@ -140,36 +140,51 @@ def zip_pred_channel(plane: bytes, w: int, h: int) -> bytes:
 
 # ── Channel payloads for different colour modes ───────────────────────────
 
-def solid_plane(w: int, h: int, value: int) -> bytes:
-    return bytes([value]) * (w * h)
+def solid_plane(w: int, h: int, value: int, depth: int = 8) -> bytes:
+    """Generate w×h samples, each at the given bit depth (big-endian).
+    Values are 8-bit range (0-255); they are scaled to the target depth.
+    """
+    count = w * h
+    if depth == 8:
+        return bytes([value]) * count
+    elif depth == 16:
+        # Scale 8-bit → 16-bit: value * 65535 / 255  (= value * 257)
+        scaled = value * 257
+        return struct.pack(">H", scaled) * count
+    elif depth == 32:
+        # Scale 8-bit → float 32: value / 255.0
+        scaled = value / 255.0
+        return struct.pack(">f", scaled) * count
+    else:
+        raise ValueError(f"unsupported depth {depth}")
 
 
 def rgb_layer_channels(w: int, h: int, r: int, g: int, b: int, a: int,
-                       comp: int = 0) -> bytes:
+                       comp: int = 0, depth: int = 8) -> bytes:
     """4 channels: alpha(-1), R(0), G(1), B(2)."""
-    a_plane = solid_plane(w, h, a)
-    r_plane = solid_plane(w, h, r)
-    g_plane = solid_plane(w, h, g)
-    b_plane = solid_plane(w, h, b)
+    a_plane = solid_plane(w, h, a, depth)
+    r_plane = solid_plane(w, h, r, depth)
+    g_plane = solid_plane(w, h, g, depth)
+    b_plane = solid_plane(w, h, b, depth)
     return _compress_planes(comp, w, h, [a_plane, r_plane, g_plane, b_plane])
 
 
 def gray_layer_channels(w: int, h: int, gray: int, a: int,
-                        comp: int = 0) -> bytes:
+                        comp: int = 0, depth: int = 8) -> bytes:
     """2 channels: alpha(-1), gray(0)."""
-    a_plane = solid_plane(w, h, a)
-    g_plane = solid_plane(w, h, gray)
+    a_plane = solid_plane(w, h, a, depth)
+    g_plane = solid_plane(w, h, gray, depth)
     return _compress_planes(comp, w, h, [a_plane, g_plane])
 
 
 def cmyk_layer_channels(w: int, h: int, c: int, m: int, y: int, k: int,
-                         a: int, comp: int = 0) -> bytes:
+                         a: int, comp: int = 0, depth: int = 8) -> bytes:
     """5 channels: alpha(-1), C(0), M(1), Y(2), K(3)."""
-    a_plane = solid_plane(w, h, a)
-    c_plane = solid_plane(w, h, c)
-    m_plane = solid_plane(w, h, m)
-    y_plane = solid_plane(w, h, y)
-    k_plane = solid_plane(w, h, k)
+    a_plane = solid_plane(w, h, a, depth)
+    c_plane = solid_plane(w, h, c, depth)
+    m_plane = solid_plane(w, h, m, depth)
+    y_plane = solid_plane(w, h, y, depth)
+    k_plane = solid_plane(w, h, k, depth)
     return _compress_planes(comp, w, h, [a_plane, c_plane, m_plane, y_plane, k_plane])
 
 
@@ -207,16 +222,16 @@ def channel_count_for_mode(mode_code: int) -> int:
 
 
 def layer_channels_for_data(mode_code: int, w: int, h: int,
-                             colors: dict, comp: int = 0) -> bytes:
+                             colors: dict, comp: int = 0, depth: int = 8) -> bytes:
     """Dispatch to the correct layer channel builder by colour mode."""
     if mode_code == 1:   # Grayscale
-        return gray_layer_channels(w, h, colors["g"], colors.get("a", 255), comp)
+        return gray_layer_channels(w, h, colors["g"], colors.get("a", 255), comp, depth)
     elif mode_code == 3:  # RGB
         return rgb_layer_channels(w, h, colors["r"], colors["g"], colors["b"],
-                                  colors.get("a", 255), comp)
+                                  colors.get("a", 255), comp, depth)
     elif mode_code == 4:  # CMYK
         return cmyk_layer_channels(w, h, colors["c"], colors["m"], colors["y"],
-                                   colors["k"], colors.get("a", 255), comp)
+                                   colors["k"], colors.get("a", 255), comp, depth)
     raise ValueError(f"unsupported mode {mode_code}")
 
 
@@ -300,7 +315,7 @@ def build_psd(
     if has_blend:
         # Base layer (full canvas)
         base_ch = layer_channels_for_data(mode_code, CANVAS_W, CANVAS_H,
-                                          base_colors, comp)
+                                          base_colors, comp, depth)
         ch_lens_base = [len(base_ch) // n_channels] * n_channels
         records += layer_record(
             0, 0, CANVAS_H, CANVAS_W,
@@ -319,7 +334,7 @@ def build_psd(
         if layer_section_divider is not None:
             extra_tags += tagged_block(b"lsct", layer_section_divider)
         blend_ch = layer_channels_for_data(mode_code, bw, bh,
-                                           blend_colors, comp)
+                                           blend_colors, comp, depth)
         ch_lens_blend = [len(blend_ch) // n_channels] * n_channels
         records += layer_record(
             top, left, top + bh, left + bw,
@@ -366,11 +381,11 @@ def build_psd(
     out += len_writer(len(layer_and_mask))
     out += layer_and_mask
 
-    # Image Data (blank → forces P2 composite)
+    # Image Data (forces P2 composite via zero-information check)
+    bps = depth // 8
+    bytes_per_ch = CANVAS_W * CANVAS_H * bps
     out += u16(0)  # raw
-    # 3 channels × w × h bytes for P1 fallback
-    bytes_per_ch = CANVAS_W * CANVAS_H
-    out += bytes(bytes_per_ch * 3)
+    out += b"\x00" * (bytes_per_ch * n_channels)
     return bytes(out)
 
 
