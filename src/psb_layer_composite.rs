@@ -873,10 +873,10 @@ fn parse_shmd_cmls_payload(payload: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn find_next_tagged_block_signature(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
-    let mut cursor = start.min(limit);
-    while cursor.saturating_add(4) <= limit {
-        let offset = memchr::memchr(PSD_BLEND_SIGNATURE[0], &bytes[cursor..limit])?;
-        let candidate = cursor + offset;
+    let start = start.min(limit);
+    let haystack = &bytes[start..limit];
+    for offset in memchr::Memchr::new(PSD_BLEND_SIGNATURE[0], haystack) {
+        let candidate = start + offset;
         if candidate.saturating_add(4) > limit {
             return None;
         }
@@ -884,7 +884,6 @@ fn find_next_tagged_block_signature(bytes: &[u8], start: usize, limit: usize) ->
         if signature == PSD_BLEND_SIGNATURE || signature == PSB_BLOCK_SIGNATURE {
             return Some(candidate);
         }
-        cursor = candidate.saturating_add(1);
     }
     None
 }
