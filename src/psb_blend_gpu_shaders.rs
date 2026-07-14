@@ -20,9 +20,9 @@
 //! review limit while allowing all separable PSD/PSB blend modes to execute
 //! on GPU when the canvas is large enough.
 
-// These `pub(crate)` items are consumed by the binary crate's
-// `psb_layer_blend_gpu.rs`, not by `lib.rs`.  Suppress unused warnings
-// when checking the lib crate alone.
+// The module is declared in both `lib.rs` and `main.rs`.  All `pub(crate)`
+// constants, functions and the WGSL string are consumed exclusively by the
+// binary crate's `psb_layer_blend_gpu.rs`; the lib crate sees them as dead.
 #![allow(dead_code)]
 
 /// WGSL `mode` uniform values (must match shader entry points).

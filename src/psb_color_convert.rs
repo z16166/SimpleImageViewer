@@ -141,7 +141,7 @@ pub fn extract_indexed_palette(bytes: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 /// Interleave one row of Indexed-mode data into RGBA8.
 ///
 /// `src` holds 8-bit palette indices. `palette` is 768 bytes (256 × 3, RGB).
@@ -205,7 +205,7 @@ pub fn multichannel_row_to_rgba8(
 // Duotone (mode 8): stored as single grayscale channel
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 /// Interleave one row of Duotone-mode data into RGBA8.
 ///
 /// Duotone image data is stored identically to Grayscale: one channel of
@@ -286,8 +286,11 @@ pub(crate) fn lab_pixel(l_raw: f32, a_raw: f32, b_raw: f32) -> (u8, u8, u8) {
     let eps3 = 0.008856_f32; // (216/24389)³⁻¹ ≈ 0.008856
     let kap = 903.3; // 24389/27 ≈ 903.3
 
-    let x = if fx.powi(3) > eps3 {
-        fx.powi(3) * XYZ_D50_XN
+    let fx3 = fx.powi(3);
+    let fz3 = fz.powi(3);
+
+    let x = if fx3 > eps3 {
+        fx3 * XYZ_D50_XN
     } else {
         ((LAB_FY_DIV * fx - LAB_FY_OFFSET) / kap) * XYZ_D50_XN
     };
@@ -296,8 +299,8 @@ pub(crate) fn lab_pixel(l_raw: f32, a_raw: f32, b_raw: f32) -> (u8, u8, u8) {
     } else {
         l / kap
     };
-    let z = if fz.powi(3) > eps3 {
-        fz.powi(3) * XYZ_D50_ZN
+    let z = if fz3 > eps3 {
+        fz3 * XYZ_D50_ZN
     } else {
         ((LAB_FY_DIV * fz - LAB_FY_OFFSET) / kap) * XYZ_D50_ZN
     };

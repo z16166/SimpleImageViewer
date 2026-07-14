@@ -14,8 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -162,7 +160,7 @@ impl DescriptorParser<'_> {
             b"obj " => {
                 let form = self.read_bytes(4)?;
                 let form_arr: [u8; 4] = form.try_into().ok()?;
-                Self::skip_reference_form(self, form_arr)?;
+                self.skip_reference_form(form_arr)?;
                 Some(DescriptorValue::Skipped)
             }
             // --- Type Tool Info Reference: class ID + descriptor ---

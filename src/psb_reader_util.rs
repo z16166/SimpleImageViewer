@@ -594,7 +594,6 @@ pub fn extract_icc_profile_from_ir(bytes: &[u8], ir_start: u64, ir_end: u64) -> 
     })
 }
 
-#[allow(clippy::needless_lifetimes, dead_code)]
 pub(crate) fn find_image_resource<'a>(
     bytes: &'a [u8],
     ir_start: u64,

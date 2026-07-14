@@ -109,6 +109,10 @@ const SEGMENTS_PER_CURVE: usize = 32;
 /// Parse a vector mask's raw path records into subpaths and fill rule.
 struct ParsedVectorPaths {
     even_odd: bool,
+    /// When true, the area *outside* path subpaths is opaque (255) and the
+    /// interior is transparent (0) — i.e. the mask is inverted.
+    /// Parsed from selector 8 (initial fill rule): 0 = fill, 1 = keep transparent.
+    keep_transparent: bool,
     /// Each subpath is a list of (anchor_x, anchor_y) tuples in document
     /// pixel space. Open subpaths (not usable for fill) are stored but
     /// may be filtered by the caller.
@@ -117,6 +121,7 @@ struct ParsedVectorPaths {
 
 fn parse_vector_paths(data: &VectorMaskData) -> ParsedVectorPaths {
     let mut even_odd = true;
+    let mut keep_transparent = false;
     let mut subpaths: Vec<Vec<(f64, f64)>> = Vec::new();
     let mut current: Vec<(f64, f64, f64, f64, f64, f64)> = Vec::new(); // (bx,by, ax,ay, cx,cy)
     let mut open = false;
@@ -129,9 +134,10 @@ fn parse_vector_paths(data: &VectorMaskData) -> ParsedVectorPaths {
                 let rule = i16::from_be_bytes([rec[KNOT_PRECEDING_XY], rec[KNOT_PRECEDING_XY + 1]]);
                 even_odd = rule == 0; // 0 = even-odd, 1 = non-zero winding
             }
-            // ── Initial fill rule (8): advisory only ─────────────────
+            // ── Initial fill rule (8): 0 = fill, 1 = keep transparent ──
             PATH_SELECTOR_INITIAL_FILL => {
-                // 0 = fill, 1 = keep transparent; we always fill by default.
+                let rule = i16::from_be_bytes([rec[KNOT_PRECEDING_XY], rec[KNOT_PRECEDING_XY + 1]]);
+                keep_transparent = rule != 0;
             }
             // ── Length records (0/3): start a new subpath ────────────
             PATH_SELECTOR_CLOSED_LEN | PATH_SELECTOR_OPEN_LEN => {
@@ -161,7 +167,11 @@ fn parse_vector_paths(data: &VectorMaskData) -> ParsedVectorPaths {
         finalize_subpath(&current, &mut subpaths, open);
     }
 
-    ParsedVectorPaths { even_odd, subpaths }
+    ParsedVectorPaths {
+        even_odd,
+        keep_transparent,
+        subpaths,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +262,12 @@ pub(crate) fn rasterize_vector_mask(
         return None;
     }
 
-    let mut mask = vec![0u8; pixel_count];
+    let keep_transparent = parsed.keep_transparent;
+    let mut mask = if keep_transparent {
+        vec![255u8; pixel_count]
+    } else {
+        vec![0u8; pixel_count]
+    };
 
     // Layer-local coordinate offset.
     let ox = left as f64;
@@ -334,7 +349,7 @@ pub(crate) fn rasterize_vector_mask(
                         continue;
                     };
                     if idx < mask.len() {
-                        mask[idx] = 255;
+                        mask[idx] = if keep_transparent { 0 } else { 255 };
                     }
                 }
             }
