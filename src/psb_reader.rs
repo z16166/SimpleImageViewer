@@ -666,6 +666,10 @@ fn rgba8_absolutely_blank_scalar(
     Ok(if use_rgb0 { !any_rgb || !any_a } else { !any_a })
 }
 
+// ---- RGBA blank-detection masks (isolate RGB / Alpha in each u32 pixel) ----
+const RGBA_RGB_MASK: u32 = 0x00FF_FFFF;
+const RGBA_ALPHA_MASK: u32 = 0xFF00_0000;
+
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 unsafe fn rgba8_absolutely_blank_sse2(
@@ -678,8 +682,8 @@ unsafe fn rgba8_absolutely_blank_sse2(
     let mut any_a = false;
     let n = pixels.len();
     let mut i = 0usize;
-    let rgb_mask = _mm_set1_epi32(0x00FF_FFFF_u32 as i32);
-    let a_mask = _mm_set1_epi32(0xFF00_0000_u32 as i32);
+    let rgb_mask = _mm_set1_epi32(RGBA_RGB_MASK as i32);
+    let a_mask = _mm_set1_epi32(RGBA_ALPHA_MASK as i32);
     let zero = _mm_setzero_si128();
     while i + 16 <= n {
         if i & RGBA8_CANCEL_POLL_MASK == 0 {
@@ -718,8 +722,8 @@ unsafe fn rgba8_absolutely_blank_avx2(
     let mut any_a = false;
     let n = pixels.len();
     let mut i = 0usize;
-    let rgb_mask = _mm256_set1_epi32(0x00FF_FFFF_u32 as i32);
-    let a_mask = _mm256_set1_epi32(0xFF00_0000_u32 as i32);
+    let rgb_mask = _mm256_set1_epi32(RGBA_RGB_MASK as i32);
+    let a_mask = _mm256_set1_epi32(RGBA_ALPHA_MASK as i32);
     let zero = _mm256_setzero_si256();
     while i + 32 <= n {
         if i & RGBA8_CANCEL_POLL_MASK == 0 {
@@ -758,8 +762,8 @@ unsafe fn rgba8_absolutely_blank_neon(
         let mut any_a = false;
         let n = pixels.len();
         let mut i = 0usize;
-        let rgb_mask = vdupq_n_u32(0x00FF_FFFF);
-        let a_mask = vdupq_n_u32(0xFF00_0000);
+        let rgb_mask = vdupq_n_u32(RGBA_RGB_MASK);
+        let a_mask = vdupq_n_u32(RGBA_ALPHA_MASK);
         while i + 16 <= n {
             if i & RGBA8_CANCEL_POLL_MASK == 0 {
                 check_decode_cancel(cancel)?;
@@ -890,8 +894,8 @@ unsafe fn rgba8_zero_information_sse2(
     let ref_g = pixels[1];
     let ref_b = pixels[2];
     let ref_rgb = _mm_set1_epi32(u32::from_le_bytes([ref_r, ref_g, ref_b, 0]) as i32);
-    let rgb_mask = _mm_set1_epi32(0x00FF_FFFF_u32 as i32);
-    let a_mask = _mm_set1_epi32(0xFF00_0000_u32 as i32);
+    let rgb_mask = _mm_set1_epi32(RGBA_RGB_MASK as i32);
+    let a_mask = _mm_set1_epi32(RGBA_ALPHA_MASK as i32);
     let zero = _mm_setzero_si128();
     let mut rgb_varies = false;
     let mut any_a = false;
@@ -938,8 +942,8 @@ unsafe fn rgba8_zero_information_avx2(
     let ref_g = pixels[1];
     let ref_b = pixels[2];
     let ref_rgb = _mm256_set1_epi32(u32::from_le_bytes([ref_r, ref_g, ref_b, 0]) as i32);
-    let rgb_mask = _mm256_set1_epi32(0x00FF_FFFF_u32 as i32);
-    let a_mask = _mm256_set1_epi32(0xFF00_0000_u32 as i32);
+    let rgb_mask = _mm256_set1_epi32(RGBA_RGB_MASK as i32);
+    let a_mask = _mm256_set1_epi32(RGBA_ALPHA_MASK as i32);
     let zero = _mm256_setzero_si256();
     let mut rgb_varies = false;
     let mut any_a = false;
@@ -986,8 +990,8 @@ unsafe fn rgba8_zero_information_neon(
         let ref_g = pixels[1];
         let ref_b = pixels[2];
         let ref_rgb = vdupq_n_u32(u32::from_le_bytes([ref_r, ref_g, ref_b, 0]));
-        let rgb_mask = vdupq_n_u32(0x00FF_FFFF);
-        let a_mask = vdupq_n_u32(0xFF00_0000);
+        let rgb_mask = vdupq_n_u32(RGBA_RGB_MASK);
+        let a_mask = vdupq_n_u32(RGBA_ALPHA_MASK);
         let mut rgb_varies = false;
         let mut any_a = false;
         let n = pixels.len();

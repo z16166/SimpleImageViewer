@@ -155,9 +155,10 @@ fn capture_base_alpha(
         if dst_end > plane.len() || src_end.checked_mul(4).is_none_or(|n| n > base.rgba.len()) {
             continue;
         }
-        for x in 0..row_w {
-            plane[dst_row + x] = base.rgba[(src_row + x) * 4 + 3];
-        }
+        gather_alpha_row(
+            &mut plane[dst_row..dst_row + row_w],
+            &base.rgba[src_row * 4..][..row_w * 4],
+        );
     }
     Ok(plane)
 }
@@ -169,9 +170,36 @@ fn capture_base_alpha(
 /// via the PDF separable formula, which already weights by source alpha -- so
 /// premultiplying RGB here would double-attenuate Screen / Multiply / Linear Dodge.
 fn apply_base_alpha_mask(group: &mut [u8], base_alpha: &[u8]) {
-    if group.len() != base_alpha.len().saturating_mul(4) {
+    if group.len() != base_alpha.len().saturating_mul(4) || group.is_empty() {
         return;
     }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse2") {
+            unsafe {
+                apply_base_alpha_mask_sse2(group, base_alpha);
+            }
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            apply_base_alpha_mask_neon(group, base_alpha);
+        }
+        return;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        apply_base_alpha_mask_scalar(group, base_alpha);
+    }
+}
+
+/// Scalar fallback: `alpha *= mask / 255` per pixel.
+fn apply_base_alpha_mask_scalar(group: &mut [u8], base_alpha: &[u8]) {
     for (px, &mask) in group.chunks_exact_mut(4).zip(base_alpha.iter()) {
         if mask == 0 {
             px[0] = 0;
@@ -187,6 +215,153 @@ fn apply_base_alpha_mask(group: &mut [u8], base_alpha: &[u8]) {
                 px[2] = 0;
             }
         }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn apply_base_alpha_mask_sse2(group: &mut [u8], base_alpha: &[u8]) {
+    use crate::psb_simd_mul_div255::mul_div255_u8x8;
+    use core::arch::x86_64::*;
+    let n = group.len() / 4;
+    let mut i = 0usize;
+    while i + 8 <= n {
+        let mut alpha = [0u8; 8];
+        for lane in 0..8 {
+            alpha[lane] = group[(i + lane) * 4 + 3];
+        }
+        unsafe {
+            let av = _mm_loadl_epi64(alpha.as_ptr().cast());
+            let mv = _mm_loadl_epi64(base_alpha.as_ptr().add(i).cast());
+            let r = mul_div255_u8x8(av, mv);
+            _mm_storel_epi64(alpha.as_mut_ptr().cast(), r);
+        }
+        for lane in 0..8 {
+            let off = (i + lane) * 4;
+            let a = alpha[lane];
+            group[off + 3] = a;
+            if a == 0 {
+                group[off] = 0;
+                group[off + 1] = 0;
+                group[off + 2] = 0;
+            }
+        }
+        i += 8;
+    }
+    if i < n {
+        apply_base_alpha_mask_scalar(&mut group[i * 4..], &base_alpha[i..]);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn apply_base_alpha_mask_neon(group: &mut [u8], base_alpha: &[u8]) {
+    use crate::psb_simd_mul_div255::mul_div255_u8x16_neon;
+    use core::arch::aarch64::*;
+    let n = group.len() / 4;
+    let mut i = 0usize;
+    while i + 16 <= n {
+        unsafe {
+            let pix = vld4q_u8(group.as_ptr().add(i * 4));
+            let alpha = pix.3;
+            let mask = vld1q_u8(base_alpha.as_ptr().add(i));
+            let new_alpha = mul_div255_u8x16_neon(alpha, mask);
+            // Write new alpha back via vst4 (keeps RGB unchanged).
+            let mut result = pix;
+            result.3 = new_alpha;
+            vst4q_u8(group.as_mut_ptr().add(i * 4), result);
+        }
+        // Clear RGB when new_alpha == 0 (scalar post-loop).
+        for lane in 0..16 {
+            let off = (i + lane) * 4;
+            if new_alpha[lane] == 0 {
+                group[off] = 0;
+                group[off + 1] = 0;
+                group[off + 2] = 0;
+            }
+        }
+        i += 16;
+    }
+    if i < n {
+        apply_base_alpha_mask_scalar(&mut group[i * 4..], &base_alpha[i..]);
+    }
+}
+
+// ---- gather_alpha_row: extract A byte from RGBA stride-4 layout ----
+
+/// Copy alpha channel from a contiguous row of RGBA8 into a byte plane.
+fn gather_alpha_row(dst: &mut [u8], src_rgba: &[u8]) {
+    let n = dst.len().min(src_rgba.len() / 4);
+    if n == 0 {
+        return;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("ssse3") {
+            unsafe {
+                gather_alpha_row_ssse3(dst, src_rgba, n);
+            }
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            gather_alpha_row_neon(dst, src_rgba, n);
+        }
+        return;
+    }
+
+    gather_alpha_row_scalar(dst, src_rgba, n);
+}
+
+fn gather_alpha_row_scalar(dst: &mut [u8], src_rgba: &[u8], n: usize) {
+    for i in 0..n {
+        dst[i] = src_rgba[i * 4 + 3];
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "ssse3")]
+unsafe fn gather_alpha_row_ssse3(dst: &mut [u8], src_rgba: &[u8], n: usize) {
+    use core::arch::x86_64::*;
+    // pshufb: gather byte 3,7,11,15 from a 16-byte block into low 4 positions.
+    let gather = _mm_setr_epi8(3, 7, 11, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let mut i = 0usize;
+    while i + 4 <= n {
+        unsafe {
+            let v = _mm_loadu_si128(src_rgba.as_ptr().add(i * 4).cast());
+            let a = _mm_shuffle_epi8(v, gather);
+            core::ptr::write_unaligned(
+                dst.as_mut_ptr().add(i) as *mut u32,
+                _mm_cvtsi128_si32(a) as u32,
+            );
+        }
+        i += 4;
+    }
+    while i < n {
+        dst[i] = src_rgba[i * 4 + 3];
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn gather_alpha_row_neon(dst: &mut [u8], src_rgba: &[u8], n: usize) {
+    use core::arch::aarch64::*;
+    let mut i = 0usize;
+    while i + 16 <= n {
+        unsafe {
+            let pix = vld4q_u8(src_rgba.as_ptr().add(i * 4));
+            vst1q_u8(dst.as_mut_ptr().add(i), pix.3);
+        }
+        i += 16;
+    }
+    while i < n {
+        dst[i] = src_rgba[i * 4 + 3];
+        i += 1;
     }
 }
 

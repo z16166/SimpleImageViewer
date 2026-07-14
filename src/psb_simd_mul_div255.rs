@@ -21,10 +21,13 @@
 //! Pixel buffers may be unaligned, so callers use unaligned loads and stores
 //! (`loadu` / `storeu` on x86 and `vld1` / `vld1q` on NEON).
 
-/// Exact `x / 255` for `x` in 0..=65025 via `(x * 0x8081) >> 23`.
+/// Multiply-by-255-reciprocal magic constant: `(x * 0x8081) >> 23` = `x / 255` for `x ≤ 65025`.
+const DIV255_MAGIC: u32 = 0x8081;
+
+/// Exact `x / 255` for `x` in 0..=65025 via `(x * DIV255_MAGIC) >> 23`.
 #[inline]
 pub(crate) fn div255_u16_exact(x: u16) -> u8 {
-    (((x as u32) * 0x8081) >> 23) as u8
+    (((x as u32) * DIV255_MAGIC) >> 23) as u8
 }
 
 /// Exact `c * k / 255` for 8 low lanes of `c` and `k` (SSE2).
@@ -42,7 +45,7 @@ pub(crate) unsafe fn mul_div255_u8x8(
     let c16 = _mm_unpacklo_epi8(c, zero);
     let k16 = _mm_unpacklo_epi8(k, zero);
     let prod = _mm_mullo_epi16(c16, k16);
-    let magic = _mm_set1_epi32(0x8081);
+    let magic = _mm_set1_epi32(DIV255_MAGIC as i32);
 
     // `(prod * 0x8081) >> 23` via 64-bit `mul_epu32` on even/odd dwords.
     // For products in 0..=65025 the 64-bit product fits in 32 bits, so the
@@ -77,7 +80,7 @@ pub(crate) unsafe fn mul_div255_u8x16(
     let c16 = _mm256_cvtepu8_epi16(c);
     let k16 = _mm256_cvtepu8_epi16(k);
     let prod = _mm256_mullo_epi16(c16, k16);
-    let magic = _mm256_set1_epi32(0x8081);
+    let magic = _mm256_set1_epi32(DIV255_MAGIC as i32);
     // 8 u16 in each 128-bit half -> 8 u32 each.
     let p0 = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(prod));
     let p1 = _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(prod));
@@ -99,7 +102,7 @@ pub(crate) unsafe fn mul_div255_u16x8_neon(
     use core::arch::aarch64::*;
     let lo = vmovl_u16(vget_low_u16(prod));
     let hi = vmovl_u16(vget_high_u16(prod));
-    let magic = vdupq_n_u32(0x8081);
+    let magic = vdupq_n_u32(DIV255_MAGIC as u32);
     let q_lo = vshrq_n_u32(vmulq_u32(lo, magic), 23);
     let q_hi = vshrq_n_u32(vmulq_u32(hi, magic), 23);
     vcombine_u16(vmovn_u32(q_lo), vmovn_u32(q_hi))
