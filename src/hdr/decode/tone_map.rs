@@ -313,11 +313,19 @@ pub(crate) fn encode_linear_display_referred_srgb8(
 
 #[inline]
 fn use_direct_srgb_sdr_fallback(metadata: &HdrImageMetadata, tf: HdrTransferFunction) -> bool {
-    tf == HdrTransferFunction::Srgb && metadata.reference != HdrReference::SceneLinear
+    // Display-referred content (non-HDR 16-bit, sRGB-tagged) is already in the
+    // display's native [0,1] range; Reinhard tone-mapping would darken it.
+    // Scene-linear or unknown-reference content (32-bit float, PQ/HLG 16-bit,
+    // or any file whose reference is not explicitly DisplayReferred) must go
+    // through Reinhard to safely compress HDR headroom into SDR range.
+    metadata.reference == HdrReference::DisplayReferred
+        && matches!(tf, HdrTransferFunction::Srgb | HdrTransferFunction::Linear)
 }
 
 /// [`use_direct_srgb_sdr_fallback`] only: unmanaged **IEC 61966‑2‑1 display‑referred** sRGB without filmic
-/// Reinhard. **PQ / BT.709 / scene-linear** use [`encode_sdr_rgb8`] (matches GPU **`encode_sdr`** for PQ).
+/// Reinhard. Also covers **display-referred Linear** (non-HDR 16-bit PSD/PSB).
+/// **Scene-linear** (32-bit float, PQ/HLG) always uses [`encode_sdr_rgb8`] (matches GPU
+/// **`encode_sdr`** for PQ).
 #[inline]
 pub(crate) fn should_use_iec61966_tone_map_fallback(
     buffer: &HdrImageBuffer,

@@ -927,9 +927,16 @@ fn composite_layers_hdr_with_visibility(
     } else {
         HdrColorProfile::LinearSrgb
     };
+    // 32-bit float PSD is scene-linear by spec, same for PQ/HLG HDR 16-bit.
+    // Non-HDR 16-bit (display-referred) should not go through tone-map Reinhard.
+    let reference = if depth == 32 || icc_probe.marks_hdr {
+        HdrReference::SceneLinear
+    } else {
+        HdrReference::DisplayReferred
+    };
     let mut metadata = HdrImageMetadata {
         transfer_function: HdrTransferFunction::Linear,
-        reference: HdrReference::DisplayReferred,
+        reference,
         color_profile,
         luminance: HdrLuminanceMetadata {
             mastering_max_nits: icc_probe.peak_nits,

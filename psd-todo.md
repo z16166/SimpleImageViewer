@@ -92,8 +92,12 @@
 5. **未支持的 blend mode 静默降级为 Normal**
    CPU 和 GPU 路径均只实现 Normal/Screen/LinearDodge/Multiply 四种可分离模式。Overlay、Soft Light、Difference 等约 20 种模式静默按 Normal 处理，无用户可见提示。已通过 `log_unsupported_blend_once` 输出一次 debug 日志。
 
-6. **SDR 环境下 16/32-bit 图层合成仅支持 8-bit**
-   当 SDR 显示器（`try_hdr = false`）遇到 16/32-bit 文件且扁平 Image Data 空白时，P2/P2.5 直接失败，无法走图层合成回退。这是已知架构设计限制：SDR 状态下不会触发 f32 图层合成管线。
+6. ✅ **SDR 环境下 16/32-bit 图层合成使用 f32 + tone-map**
+    当 SDR 显示器（`try_hdr = false`）遇到 16/32-bit 文件且扁平 Image Data 空白时，P2/P2.5 使用 f32 图层合成管线 + tone-map 降级到 RGBA8。
+    - `composite_sdr_layers_with_visibility`（`psb_sdr_main.rs:788`）对 depth != 8 的数据调用 `composite_layers_hdr_with_visibility_from_info` → `hdr_to_sdr_rgba8`
+    - `composite_p25_pass`（`psb_sdr_main.rs:828`）完全委托给上述逻辑，统一支持非 8-bit
+    - 对于 display-referred 的 16-bit 非 HDR 内容，tone-map 跳过 Reinhard（直接 sRGB 编码）以避免亮度压暗
+    - 对于 scene-linear 的 32-bit float / PQ/HLG 内容，正确使用 Reinhard 压缩高动态范围
 
 7. **iOpa tagged block（Fill Opacity）未解析**
    `psb_layer_composite.rs` 的 `scan_extra_tagged_blocks` 未处理 `iOpa` block，Fill Opacity（填充不透明度）被忽略。这会影响依赖 Fill Opacity 的 PSD 文件合成结果。
