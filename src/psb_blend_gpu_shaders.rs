@@ -20,6 +20,11 @@
 //! review limit while allowing all separable PSD/PSB blend modes to execute
 //! on GPU when the canvas is large enough.
 
+// These `pub(crate)` items are consumed by the binary crate's
+// `psb_layer_blend_gpu.rs`, not by `lib.rs`.  Suppress unused warnings
+// when checking the lib crate alone.
+#![allow(dead_code)]
+
 /// WGSL `mode` uniform values (must match shader entry points).
 pub(crate) const BLEND_MODE_NORMAL: u32 = 0;
 pub(crate) const BLEND_MODE_SCREEN: u32 = 1;
@@ -187,14 +192,7 @@ fn cs_blend_screen(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (sa <= 0.0) { return; }
     let dst_coord = vec2<i32>(dx, dy);
     let dst = textureLoad(target, dst_coord);
-    if (sa >= 1.0) {
-        // Opaque source with full composite
-        let blended = dst.rgb + src.rgb - dst.rgb * src.rgb;
-        let out_a = sa;
-        let co = blended;
-        textureStore(target, dst_coord, vec4<f32>(co, 1.0));
-        return;
-    }
+
     let blended = dst.rgb + src.rgb - dst.rgb * src.rgb;
     blend_store(dst_coord, src, dst, blended);
 }

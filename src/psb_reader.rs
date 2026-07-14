@@ -274,7 +274,9 @@ pub fn read_composite_from_index(
                     r.read_exact(&mut compressed)
                         .map_err(|e| format!("Read bitmap RLE: {e}"))?;
                     unpack_bits_into(&mut packed_row_buf, &compressed, packed_row)?;
-                    let dst_start = row * width as usize;
+                    let dst_start = row
+                        .checked_mul(width as usize)
+                        .ok_or_else(|| "PSD/PSB bitmap row offset overflow".to_string())?;
                     let dst_end = dst_start + width as usize;
                     crate::psb_color_convert::bitmap_expand_bits_to_u8(
                         &mut ch_u8[dst_start..dst_end],
@@ -304,7 +306,9 @@ pub fn read_composite_from_index(
             if row & RLE_ROW_DECODE_CANCEL_POLL_INTERVAL == 0 {
                 check_decode_cancel(cancel)?;
             }
-            let s = row * width as usize;
+            let s = row
+                .checked_mul(width as usize)
+                .ok_or_else(|| "PSD/PSB bitmap RGBA row offset overflow".to_string())?;
             let e = s + width as usize;
             let dstart = s * 4;
             let dend = e * 4;
@@ -534,9 +538,11 @@ pub fn read_composite_from_index(
             if row & RLE_ROW_DECODE_CANCEL_POLL_INTERVAL == 0 {
                 check_decode_cancel(cancel)?;
             }
-            // `row * width` is safe: `checked_pixel_count` already proved width*height
-            // fits in usize, and row < height. Reuse start/end for the RGBA byte range.
-            let start = row * width as usize;
+            // Defensive range check: `checked_pixel_count` already proved width*height
+            // fits in usize, but use checked_mul for consistency with checklist #35.
+            let start = row
+                .checked_mul(width as usize)
+                .ok_or_else(|| "PSD/PSB RGBA row offset overflow".to_string())?;
             let end = start + width as usize;
             let dst_start = start
                 .checked_mul(RGBA_BYTES_PER_PIXEL)
