@@ -81,6 +81,7 @@ mod psb_p25_reveal;
 mod psb_packbits_simd;
 mod psb_reader;
 mod psb_reader_tiled;
+mod psb_reader_util;
 mod psb_sdr_main;
 mod psb_section_index;
 mod psb_simd_mul_div255;

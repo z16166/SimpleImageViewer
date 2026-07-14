@@ -14,13 +14,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! SIMD straight-alpha separable blend (Normal / Screen / Linear Dodge /
-//! Multiply, plus Overlay / Soft Light / Hard Light on the scalar path).
+//! SIMD straight-alpha separable blend with all 20 Photoshop/PDF modes.
 //!
-//! Processes 4 (SSE2/NEON) or 8 (AVX2) pixels per iteration for the four
-//! SIMD-accelerated modes. Final u8 conversion uses the same `round()` path
-//! as the scalar reference so results stay bit-identical to the previous
-//! per-pixel f32 loop.
+//! Normal / Screen / Linear Dodge / Multiply are SIMD-accelerated via
+//! explicit SSE2/AVX2/NEON kernels processing 4 or 8 pixels per iteration.
+//! The remaining 16 modes (including Darken, Lighten, ColorBurn, ColorDodge,
+//! Overlay, SoftLight, HardLight, LinearBurn, LinearLight, VividLight,
+//! PinLight, HardMix, Difference, Exclusion, Subtract, Divide) fall through
+//! to a per-pixel scalar path in [`crate::psb_blend_separable`].
+//!
+//! HDR f32 blending has its own SIMD kernels in [`crate::psb_hdr_blend`].
+//!
+//! Final u8 conversion uses the same `round()` path as the scalar reference
+//! so results stay bit-identical to the per-pixel f32 loop.
 //!
 //! Note: Normal-mode integer SIMD (avoiding u8<->f32) is a possible follow-up,
 //! but must stay bit-identical to the f32 `round()` reference for partial alpha;

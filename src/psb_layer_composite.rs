@@ -929,6 +929,11 @@ fn parse_shmd_cmls_payload(payload: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
+/// Scan for the next `8BIM` / `8B64` block signature using memchr.
+///
+/// O(n) single-byte-find scan with quadratic-match rejection; replaces a
+/// prior O(n²) `bytes.windows(4).position()` that re-scanned rejected
+/// candidates from scratch on every false match.
 fn find_next_tagged_block_signature(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
     let start = start.min(limit);
     let haystack = &bytes[start..limit];

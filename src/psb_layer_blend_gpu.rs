@@ -1829,4 +1829,71 @@ mod tests {
         assert_eq!(std::mem::size_of_val(&params), 32);
         assert_eq!(params.mode, BLEND_MODE_SCREEN);
     }
+
+    #[test]
+    fn gpu_screen_semi_transparent_target_matches_cpu_within_one() {
+        // Regression guard: cs_blend_screen on destination with da < 1.0.
+        // The existing gpu_separable_modes_match_cpu_within_one test only
+        // covers da = 1.0 (test_canvas alpha is 255). This variant adds a
+        // semi-transparent canvas to catch any fast-path errors that would
+        // silently produce wrong results when both sa and da are partial.
+        let Some(ctx) = try_test_psd_gpu_context() else {
+            eprintln!("Skipping GPU screen semi-transparent target test: no wgpu device available");
+            return;
+        };
+
+        // Semi-transparent canvas (alpha = 128, i.e. da ≈ 0.5).
+        let mut initial_canvas = test_canvas();
+        for pixel in initial_canvas.chunks_exact_mut(4) {
+            pixel[3] = 128;
+        }
+        let layer_rgba = test_layer_rgba();
+
+        for blend in [*b"scrn"] {
+            let mut cpu_canvas = initial_canvas.clone();
+            let cpu_layers = [ClipLayerRef {
+                left: ACCURACY_LAYER_LEFT,
+                top: ACCURACY_LAYER_TOP,
+                width: ACCURACY_LAYER_W,
+                height: ACCURACY_LAYER_H,
+                blend,
+                clipping: 0,
+                rgba: &layer_rgba,
+            }];
+            blend_layers_with_clipping(
+                &mut cpu_canvas,
+                ACCURACY_CANVAS_W,
+                ACCURACY_CANVAS_H,
+                &cpu_layers,
+                None,
+            )
+            .unwrap();
+
+            let gpu_layers = [DecodedLayerRef {
+                left: ACCURACY_LAYER_LEFT,
+                top: ACCURACY_LAYER_TOP,
+                width: ACCURACY_LAYER_W,
+                height: ACCURACY_LAYER_H,
+                blend,
+                clipping: 0,
+                rgba: &layer_rgba,
+            }];
+            let Some(gpu_canvas) = try_blend_layers_gpu(
+                &ctx,
+                ACCURACY_CANVAS_W,
+                ACCURACY_CANVAS_H,
+                &initial_canvas,
+                &gpu_layers,
+                None,
+            ) else {
+                eprintln!("Skipping GPU screen semi-transparent target test: GPU path unavailable");
+                return;
+            };
+
+            assert!(
+                max_abs_diff(&cpu_canvas, &gpu_canvas) <= 1,
+                "Screen semi-transparent target blend exceeded max abs diff 1"
+            );
+        }
+    }
 }

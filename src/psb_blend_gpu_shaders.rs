@@ -171,6 +171,10 @@ fn cs_blend_normal(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (sa <= 0.0) { return; }
     let dst_coord = vec2<i32>(dx, dy);
     if (sa >= 1.0) {
+        // Opaque source: PDF/ISO 32000-1 porter-duff "over" with B(Cb,Cs) = Cs
+        // simplifies to co = Cs, out_a = 1.0.  This is exactly what blend_store
+        // would compute, but the direct store avoids the extra texture read of
+        // `dst` (the destination is fully overwritten).
         textureStore(target, dst_coord, vec4<f32>(src.rgb, 1.0));
         return;
     }
