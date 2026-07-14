@@ -285,6 +285,7 @@ mod tests {
             mask_size: 0,
             mask: None,
             real_mask: None,
+            vector_mask: None,
             is_section_divider: section_type.is_some(),
             section_type,
         }

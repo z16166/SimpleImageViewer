@@ -246,10 +246,7 @@ unsafe fn blend_plane_f32_sse41(
             let lo = _mm_mul_ps(_mm_mul_ps(two, dc), sc);
             let hi = _mm_sub_ps(
                 one,
-                _mm_mul_ps(
-                    _mm_mul_ps(two, _mm_sub_ps(one, dc)),
-                    _mm_sub_ps(one, sc),
-                ),
+                _mm_mul_ps(_mm_mul_ps(two, _mm_sub_ps(one, dc)), _mm_sub_ps(one, sc)),
             );
             let mask = _mm_cmple_ps(dc, half);
             _mm_blendv_ps(hi, lo, mask)
@@ -294,10 +291,7 @@ unsafe fn blend_plane_f32_sse41(
             let lo = _mm_mul_ps(_mm_mul_ps(two, dc), sc);
             let hi = _mm_sub_ps(
                 one,
-                _mm_mul_ps(
-                    _mm_mul_ps(two, _mm_sub_ps(one, dc)),
-                    _mm_sub_ps(one, sc),
-                ),
+                _mm_mul_ps(_mm_mul_ps(two, _mm_sub_ps(one, dc)), _mm_sub_ps(one, sc)),
             );
             let mask = _mm_cmple_ps(sc, half);
             _mm_blendv_ps(hi, lo, mask)
@@ -453,7 +447,10 @@ unsafe fn blend_plane_f32_avx2(
             let d_poly = _mm256_mul_ps(
                 _mm256_add_ps(
                     _mm256_mul_ps(
-                        _mm256_sub_ps(_mm256_mul_ps(_mm256_set1_ps(16.0), dc), _mm256_set1_ps(12.0)),
+                        _mm256_sub_ps(
+                            _mm256_mul_ps(_mm256_set1_ps(16.0), dc),
+                            _mm256_set1_ps(12.0),
+                        ),
                         dc,
                     ),
                     _mm256_set1_ps(4.0),
@@ -614,10 +611,7 @@ unsafe fn blend_plane_f32_neon(
             let lo = vmulq_f32(vmulq_f32(two, dc), sc);
             let hi = vsubq_f32(
                 one,
-                vmulq_f32(
-                    vmulq_f32(two, vsubq_f32(one, dc)),
-                    vsubq_f32(one, sc),
-                ),
+                vmulq_f32(vmulq_f32(two, vsubq_f32(one, dc)), vsubq_f32(one, sc)),
             );
             let mask = vcleq_f32(dc, half);
             vbslq_f32(mask, lo, hi)
@@ -662,10 +656,7 @@ unsafe fn blend_plane_f32_neon(
             let lo = vmulq_f32(vmulq_f32(two, dc), sc);
             let hi = vsubq_f32(
                 one,
-                vmulq_f32(
-                    vmulq_f32(two, vsubq_f32(one, dc)),
-                    vsubq_f32(one, sc),
-                ),
+                vmulq_f32(vmulq_f32(two, vsubq_f32(one, dc)), vsubq_f32(one, sc)),
             );
             let mask = vcleq_f32(cs, half);
             vbslq_f32(mask, lo, hi)

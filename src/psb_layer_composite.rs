@@ -78,6 +78,14 @@ pub struct LayerChannel {
     pub data_len: u32,
 }
 
+/// Raw path records from a `vmsk`/`vsms` vector mask tagged block.
+///
+/// Each entry is one 26-byte path record (selector i16 + three 8-byte
+/// fixed-point sub-points). The decode step rasterises these into a mask
+/// bitmap (see `psb_layer_decode::rasterize_vector_mask`).
+#[derive(Debug, Clone)]
+pub struct VectorMaskData(pub Vec<[u8; 26]>);
+
 /// Parsed rectangle + flags from a layer's mask data block (channel id -2).
 /// The mask's own rect can differ from the layer's rect (smaller, larger, or
 /// offset), so it is decoded and blitted separately -- see `build_layer_sized_mask`.
@@ -149,6 +157,8 @@ pub struct LayerRecord {
     /// Real user mask rect (channel id -3), when the mask data block includes
     /// a second rect after the user-mask header (typically `mask_size >= 36`).
     pub real_mask: Option<LayerMaskInfo>,
+    /// Vector mask path data from a `vmsk`/`vsms` tagged block.
+    pub vector_mask: Option<VectorMaskData>,
     pub is_section_divider: bool,
     pub section_type: Option<u32>,
 }
@@ -450,6 +460,7 @@ fn parse_layer_record(
         mask_size,
         mask,
         real_mask,
+        vector_mask,
         is_section_divider,
         section_type,
         name,
@@ -477,6 +488,7 @@ fn parse_layer_record(
         mask_size,
         mask,
         real_mask,
+        vector_mask,
         is_section_divider,
         section_type,
     })
@@ -486,6 +498,7 @@ struct ParsedLayerExtra {
     mask_size: u32,
     mask: Option<LayerMaskInfo>,
     real_mask: Option<LayerMaskInfo>,
+    vector_mask: Option<VectorMaskData>,
     is_section_divider: bool,
     section_type: Option<u32>,
     name: String,
@@ -504,6 +517,7 @@ fn parse_layer_extra(
             mask_size: 0,
             mask: None,
             real_mask: None,
+            vector_mask: None,
             is_section_divider: false,
             section_type: None,
             name: String::new(),
@@ -543,12 +557,14 @@ fn parse_layer_extra(
         unicode_name,
         cmls_payload,
         fill_opacity,
+        vector_mask,
     } = scan_extra_tagged_blocks(r, extra_end, is_psb)?;
     let name = unicode_name.unwrap_or(pascal_name);
     Ok(ParsedLayerExtra {
         mask_size,
         mask,
         real_mask,
+        vector_mask,
         is_section_divider,
         section_type,
         name,
@@ -717,6 +733,7 @@ fn scan_extra_tagged_blocks(
     let mut unicode_name = None;
     let mut cmls_payload = None;
     let mut fill_opacity = None;
+    let mut vector_mask: Option<VectorMaskData> = None;
     let mut resyncs = 0u32;
     let extra_end_usize = usize::try_from(extra_end)
         .unwrap_or(usize::MAX)
@@ -808,9 +825,31 @@ fn scan_extra_tagged_blocks(
         } else if &key == b"iOpa" && !payload.is_empty() {
             // Photoshop Fill Opacity (single byte). Present even when 255.
             fill_opacity = Some(payload[0]);
+        } else if (&key == b"vmsk" || &key == b"vsms") && payload.len() >= 30 {
+            let version_bytes: [u8; 4] = payload
+                .get(..4)
+                .and_then(|b| b.try_into().ok())
+                .unwrap_or([0u8; 4]);
+            let version = i32::from_be_bytes(version_bytes);
+            if version == 3 {
+                // After version, the rest is 26-byte path records.
+                let path_bytes = &payload[4..];
+                let mut records: Vec<[u8; 26]> = Vec::new();
+                for chunk in path_bytes.chunks_exact(26) {
+                    let mut rec = [0u8; 26];
+                    rec.copy_from_slice(chunk);
+                    let selector = i16::from_be_bytes([rec[0], rec[1]]);
+                    // 0xFFFF = end of path; stop collecting.
+                    if selector == -1 {
+                        break;
+                    }
+                    records.push(rec);
+                }
+                if !records.is_empty() {
+                    vector_mask = Some(VectorMaskData(records));
+                }
+            }
         }
-        // Vector masks (`vmsk` / `vsms`) are intentionally not parsed yet;
-        // see docs/psd-psb-known-limits.md.
 
         let padded_end = data_end.saturating_add(data_len % 2);
         r.set_position(padded_end.min(extra_end));
@@ -823,6 +862,7 @@ fn scan_extra_tagged_blocks(
         unicode_name,
         cmls_payload,
         fill_opacity,
+        vector_mask,
     })
 }
 
@@ -833,6 +873,7 @@ struct TaggedBlockScan {
     unicode_name: Option<String>,
     cmls_payload: Option<Vec<u8>>,
     fill_opacity: Option<u8>,
+    vector_mask: Option<VectorMaskData>,
 }
 
 fn parse_luni_name(payload: &[u8]) -> Option<String> {
@@ -1407,6 +1448,7 @@ mod tests {
                 mask_size: 0,
                 mask: None,
                 real_mask: None,
+                vector_mask: None,
                 is_section_divider: false,
                 section_type: None,
             });
@@ -1573,6 +1615,7 @@ mod tests {
             mask_size: 0,
             mask: None,
             real_mask: None,
+            vector_mask: None,
             is_section_divider,
             section_type,
         }
