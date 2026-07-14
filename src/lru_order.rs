@@ -211,6 +211,9 @@ where
     }
 }
 
+// These index-remap helpers are exercised by unit tests; no production caller remains after the
+// directory-tree strip cache moved to path keys, so silence dead-code warnings in non-test builds.
+#[cfg_attr(not(test), allow(dead_code))]
 impl LruOrder<usize> {
     /// Drop indices for which `keep` returns false, preserving relative order of survivors.
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(usize) -> bool) {

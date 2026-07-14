@@ -575,10 +575,10 @@ impl ImageViewerApp {
                                 self.reorder_directory_tree_strip_after_image_list_change(
                                     &old_files, &new_files,
                                 );
-                            } else if let Some(old_to_new) = sort_perm {
-                                self.permute_directory_tree_strip_after_image_list_reorder(
-                                    &old_to_new,
-                                );
+                            } else if sort_perm.is_some() {
+                                // Path-keyed strip state survives a column-sort reorder; only
+                                // bump generation and refresh the snapshot (no index remap).
+                                self.reconcile_directory_tree_strip_state_for_current_list();
                             }
                         }
 

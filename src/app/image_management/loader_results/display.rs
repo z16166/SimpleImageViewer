@@ -220,8 +220,10 @@ impl ImageViewerApp {
             self.current_index
         );
         self.on_raw_hdr_plane_ready(idx);
-        if !self.directory_tree_strip_cache.contains(idx) {
-            self.directory_tree_strip_cold_attempted.remove(&idx);
+        if !self.strip_cache_contains_index(idx)
+            && let Some(path) = self.image_files.get(idx).cloned()
+        {
+            self.directory_tree_strip_cold_attempted.remove(&path);
         }
         if is_current {
             self.osd.sync_events();

@@ -327,11 +327,13 @@ impl ImageViewerApp {
             crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
             self.main_loader_failed_indices.remove(&idx);
             self.main_loader_failed_errors.remove(&idx);
-            self.directory_tree_strip_cache.remove_index(idx);
-            self.directory_tree_strip_tiled_attempted.remove(&idx);
-            self.directory_tree_strip_cold_attempted.remove(&idx);
-            self.directory_tree_strip_cold_awaiting_main_loader
-                .remove(&idx);
+            if let Some(path) = self.image_files.get(idx).cloned() {
+                self.directory_tree_strip_cache.remove_path(&path);
+                self.directory_tree_strip_tiled_attempted.remove(&path);
+                self.directory_tree_strip_cold_attempted.remove(&path);
+                self.directory_tree_strip_cold_awaiting_main_loader
+                    .remove(&path);
+            }
             if idx == current {
                 self.tile_manager = None;
                 self.set_current_image_resolution(None);

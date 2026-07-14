@@ -1063,11 +1063,23 @@ impl ImageViewerApp {
         if count == 0 {
             return;
         }
+        // The strip cold-defer set is path-keyed; resolve the retained paths to their current
+        // row indices so the loader can keep those in-flight loads alive.
+        let retain_indices: std::collections::HashSet<usize> = self
+            .image_files
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, path)| {
+                self.directory_tree_strip_cold_awaiting_main_loader
+                    .contains(path)
+                    .then_some(idx)
+            })
+            .collect();
         self.loader.cancel_outside_prefetch_window(
             self.current_index,
             count,
             self.prefetch_window_max_distance,
-            &self.directory_tree_strip_cold_awaiting_main_loader,
+            &retain_indices,
         );
     }
 

@@ -537,26 +537,27 @@ pub struct ImageViewerApp {
     pub(crate) directory_tree_strip_cache:
         crate::app::directory_tree_strip_cache::DirectoryTreeStripCache,
     /// Tiled strip thumbnails requested via [`TiledImageSource::generate_full_image_preview`].
-    pub(crate) directory_tree_strip_tiled_attempted: std::collections::HashSet<usize>,
-    pub(crate) directory_tree_strip_cold_attempted: std::collections::HashSet<usize>,
+    /// Path-keyed so image-list reorders do not require index remapping.
+    pub(crate) directory_tree_strip_tiled_attempted: std::collections::HashSet<PathBuf>,
+    pub(crate) directory_tree_strip_cold_attempted: std::collections::HashSet<PathBuf>,
     /// Cold strip deferred (await main-loader primary decode); suppresses per-frame respawn.
-    pub(crate) directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet<usize>,
+    pub(crate) directory_tree_strip_cold_awaiting_main_loader: std::collections::HashSet<PathBuf>,
     /// Full-size strip pixels from main-loader install, queued when a concurrent strip job
     /// blocked `pending_gpu_resample` (StaticFullDecode handoff race recovery).
     pub(crate) directory_tree_strip_pending_main_handoff: std::collections::HashMap<
-        usize,
+        PathBuf,
         crate::app::directory_tree::DirectoryTreeStripPendingMainHandoff,
     >,
-    pub(crate) directory_tree_strip_generate_inflight: std::collections::HashSet<usize>,
+    pub(crate) directory_tree_strip_generate_inflight: std::collections::HashSet<PathBuf>,
     pub(crate) directory_tree_strip_inflight_tokens:
-        std::collections::HashMap<usize, std::num::NonZeroU64>,
-    /// Per-index cooperative cancel for strip workers (independent of ImageLoader cancel).
+        std::collections::HashMap<PathBuf, std::num::NonZeroU64>,
+    /// Per-path cooperative cancel for strip workers (independent of ImageLoader cancel).
     pub(crate) directory_tree_strip_inflight_cancel:
-        std::collections::HashMap<usize, crate::loader::DecodeCancelFlag>,
+        std::collections::HashMap<PathBuf, crate::loader::DecodeCancelFlag>,
     pub(crate) directory_tree_strip_next_job_token: u64,
     /// Cold strip jobs known to produce reusable full-SDR pixels for the main loader.
     /// This is not derived from `generate_inflight`: PNG/WebP need an animation probe.
-    pub(crate) directory_tree_strip_static_full_decode_inflight: std::collections::HashSet<usize>,
+    pub(crate) directory_tree_strip_static_full_decode_inflight: std::collections::HashSet<PathBuf>,
     pub(crate) directory_tree_strip_preview_tx: crossbeam_channel::Sender<
         crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,
     >,
@@ -638,7 +639,7 @@ pub struct ImageViewerApp {
     pub(crate) strip_stale_retain_last_generation: u64,
     /// Reused each strip-thumbnail frame to avoid per-frame Vec allocation when
     /// releasing resolved cold-awaiting entries.
-    pub(crate) strip_cold_awaiting_scratch: Vec<usize>,
+    pub(crate) strip_cold_awaiting_scratch: Vec<PathBuf>,
     /// Reused each strip-thumbnail frame for tiled-index sync/generate and deferred SDR uploads.
     pub(crate) strip_indices_scratch: Vec<usize>,
     /// Reused each strip-thumbnail frame for cold candidate collection (output).

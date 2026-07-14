@@ -235,6 +235,23 @@ impl ImageViewerApp {
 
     /// Publish an immutable paint snapshot after `logic()` mutates tree/list writers.
     pub(crate) fn publish_directory_tree_view_from_state(&mut self, force_list: bool) {
+        // Project strip previews before taking tree/list locks: `image_strip_path_index`
+        // also locks the list briefly, and parking_lot mutexes are not reentrant.
+        let projected = if self.directory_tree_list_previews_active() {
+            let _ = self.image_strip_path_index();
+            let path_to_index = &self
+                .cached_image_strip_path_index
+                .as_ref()
+                .expect("warmed above")
+                .1;
+            Some((
+                self.directory_tree_strip_cache.gpu_revision(),
+                self.directory_tree_strip_cache
+                    .project_index_maps(path_to_index),
+            ))
+        } else {
+            None
+        };
         let mut tree = self.directory_tree.tree.lock();
         let mut list = self.directory_tree.list.lock();
         let preview_cleared = if self.directory_tree_list_previews_active() {
@@ -245,15 +262,14 @@ impl ImageViewerApp {
             had_preview
         };
         let (preview_cache_revision, preview_textures, preview_logical_sizes, preview_buffer_tags) =
-            if self.directory_tree_list_previews_active() {
-                (
-                    Some(self.directory_tree_strip_cache.gpu_revision()),
-                    Some(self.directory_tree_strip_cache.textures()),
-                    Some(self.directory_tree_strip_cache.logical_sizes()),
-                    Some(self.directory_tree_strip_cache.preview_buffer_tags()),
-                )
-            } else {
-                (None, None, None, None)
+            match projected.as_ref() {
+                Some((revision, projected)) => (
+                    Some(*revision),
+                    Some(&projected.textures),
+                    Some(&projected.logical_sizes),
+                    Some(&projected.buffer_tags),
+                ),
+                None => (None, None, None, None),
             };
         let changed = view::publish_directory_tree_domains(
             &self.directory_tree,
@@ -276,7 +292,7 @@ impl ImageViewerApp {
     }
 
     /// True when the immutable preview snapshot does not reflect the strip GPU cache.
-    pub(crate) fn directory_tree_strip_preview_needs_publish(&self) -> bool {
+    pub(crate) fn directory_tree_strip_preview_needs_publish(&mut self) -> bool {
         if !self.directory_tree_list_previews_active() {
             return false;
         }
@@ -285,24 +301,35 @@ impl ImageViewerApp {
         if cache_rev != snap.revision {
             return true;
         }
-        let cache_textures = self.directory_tree_strip_cache.textures();
-        if cache_textures.len() != snap.textures.len() {
+        // Even at an unchanged GPU revision the path->index mapping may have shifted after a
+        // list reorder, so compare the projected index maps against the published snapshot.
+        // Use the generation-cached path index (needs `&mut self` to warm) instead of rebuilding.
+        let _ = self.image_strip_path_index();
+        let path_to_index = &self
+            .cached_image_strip_path_index
+            .as_ref()
+            .expect("warmed above")
+            .1;
+        let projected = self
+            .directory_tree_strip_cache
+            .project_index_maps(path_to_index);
+        if projected.textures.len() != snap.textures.len() {
             return true;
         }
-        for (&index, handle) in cache_textures {
-            match snap.textures.get(&index) {
+        for (index, handle) in &projected.textures {
+            match snap.textures.get(index) {
                 None => return true,
                 Some(prev) if prev.id() != handle.id() => return true,
                 Some(_) => {}
             }
         }
-        for (&index, &logical) in self.directory_tree_strip_cache.logical_sizes() {
-            if snap.logical_sizes.get(&index) != Some(&logical) {
+        for (index, logical) in &projected.logical_sizes {
+            if snap.logical_sizes.get(index) != Some(logical) {
                 return true;
             }
         }
-        for (&index, &tag) in self.directory_tree_strip_cache.preview_buffer_tags() {
-            if snap.buffer_tags.get(&index) != Some(&tag) {
+        for (index, tag) in &projected.buffer_tags {
+            if snap.buffer_tags.get(index) != Some(tag) {
                 return true;
             }
         }
@@ -789,7 +816,7 @@ impl ImageViewerApp {
 
         self.permute_image_file_arrays(&order);
         self.permute_index_keyed_caches(&old_to_new);
-        self.prepare_directory_tree_strip_scheduling_after_list_reorder(&old_to_new);
+        self.prepare_directory_tree_strip_scheduling_after_list_reorder();
         self.set_current_index(pinned_index);
         self.refresh_current_image_presentation_after_list_reorder();
         // Re-sort permutes `image_files`, cancels in-flight loads, and remaps caches; rebuild the

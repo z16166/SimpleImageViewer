@@ -644,9 +644,12 @@ fn visible_strip_row_indices_skips_stale_range_while_scroll_pending() {
     assert!(
         ImageViewerApp::visible_strip_row_indices(Some((100, 110)), true, 200, false).is_empty()
     );
+    // During a scan that is still scrolling to the current image, the reported visible range is
+    // stale (belongs to the previous list), so bootstrap ignores it and forces the top-of-list
+    // window instead of trusting (100, 110).
     assert_eq!(
         ImageViewerApp::visible_strip_row_indices(Some((100, 110)), true, 200, true),
-        (100..110).collect::<Vec<_>>()
+        (0..200.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)).collect::<Vec<_>>()
     );
     assert_eq!(
         ImageViewerApp::visible_strip_row_indices(Some((100, 110)), false, 200, false),
