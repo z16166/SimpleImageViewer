@@ -939,7 +939,7 @@ pub(crate) fn gpu_batch_eligible_decoded_bytes(
         if !layer_will_decode(record, visible_i) {
             continue;
         }
-        if !crate::psb_layer_blend_gpu::is_gpu_separable_blend(&record.blend) {
+        if !crate::psb_blend_gpu_shaders::is_gpu_separable_blend(&record.blend) {
             return None;
         }
         if record.clipping != 0 {
@@ -1112,7 +1112,7 @@ pub(crate) fn run_composite_pass_gpu_batch(
     // GPU dispatch must never depend solely on a prediction.
     let all_separable = layers
         .iter()
-        .all(|l| crate::psb_layer_blend_gpu::is_gpu_separable_blend(&l.blend));
+        .all(|l| crate::psb_blend_gpu_shaders::is_gpu_separable_blend(&l.blend));
     let has_clipping = crate::psb_layer_clip::any_layer_clipped(&clip_refs);
     let used_gpu = if !all_separable {
         false

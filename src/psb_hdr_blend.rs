@@ -60,7 +60,28 @@ fn blend_b_f32(kind: SeparableBlendKind, cb: f32, cs: f32) -> f32 {
                 1.0 - 2.0 * (1.0 - cb) * (1.0 - cs)
             }
         }
-        SeparableBlendKind::Color => cs,
+        SeparableBlendKind::Color
+        | SeparableBlendKind::Hue
+        | SeparableBlendKind::Saturation
+        | SeparableBlendKind::Luminosity
+        | SeparableBlendKind::DarkerColor
+        | SeparableBlendKind::LighterColor => cs,
+        // ── New modes delegated to psb_blend_separable ─────────────────
+        SeparableBlendKind::Darken => crate::psb_blend_separable::blend_darken(cb, cs),
+        SeparableBlendKind::ColorBurn => crate::psb_blend_separable::blend_color_burn(cb, cs),
+        SeparableBlendKind::LinearBurn => crate::psb_blend_separable::blend_linear_burn(cb, cs),
+        SeparableBlendKind::Lighten => crate::psb_blend_separable::blend_lighten(cb, cs),
+        SeparableBlendKind::ColorDodge => crate::psb_blend_separable::blend_color_dodge(cb, cs),
+        SeparableBlendKind::VividLight => crate::psb_blend_separable::blend_vivid_light(cb, cs),
+        SeparableBlendKind::LinearLight => crate::psb_blend_separable::blend_linear_light(cb, cs),
+        SeparableBlendKind::PinLight => crate::psb_blend_separable::blend_pin_light(cb, cs),
+        SeparableBlendKind::HardMix => crate::psb_blend_separable::blend_hard_mix(cb, cs),
+        SeparableBlendKind::Difference => crate::psb_blend_separable::blend_difference(cb, cs),
+        SeparableBlendKind::Exclusion => crate::psb_blend_separable::blend_exclusion(cb, cs),
+        SeparableBlendKind::Subtract => crate::psb_blend_separable::blend_subtract(cb, cs),
+        SeparableBlendKind::Divide => crate::psb_blend_separable::blend_divide(cb, cs),
+        // Dissolve/PassThrough → Normal
+        SeparableBlendKind::Dissolve | SeparableBlendKind::PassThrough => cs,
     }
 }
 
@@ -81,10 +102,14 @@ pub fn blend_separable_span_f32(dst: &mut [f32], src: &[f32], kind: SeparableBle
         return;
     }
 
-    // Color uses cross-channel blend_color_rgb and cannot be vectorized
-    // per-plane. All other modes (including Overlay/SoftLight/HardLight) have
-    // dedicated SIMD kernels.
-    if kind == SeparableBlendKind::Color {
+    // Non-separable / per-pixel modes use cross-channel formulas and cannot
+    // be vectorized per-plane. All other modes (including the new separable
+    // ones) fall through to SIMD if available.
+    if !kind.has_simd_kernel()
+        && kind != SeparableBlendKind::Overlay
+        && kind != SeparableBlendKind::SoftLight
+        && kind != SeparableBlendKind::HardLight
+    {
         blend_separable_span_f32_scalar(dst, src, kind);
         return;
     }
@@ -140,26 +165,45 @@ fn blend_one_pixel_f32(dst: &mut [f32], src: &[f32], kind: SeparableBlendKind) {
         return;
     }
     let inv_out_a = 1.0 / out_a;
-    if kind == SeparableBlendKind::Color {
-        let (br, bg, bb) = crate::psb_blend_nonseparable::blend_color_rgb(
+    let (br, bg, bb) = match kind {
+        SeparableBlendKind::Color => crate::psb_blend_nonseparable::blend_color_rgb(
             dst[0], dst[1], dst[2], src[0], src[1], src[2],
-        );
-        let channels = [
-            (src[0], dst[0], br),
-            (src[1], dst[1], bg),
-            (src[2], dst[2], bb),
-        ];
-        for (c, (sc, dc, b)) in channels.into_iter().enumerate() {
-            let co = sa * (1.0 - da) * sc + sa * da * b + da * (1.0 - sa) * dc;
-            dst[c] = co * inv_out_a;
+        ),
+        SeparableBlendKind::Hue => crate::psb_blend_nonseparable_full::blend_hue_rgb(
+            dst[0], dst[1], dst[2], src[0], src[1], src[2],
+        ),
+        SeparableBlendKind::Saturation => crate::psb_blend_nonseparable_full::blend_saturation_rgb(
+            dst[0], dst[1], dst[2], src[0], src[1], src[2],
+        ),
+        SeparableBlendKind::Luminosity => crate::psb_blend_nonseparable_full::blend_luminosity_rgb(
+            dst[0], dst[1], dst[2], src[0], src[1], src[2],
+        ),
+        SeparableBlendKind::DarkerColor => crate::psb_blend_nonseparable_full::darker_color_rgb(
+            dst[0], dst[1], dst[2], src[0], src[1], src[2],
+        ),
+        SeparableBlendKind::LighterColor => crate::psb_blend_nonseparable_full::lighter_color_rgb(
+            dst[0], dst[1], dst[2], src[0], src[1], src[2],
+        ),
+        _ => {
+            // All other modes (separable) go through blend_b_f32 per channel.
+            for c in 0..3 {
+                let sc = src[c];
+                let dc = dst[c];
+                let b = blend_b_f32(kind, dc, sc);
+                let co = sa * (1.0 - da) * sc + sa * da * b + da * (1.0 - sa) * dc;
+                dst[c] = co * inv_out_a;
+            }
+            dst[3] = out_a.clamp(0.0, 1.0);
+            return;
         }
-        dst[3] = out_a.clamp(0.0, 1.0);
-        return;
-    }
-    for c in 0..3 {
-        let sc = src[c];
-        let dc = dst[c];
-        let b = blend_b_f32(kind, dc, sc);
+    };
+    // Cross-channel blend result applied with straight-alpha.
+    let channels = [
+        (src[0], dst[0], br),
+        (src[1], dst[1], bg),
+        (src[2], dst[2], bb),
+    ];
+    for (c, (sc, dc, b)) in channels.into_iter().enumerate() {
         let co = sa * (1.0 - da) * sc + sa * da * b + da * (1.0 - sa) * dc;
         dst[c] = co * inv_out_a;
     }
@@ -296,7 +340,7 @@ unsafe fn blend_plane_f32_sse41(
             let mask = _mm_cmple_ps(sc, half);
             _mm_blendv_ps(hi, lo, mask)
         }
-        SeparableBlendKind::Color => sc,
+        _ => sc,
     };
     let term1 = _mm_mul_ps(_mm_mul_ps(sa, _mm_sub_ps(one, da)), sc);
     let term2 = _mm_mul_ps(_mm_mul_ps(sa, da), v_b);
@@ -493,7 +537,7 @@ unsafe fn blend_plane_f32_avx2(
             let mask = _mm256_cmp_ps(sc, half, _CMP_LE_OQ);
             _mm256_blendv_ps(hi, lo, mask)
         }
-        SeparableBlendKind::Color => sc,
+        _ => sc,
     };
     let term1 = _mm256_mul_ps(_mm256_mul_ps(sa, _mm256_sub_ps(one, da)), sc);
     let term2 = _mm256_mul_ps(_mm256_mul_ps(sa, da), v_b);
@@ -661,7 +705,7 @@ unsafe fn blend_plane_f32_neon(
             let mask = vcleq_f32(cs, half);
             vbslq_f32(mask, lo, hi)
         }
-        SeparableBlendKind::Color => sc,
+        _ => sc,
     };
     let term1 = vmulq_f32(vmulq_f32(sa, vsubq_f32(one, da)), sc);
     let term2 = vmulq_f32(vmulq_f32(sa, da), v_b);

@@ -27,23 +27,62 @@
 //! opaque Normal already uses a memcpy fast path.
 
 /// Photoshop / PDF separable blend mode for a horizontal RGBA8 span.
+///
+/// Newer modes (added in bulk for full PSD/PSB coverage) delegate per-channel
+/// formulas to [`crate::psb_blend_separable`] and non-separable / per-pixel
+/// modes to [`crate::psb_blend_nonseparable_full`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeparableBlendKind {
+    // ── Original four (SIMD-accelerated) ───────────────────────────────
     Normal,
     Screen,
     LinearDodge,
     Multiply,
+    // ── Overlay / Soft Light / Hard Light (scalar-only) ────────────────
     /// Photoshop `over` (Overlay). Scalar path only for now.
     Overlay,
     /// Photoshop `sLit` (Soft Light). Scalar path only for now.
     SoftLight,
     /// Photoshop `hLit` (Hard Light). Scalar path only for now.
     HardLight,
+    // ── Non-separable (scalar-only) ────────────────────────────────────
     /// Photoshop `colr` (Color). Non-separable; scalar path only.
     ///
     /// Must not fall back to [`Self::Normal`]: a full-canvas solid Color fill
     /// would otherwise paint opaque blue/brand fills over the whole document.
     Color,
+    /// Photoshop `hue ` (Hue). Non-separable; scalar path only.
+    Hue,
+    /// Photoshop `sat ` (Saturation). Non-separable; scalar path only.
+    Saturation,
+    /// Photoshop `lum ` (Luminosity). Non-separable; scalar path only.
+    Luminosity,
+    // ── Darken group (separable, scalar-only) ──────────────────────────
+    Darken,
+    ColorBurn,
+    LinearBurn,
+    /// Photoshop `dkCl` (Darker Color) — per-pixel luminance compare.
+    DarkerColor,
+    // ── Lighten group (separable, scalar-only) ─────────────────────────
+    Lighten,
+    ColorDodge,
+    /// Photoshop `lgCl` (Lighter Color) — per-pixel luminance compare.
+    LighterColor,
+    // ── Contrast group (separable, scalar-only) ────────────────────────
+    VividLight,
+    LinearLight,
+    PinLight,
+    HardMix,
+    // ── Comparative group (separable, scalar-only) ─────────────────────
+    Difference,
+    Exclusion,
+    Subtract,
+    Divide,
+    // ── Special (treated as Normal) ────────────────────────────────────
+    /// `diss` (Dissolve) — stochastic alpha dither; we treat as Normal.
+    Dissolve,
+    /// `pass` (Pass Through) — layer-group pass-through, identical to Normal.
+    PassThrough,
 }
 
 impl SeparableBlendKind {
@@ -61,6 +100,26 @@ impl SeparableBlendKind {
             b"sLit" => Some(Self::SoftLight),
             b"hLit" => Some(Self::HardLight),
             b"colr" => Some(Self::Color),
+            b"hue " => Some(Self::Hue),
+            b"sat " => Some(Self::Saturation),
+            b"lum " => Some(Self::Luminosity),
+            b"dark" => Some(Self::Darken),
+            b"idiv" => Some(Self::ColorBurn),
+            b"lbrn" => Some(Self::LinearBurn),
+            b"dkCl" => Some(Self::DarkerColor),
+            b"lite" => Some(Self::Lighten),
+            b"div " => Some(Self::ColorDodge),
+            b"lgCl" => Some(Self::LighterColor),
+            b"vLit" => Some(Self::VividLight),
+            b"lLit" => Some(Self::LinearLight),
+            b"pLit" => Some(Self::PinLight),
+            b"hMix" => Some(Self::HardMix),
+            b"diff" => Some(Self::Difference),
+            b"excl" => Some(Self::Exclusion),
+            b"subt" => Some(Self::Subtract),
+            b"fdiv" => Some(Self::Divide),
+            b"diss" => Some(Self::Dissolve),
+            b"pass" => Some(Self::PassThrough),
             _ => None,
         }
     }
@@ -156,9 +215,30 @@ fn blend_b(kind: SeparableBlendKind, cb: f32, cs: f32) -> f32 {
                 1.0 - 2.0 * (1.0 - cb) * (1.0 - cs)
             }
         }
-        // Non-separable: handled in `blend_one_pixel` via SetLum; per-channel
-        // callers must not reach here.
-        SeparableBlendKind::Color => cs,
+        // Non-separable: handled in `blend_one_pixel` via cross-channel blend
+        // functions; per-channel callers must not reach here.
+        SeparableBlendKind::Color
+        | SeparableBlendKind::Hue
+        | SeparableBlendKind::Saturation
+        | SeparableBlendKind::Luminosity
+        | SeparableBlendKind::DarkerColor
+        | SeparableBlendKind::LighterColor => cs,
+        // ── New modes delegated to psb_blend_separable ─────────────────
+        SeparableBlendKind::Darken => crate::psb_blend_separable::blend_darken(cb, cs),
+        SeparableBlendKind::ColorBurn => crate::psb_blend_separable::blend_color_burn(cb, cs),
+        SeparableBlendKind::LinearBurn => crate::psb_blend_separable::blend_linear_burn(cb, cs),
+        SeparableBlendKind::Lighten => crate::psb_blend_separable::blend_lighten(cb, cs),
+        SeparableBlendKind::ColorDodge => crate::psb_blend_separable::blend_color_dodge(cb, cs),
+        SeparableBlendKind::VividLight => crate::psb_blend_separable::blend_vivid_light(cb, cs),
+        SeparableBlendKind::LinearLight => crate::psb_blend_separable::blend_linear_light(cb, cs),
+        SeparableBlendKind::PinLight => crate::psb_blend_separable::blend_pin_light(cb, cs),
+        SeparableBlendKind::HardMix => crate::psb_blend_separable::blend_hard_mix(cb, cs),
+        SeparableBlendKind::Difference => crate::psb_blend_separable::blend_difference(cb, cs),
+        SeparableBlendKind::Exclusion => crate::psb_blend_separable::blend_exclusion(cb, cs),
+        SeparableBlendKind::Subtract => crate::psb_blend_separable::blend_subtract(cb, cs),
+        SeparableBlendKind::Divide => crate::psb_blend_separable::blend_divide(cb, cs),
+        // Dissolve/PassThrough → Normal
+        SeparableBlendKind::Dissolve | SeparableBlendKind::PassThrough => cs,
     }
 }
 
@@ -236,27 +316,49 @@ fn blend_one_pixel(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind, is_norm
         return;
     }
 
-    if kind == SeparableBlendKind::Color {
-        let sr = u8_to_f32(src[0]);
-        let sg = u8_to_f32(src[1]);
-        let sb = u8_to_f32(src[2]);
-        let dr = u8_to_f32(dst[0]);
-        let dg = u8_to_f32(dst[1]);
-        let db = u8_to_f32(dst[2]);
-        let (br, bg, bb) = crate::psb_blend_nonseparable::blend_color_rgb(dr, dg, db, sr, sg, sb);
-        let channels = [(sr, dr, br), (sg, dg, bg), (sb, db, bb)];
-        for (c, (sc, dc, b)) in channels.into_iter().enumerate() {
-            let co = sa_f * (1.0 - da_f) * sc + sa_f * da_f * b + da_f * (1.0 - sa_f) * dc;
-            dst[c] = f32_to_u8_round(co / out_a_f);
-        }
-        dst[3] = f32_to_u8_round(out_a_f);
-        return;
-    }
+    let sr = u8_to_f32(src[0]);
+    let sg = u8_to_f32(src[1]);
+    let sb = u8_to_f32(src[2]);
+    let dr = u8_to_f32(dst[0]);
+    let dg = u8_to_f32(dst[1]);
+    let db = u8_to_f32(dst[2]);
 
-    for c in 0..3 {
-        let sc = u8_to_f32(src[c]);
-        let dc = u8_to_f32(dst[c]);
-        let b = blend_b(kind, dc, sc);
+    // Non-separable and per-pixel blend modes use cross-channel formulas.
+    let (br, bg, bb) = match kind {
+        SeparableBlendKind::Color => {
+            crate::psb_blend_nonseparable::blend_color_rgb(dr, dg, db, sr, sg, sb)
+        }
+        SeparableBlendKind::Hue => {
+            crate::psb_blend_nonseparable_full::blend_hue_rgb(dr, dg, db, sr, sg, sb)
+        }
+        SeparableBlendKind::Saturation => {
+            crate::psb_blend_nonseparable_full::blend_saturation_rgb(dr, dg, db, sr, sg, sb)
+        }
+        SeparableBlendKind::Luminosity => {
+            crate::psb_blend_nonseparable_full::blend_luminosity_rgb(dr, dg, db, sr, sg, sb)
+        }
+        SeparableBlendKind::DarkerColor => {
+            crate::psb_blend_nonseparable_full::darker_color_rgb(dr, dg, db, sr, sg, sb)
+        }
+        SeparableBlendKind::LighterColor => {
+            crate::psb_blend_nonseparable_full::lighter_color_rgb(dr, dg, db, sr, sg, sb)
+        }
+        _ => {
+            // All other modes (separable) go through blend_b per channel.
+            for c in 0..3 {
+                let sc = u8_to_f32(src[c]);
+                let dc = u8_to_f32(dst[c]);
+                let b = blend_b(kind, dc, sc);
+                let co = sa_f * (1.0 - da_f) * sc + sa_f * da_f * b + da_f * (1.0 - sa_f) * dc;
+                dst[c] = f32_to_u8_round(co / out_a_f);
+            }
+            dst[3] = f32_to_u8_round(out_a_f);
+            return;
+        }
+    };
+    // Cross-channel blend result applied with straight-alpha.
+    let channels = [(sr, dr, br), (sg, dg, bg), (sb, db, bb)];
+    for (c, (sc, dc, b)) in channels.into_iter().enumerate() {
         let co = sa_f * (1.0 - da_f) * sc + sa_f * da_f * b + da_f * (1.0 - sa_f) * dc;
         dst[c] = f32_to_u8_round(co / out_a_f);
     }
@@ -401,10 +503,7 @@ unsafe fn blend_plane_sse2(
         }
         SeparableBlendKind::LinearDodge => _mm_min_ps(_mm_add_ps(dc, sc), one),
         // Routed to scalar before SIMD entry; keep exhaustive for the type.
-        SeparableBlendKind::Overlay
-        | SeparableBlendKind::SoftLight
-        | SeparableBlendKind::HardLight
-        | SeparableBlendKind::Color => sc,
+        _ => sc,
     };
     let term1 = _mm_mul_ps(_mm_mul_ps(sa, _mm_sub_ps(one, da)), sc);
     let term2 = _mm_mul_ps(_mm_mul_ps(sa, da), v_b);
@@ -516,10 +615,7 @@ unsafe fn blend_plane_avx2(
             _mm256_mul_ps(_mm256_sub_ps(one, dc), _mm256_sub_ps(one, sc)),
         ),
         SeparableBlendKind::LinearDodge => _mm256_min_ps(_mm256_add_ps(dc, sc), one),
-        SeparableBlendKind::Overlay
-        | SeparableBlendKind::SoftLight
-        | SeparableBlendKind::HardLight
-        | SeparableBlendKind::Color => sc,
+        _ => sc,
     };
     let term1 = _mm256_mul_ps(_mm256_mul_ps(sa, _mm256_sub_ps(one, da)), sc);
     let term2 = _mm256_mul_ps(_mm256_mul_ps(sa, da), v_b);
@@ -631,10 +727,7 @@ unsafe fn blend_plane_neon(
             vsubq_f32(one, vmulq_f32(vsubq_f32(one, dc), vsubq_f32(one, sc)))
         }
         SeparableBlendKind::LinearDodge => vminq_f32(vaddq_f32(dc, sc), one),
-        SeparableBlendKind::Overlay
-        | SeparableBlendKind::SoftLight
-        | SeparableBlendKind::HardLight
-        | SeparableBlendKind::Color => sc,
+        _ => sc,
     };
     let term1 = vmulq_f32(vmulq_f32(sa, vsubq_f32(one, da)), sc);
     let term2 = vmulq_f32(vmulq_f32(sa, da), v_b);
