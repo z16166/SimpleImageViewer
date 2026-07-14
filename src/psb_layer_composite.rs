@@ -85,8 +85,23 @@ pub struct LayerChannel {
 /// bitmap (see `psb_layer_decode::rasterize_vector_mask`).
 pub(crate) const VMSK_RECORD_LEN: usize = 26;
 
+/// Vector mask origin clipping/relative flags, parsed from the vmsk Flags u32.
+///
+/// Bit 0: invert     — the opaque interior becomes transparent and vice versa.
+/// Bit 1: not-linked  — mask moves/scales independently of layer pixels.
+/// Bit 2: disable     — mask is present on disk but should not be applied.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VectorMaskFlags {
+    pub invert: bool,
+    pub not_linked: bool,
+    pub disabled: bool,
+}
+
 #[derive(Debug, Clone)]
-pub struct VectorMaskData(pub Vec<[u8; VMSK_RECORD_LEN]>);
+pub struct VectorMaskData {
+    pub records: Vec<[u8; VMSK_RECORD_LEN]>,
+    pub flags: VectorMaskFlags,
+}
 
 /// Parsed rectangle + flags from a layer's mask data block (channel id -2).
 /// The mask's own rect can differ from the layer's rect (smaller, larger, or
@@ -653,6 +668,13 @@ fn parse_real_user_mask_rect(
 /// Skip the density/feather parameter prefix that follows the user-mask
 /// header when flags bit 4 is set. Returns `true` when the cursor is left
 /// at a plausible real-mask header (or section end with nothing left).
+///
+/// **Known limitation**: the density (0-255 scaling) and feather (pixel
+/// radius) values are *skipped* but never applied to the decoded mask.
+/// This can produce visible differences from Photoshop on documents that
+/// rely on mask feathering.  A future commit should read the density byte
+/// and feather uint64 fixed-point value, then soften / scale the mask
+/// bitmap after rasterisation.
 fn skip_mask_parameters_prefix(
     r: &mut std::io::Cursor<&[u8]>,
     mask_end: u64,
@@ -842,8 +864,16 @@ fn scan_extra_tagged_blocks(
                 .unwrap_or([0u8; 4]);
             let version = i32::from_be_bytes(version_bytes);
             if version == 3 {
-                // After version, the rest is VMSK_RECORD_LEN-byte path records.
-                let path_bytes = &payload[4..];
+                // Structure: Version(4) + Flags(4) + path records.
+                let flags_raw = u32::from_be_bytes(
+                    payload.get(4..8).and_then(|b| b.try_into().ok()).unwrap_or([0u8; 4]),
+                );
+                let flags = VectorMaskFlags {
+                    invert: flags_raw & 0x01 != 0,
+                    not_linked: flags_raw & 0x02 != 0,
+                    disabled: flags_raw & 0x04 != 0,
+                };
+                let path_bytes = &payload[8..];
                 let mut records: Vec<[u8; VMSK_RECORD_LEN]> = Vec::new();
                 for chunk in path_bytes.chunks_exact(VMSK_RECORD_LEN) {
                     let mut rec = [0u8; VMSK_RECORD_LEN];
@@ -856,7 +886,7 @@ fn scan_extra_tagged_blocks(
                     records.push(rec);
                 }
                 if !records.is_empty() {
-                    vector_mask = Some(VectorMaskData(records));
+                    vector_mask = Some(VectorMaskData { records, flags });
                 }
             } else {
                 // Adobe only writes version 3 (PS 6.0+); v2 or unknown

@@ -102,6 +102,11 @@ pub fn blend_vivid_light(cb: f32, cs: f32) -> f32 {
 /// that can arise when both operands are zero or near-zero (negative colour
 /// values are never meaningful, even in HDR mode where values above 1.0 are
 /// intentionally preserved as headroom).
+///
+/// **Note**: there is no upper clamp — `cb + 2*cs − 1` can exceed 1.0.  In
+/// SDR 8-bit output the implicit `rgba8unorm` clamp suppresses the overflow,
+/// so visible differences vs. Photoshop 8-bit behaviour are rare.  A future
+/// PS‑aligned clamp strategy should be unified across all modes.`
 #[inline]
 pub fn blend_linear_light(cb: f32, cs: f32) -> f32 {
     (cb + 2.0 * cs - 1.0).max(0.0)

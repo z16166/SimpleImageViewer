@@ -261,6 +261,7 @@ unsafe fn apply_base_alpha_mask_neon(group: &mut [u8], base_alpha: &[u8]) {
     let n = group.len() / 4;
     let mut i = 0usize;
     while i + 16 <= n {
+        let mut new_alpha_arr = [0u8; 16];
         unsafe {
             let pix = vld4q_u8(group.as_ptr().add(i * 4));
             let alpha = pix.3;
@@ -270,11 +271,13 @@ unsafe fn apply_base_alpha_mask_neon(group: &mut [u8], base_alpha: &[u8]) {
             let mut result = pix;
             result.3 = new_alpha;
             vst4q_u8(group.as_mut_ptr().add(i * 4), result);
+            // Store to array so we can test per-lane below.
+            vst1q_u8(new_alpha_arr.as_mut_ptr(), new_alpha);
         }
         // Clear RGB when new_alpha == 0 (scalar post-loop).
         for lane in 0..16 {
             let off = (i + lane) * 4;
-            if new_alpha[lane] == 0 {
+            if new_alpha_arr[lane] == 0 {
                 group[off] = 0;
                 group[off + 1] = 0;
                 group[off + 2] = 0;

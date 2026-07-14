@@ -689,6 +689,10 @@ pub(crate) struct LayerDecodeParams<'a> {
     pub(crate) should_decode: bool,
     pub(crate) cancel: Option<&'a std::sync::atomic::AtomicBool>,
     pub(crate) cmyk_icc: &'a [u8],
+    /// Full document dimensions (not layer-local), needed for vector mask
+    /// fractional-to-pixel coordinate conversion.
+    pub(crate) image_width: u32,
+    pub(crate) image_height: u32,
 }
 
 /// Decode one layer's channels from `channel_data[*cursor..]`, advancing `*cursor`
@@ -834,6 +838,8 @@ pub(crate) fn decode_one_layer(
             record.top,
             width,
             height,
+            params.image_width,
+            params.image_height,
         ) {
             Some(vm_mask) => mask = Some(vm_mask),
             None => {}
@@ -1036,6 +1042,8 @@ pub(crate) fn decode_layers_for_composite(
                 should_decode,
                 cancel,
                 cmyk_icc: info.cmyk_icc.as_slice(),
+                image_width: info.width,
+                image_height: info.height,
             },
         )
     };
@@ -1218,6 +1226,8 @@ pub(crate) fn run_composite_pass_cpu_streaming(
                 should_decode,
                 cancel,
                 cmyk_icc: info.cmyk_icc.as_slice(),
+                image_width: info.width,
+                image_height: info.height,
             },
         )
     };
@@ -1500,6 +1510,8 @@ mod tests {
                 should_decode: true,
                 cancel: None,
                 cmyk_icc: &[],
+                image_width: 100,
+                image_height: 100,
             },
         );
 
@@ -1549,6 +1561,8 @@ mod tests {
                 should_decode: true,
                 cancel: None,
                 cmyk_icc: &[],
+                image_width: 100,
+                image_height: 100,
             },
         );
 
@@ -1598,6 +1612,8 @@ mod tests {
                 should_decode: true,
                 cancel: None,
                 cmyk_icc: &[],
+                image_width: 100,
+                image_height: 100,
             },
         );
         assert!(

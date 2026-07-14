@@ -395,6 +395,14 @@ pub fn read_composite_from_index(
     }
 
     // --- Indexed (2): expand palette indices into RGB planar channels ---
+    //
+    // **Known limitation**: Photoshop's Indexed mode can store a "transparency
+    // index" — a single palette entry that maps to fully transparent pixels.
+    // The code below does *not* check for this; the optional second channel is
+    // used as the alpha plane as-is, which produces fully opaque alpha when
+    // that channel is absent.  Files that rely on the transparency-index
+    // feature will therefore render with solid (opaque) colours where
+    // Photoshop would show transparency.
     if color_mode == PSD_COLOR_MODE_INDEXED {
         let palette =
             crate::psb_color_convert::extract_indexed_palette(bytes).ok_or_else(|| {

@@ -18,7 +18,7 @@ Simple Image Viewer 是一款轻量、快速的桌面图片查看器。它在后
 - **图像格式支持** — 覆盖常见与现代静态图、Photoshop 文档及多种相机 RAW（RAW 为仅浏览）。
   - **常见静态**：JPEG、PNG、GIF、BMP、TIFF、TGA、WebP、ICO、PNM、QOI
   - **现代与高动态**：JPEG XL（`.jxl`）、AVIF / AVIFS 序列（`.avif`、`.avifs`）、OpenEXR（`.exr`）、Radiance HDR（`.hdr`）、HEIF / HEIC / HIF（含典型 iPhone HEIC）
-  - **Photoshop**：PSD / PSB，支持 GPU 加速图层合成、全部混合模式（含非可分离模式：色相、饱和度、颜色、明度）、矢量蒙版栅格化，以及更多色彩模式（Bitmap、Indexed、Duotone、Multichannel、Lab）。PSB 大文档加载前有内存安全检查，高位深文件经过精确 SDR 色调映射。
+  - **Photoshop**：PSD / PSB，支持全部混合模式（色相、饱和度、颜色、明度）、矢量蒙版，以及更多色彩模式（Bitmap、Indexed、Duotone、Multichannel、Lab）。PSB 大文档加载前有内存安全检查，高位深文件经过精确色调映射。
   - **相机 RAW**（60 余种）：佳能（`.cr2`、`.cr3`）、尼康（`.nef`、`.nrw`）、索尼（`.arw`）、富士（`.raf`）、松下（`.rw2`）、奥林巴斯（`.orf`）、宾得（`.pef`）、哈苏（`.3fr`）、飞思（`.iiq`）等
 - **HDR 与高动态渲染** — 对自带 HDR 或更广亮度动态的文件提供 HDR 观感呈现；最终观感取决于 HDR 显示器与系统的 HDR 是否开启。
   - Ultra HDR JPEG、自带 HDR 信息的 JPEG

@@ -18,22 +18,33 @@
 //!
 //! Extracted from `psb_layer_decode` to keep that module under the 2000-line
 //! threshold (checklist #12). Path records are 26 bytes each (i16 selector +
-//! three Q16.16 sub-points); the rasteriser produces a layer-sized alpha matte
-//! using even-odd or non-zero winding fill.
+//! three signed 8.24 fixed-point sub-points); the rasteriser produces a
+//! layer-sized alpha matte using even-odd or non-zero winding fill.
 //!
 //! Selector values follow the Adobe PSD Path resource specification:
 //!   0/3 = subpath length records, 1/2/4/5 = Bezier knots,
 //!   6 = fill rule record, 8 = initial fill rule, -1 = end of path.
+//!
+//! **Known limitation**: mask density and feather parameters in the Layer
+//! Mask Data block are skipped (their bytes are consumed for alignment) but
+//! not applied.  Density would scale the mask's alpha; feather would blur
+//! its edges.  Both the user-mask and vector-mask paths have this gap,
+//! which may cause visible differences from Photoshop on documents that
+//! use non-zero feather or density < 255.
 
-use crate::psb_layer_composite::{VMSK_RECORD_LEN, VectorMaskData, checked_layer_pixel_count};
+use crate::psb_layer_composite::{
+    VMSK_RECORD_LEN, VectorMaskData, checked_layer_pixel_count,
+};
 
 // ---------------------------------------------------------------------------
 // Path record coordinate helpers
 // ---------------------------------------------------------------------------
 
-/// Read a single fixed-point coordinate (Q16.16) from a path record byte
+/// Read a single fixed-point coordinate (signed 8.24) from a path record byte
 /// slice at the given offset. The coordinate is an i32 big-endian stored in
-/// 4 bytes; dividing by [`Q16_16_DIVISOR`] yields the document-pixel float value.
+/// 4 bytes; dividing by [`VMSK_COORD_DIVISOR`] yields a fractional value in
+/// approximately [0, 1] that the caller multiplies by the document dimension
+/// to obtain a document-pixel float value.
 fn read_path_coord(rec: &[u8; VMSK_RECORD_LEN], offset: usize) -> f64 {
     i32::from_be_bytes([
         rec[offset],
@@ -41,7 +52,7 @@ fn read_path_coord(rec: &[u8; VMSK_RECORD_LEN], offset: usize) -> f64 {
         rec[offset + 2],
         rec[offset + 3],
     ]) as f64
-        / Q16_16_DIVISOR
+        / VMSK_COORD_DIVISOR
 }
 
 /// Read a (x, y) pair from a path sub-point starting at `base`.
@@ -95,8 +106,10 @@ const KNOT_PRECEDING_XY: usize = 2;
 const KNOT_ANCHOR_XY: usize = 10;
 const KNOT_FOLLOWING_XY: usize = 18;
 
-/// Q16.16 fixed-point divisor: 2^16 = 65536.  Converts i32 Q16.16 → f64.
-const Q16_16_DIVISOR: f64 = 65536.0;
+/// Signed 8.24 fixed-point divisor: 2^24 = 16777216.  Converts i32 raw → f64.
+/// Adobe stores vmsk/vsms path coordinates in this format; the value 0x01000000
+/// represents 1.0 (fractional document dimension).
+const VMSK_COORD_DIVISOR: f64 = 16777216.0;
 
 /// Number of line segments per cubic Bezier curve when rasterising.
 /// Higher values produce smoother curves at the cost of more vertices.
@@ -126,7 +139,7 @@ fn parse_vector_paths(data: &VectorMaskData) -> ParsedVectorPaths {
     let mut current: Vec<(f64, f64, f64, f64, f64, f64)> = Vec::new(); // (bx,by, ax,ay, cx,cy)
     let mut open = false;
 
-    for rec in &data.0 {
+    for rec in &data.records {
         let sel = i16::from_be_bytes([rec[0], rec[1]]);
         match sel {
             // ── Fill rule (6): bytes 2-3 contain the rule ─────────────
@@ -241,18 +254,27 @@ fn finalize_subpath(
 // ---------------------------------------------------------------------------
 
 /// Rasterise a vector mask into a layer-sized alpha matte, or `None` when
-/// the mask is empty or has only open subpaths (caller keeps no-mask).
+/// the mask is disabled, empty, or has only open subpaths (caller keeps no-mask).
 ///
-/// Path coordinates are in document pixel space; the layer rect (`left`,
-/// `top`, `w`, `h`) offsets them to layer-local pixels. The returned
-/// `Vec<u8>` has one byte per layer pixel (`255` = fully opaque / visible).
+/// Path coordinates are stored as signed 8.24 fixed-point fractions relative
+/// to the full document dimensions (`image_w`, `image_h`). This function
+/// converts them to document pixel space, then shifts by the layer rect
+/// (`left`, `top`) to obtain layer-local pixels. The returned `Vec<u8>` has
+/// one byte per layer pixel (`255` = fully opaque / visible).
 pub(crate) fn rasterize_vector_mask(
     vector_mask: &VectorMaskData,
     left: i32,
     top: i32,
     w: u32,
     h: u32,
+    image_w: u32,
+    image_h: u32,
 ) -> Option<Vec<u8>> {
+    // Mask disabled → treat as if no mask.
+    if vector_mask.flags.disabled {
+        return None;
+    }
+
     let Some(pixel_count) = checked_layer_pixel_count(w, h) else {
         return None;
     };
@@ -261,6 +283,20 @@ pub(crate) fn rasterize_vector_mask(
     if parsed.subpaths.is_empty() {
         return None;
     }
+
+    let iw = image_w as f64;
+    let ih = image_h as f64;
+
+    // Convert fractional [0, 1] coordinates to document pixel space.
+    let subpaths: Vec<Vec<(f64, f64)>> = parsed
+        .subpaths
+        .into_iter()
+        .map(|poly| {
+            poly.into_iter()
+                .map(|(x, y)| (x * iw, y * ih))
+                .collect()
+        })
+        .collect();
 
     let keep_transparent = parsed.keep_transparent;
     let mut mask = if keep_transparent {
@@ -275,7 +311,7 @@ pub(crate) fn rasterize_vector_mask(
 
     let even_odd = parsed.even_odd;
 
-    for poly in &parsed.subpaths {
+    for poly in &subpaths {
         if poly.len() < 3 {
             continue;
         }
@@ -356,6 +392,13 @@ pub(crate) fn rasterize_vector_mask(
         }
     }
 
+    // Apply the invert flag (bit 0): XOR every byte with 0xFF.
+    if vector_mask.flags.invert {
+        for b in &mut mask {
+            *b = !*b;
+        }
+    }
+
     Some(mask)
 }
 
@@ -366,6 +409,7 @@ pub(crate) fn rasterize_vector_mask(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::psb_layer_composite::VectorMaskFlags;
 
     // ── Helpers ───────────────────────────────────────────────────────
 
@@ -373,15 +417,14 @@ mod tests {
         v.to_be_bytes()
     }
 
-    fn q16(v: f64) -> i32 {
-        (v * Q16_16_DIVISOR) as i32
+    fn q24(v: f64) -> i32 {
+        (v * VMSK_COORD_DIVISOR) as i32
     }
 
     fn empty_rec() -> [u8; VMSK_RECORD_LEN] {
         [0u8; VMSK_RECORD_LEN]
     }
 
-    // Length record: selector 0 (closed) or 3 (open), knot count in bytes 2-5.
     fn len_rec(sel: i16, knot_count: i32) -> [u8; VMSK_RECORD_LEN] {
         let mut rec = empty_rec();
         rec[0..2].copy_from_slice(&sel.to_be_bytes());
@@ -389,7 +432,6 @@ mod tests {
         rec
     }
 
-    // Fill-rule record (selector 6): rule value in bytes 2-3 (0=even-odd, 1=non-zero).
     fn fill_rule_rec(rule: i16) -> [u8; VMSK_RECORD_LEN] {
         let mut rec = empty_rec();
         rec[0..2].copy_from_slice(&6i16.to_be_bytes());
@@ -397,23 +439,26 @@ mod tests {
         rec
     }
 
-    // Corner knot: preceding control = anchor = following control = (x, y).
-    fn corner_knot(sel: i16, x: f64, y: f64) -> [u8; VMSK_RECORD_LEN] {
+    fn corner_knot(sel: i16, frac_x: f64, frac_y: f64) -> [u8; VMSK_RECORD_LEN] {
         let mut rec = empty_rec();
         rec[0..2].copy_from_slice(&sel.to_be_bytes());
-        // preceding control: Y, X
-        rec[2..6].copy_from_slice(&be4(q16(y)));
-        rec[6..10].copy_from_slice(&be4(q16(x)));
-        // anchor: Y, X
-        rec[10..14].copy_from_slice(&be4(q16(y)));
-        rec[14..18].copy_from_slice(&be4(q16(x)));
-        // following control: Y, X
-        rec[18..22].copy_from_slice(&be4(q16(y)));
-        rec[22..26].copy_from_slice(&be4(q16(x)));
+        rec[2..6].copy_from_slice(&be4(q24(frac_y)));
+        rec[6..10].copy_from_slice(&be4(q24(frac_x)));
+        rec[10..14].copy_from_slice(&be4(q24(frac_y)));
+        rec[14..18].copy_from_slice(&be4(q24(frac_x)));
+        rec[18..22].copy_from_slice(&be4(q24(frac_y)));
+        rec[22..26].copy_from_slice(&be4(q24(frac_x)));
         rec
     }
 
-    // End-of-path marker (selector = -1 / 0xFFFF).
+    fn pixel_knot(sel: i16, px: f64, py: f64, doc_w: f64, doc_h: f64) -> [u8; VMSK_RECORD_LEN] {
+        corner_knot(sel, px / doc_w, py / doc_h)
+    }
+
+    fn default_vm(records: Vec<[u8; VMSK_RECORD_LEN]>) -> VectorMaskData {
+        VectorMaskData { records, flags: VectorMaskFlags::default() }
+    }
+
     fn end_rec() -> [u8; VMSK_RECORD_LEN] {
         let mut rec = empty_rec();
         rec[0..2].copy_from_slice(&(-1i16).to_be_bytes());
@@ -424,177 +469,190 @@ mod tests {
 
     #[test]
     fn empty_vector_mask_returns_none() {
-        let vm = VectorMaskData(vec![]);
-        assert!(rasterize_vector_mask(&vm, 0, 0, 50, 50).is_none());
+        let vm = default_vm(vec![]);
+        assert!(rasterize_vector_mask(&vm, 0, 0, 50, 50, 50, 50).is_none());
     }
 
     #[test]
     fn closed_triangle_produces_alpha() {
-        // Triangle (0,0)-(100,0)-(50,100), closed subpath with 3 linked knots.
-        let vm = VectorMaskData(vec![
+        let doc_w = 150.0;
+        let doc_h = 150.0;
+        let vm = default_vm(vec![
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0, doc_w, doc_h),
             end_rec(),
         ]);
-        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
+        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150, 150, 150)
             .expect("closed triangle should produce a mask");
-
-        // Inside the triangle: centre area.
-        assert_eq!(
-            mask[33 * 150 + 50],
-            255,
-            "triangle interior should be opaque"
-        );
-        // Outside: bottom-right corner.
+        assert_eq!(mask[33 * 150 + 50], 255, "triangle interior should be opaque");
         assert_eq!(mask[149 * 150 + 149], 0, "bottom-right should be outside");
     }
 
     #[test]
     fn open_subpath_ignored_for_fill() {
-        // Open subpath → should be skipped by finalize_subpath.
-        let vm = VectorMaskData(vec![
+        let doc_w = 150.0;
+        let doc_h = 150.0;
+        let vm = default_vm(vec![
             len_rec(PATH_SELECTOR_OPEN_LEN, 3),
-            corner_knot(PATH_SELECTOR_OPEN_KNOT_LINKED, 0.0, 0.0),
-            corner_knot(PATH_SELECTOR_OPEN_KNOT_LINKED, 100.0, 0.0),
-            corner_knot(PATH_SELECTOR_OPEN_KNOT_LINKED, 50.0, 100.0),
+            pixel_knot(PATH_SELECTOR_OPEN_KNOT_LINKED, 0.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_OPEN_KNOT_LINKED, 100.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_OPEN_KNOT_LINKED, 50.0, 100.0, doc_w, doc_h),
             end_rec(),
         ]);
-        assert!(
-            rasterize_vector_mask(&vm, 0, 0, 50, 50).is_none(),
-            "open subpath should produce no mask"
-        );
+        assert!(rasterize_vector_mask(&vm, 0, 0, 50, 50, 150, 150).is_none());
     }
 
     #[test]
     fn fill_rule_even_odd_honored() {
-        // Explicit even-odd fill rule (selector 6, rule=0).
-        let vm = VectorMaskData(vec![
-            fill_rule_rec(0), // even-odd
+        let doc_w = 150.0;
+        let doc_h = 150.0;
+        let vm = default_vm(vec![
+            fill_rule_rec(0),
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0, doc_w, doc_h),
             end_rec(),
         ]);
-        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
+        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150, 150, 150)
             .expect("even-odd fill should produce a mask");
-        assert_eq!(
-            mask[33 * 150 + 50],
-            255,
-            "even-odd: triangle interior should be opaque"
-        );
+        assert_eq!(mask[33 * 150 + 50], 255);
     }
 
     #[test]
     fn fill_rule_non_zero_honored() {
-        // Explicit non-zero fill rule (selector 6, rule=1).
-        let vm = VectorMaskData(vec![
-            fill_rule_rec(1), // non-zero winding
+        let doc_w = 150.0;
+        let doc_h = 150.0;
+        let vm = default_vm(vec![
+            fill_rule_rec(1),
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0, doc_w, doc_h),
             end_rec(),
         ]);
-        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
+        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150, 150, 150)
             .expect("non-zero fill should produce a mask");
-        assert_eq!(
-            mask[33 * 150 + 50],
-            255,
-            "non-zero: triangle interior should be opaque"
-        );
+        assert_eq!(mask[33 * 150 + 50], 255);
     }
 
     #[test]
     fn default_fill_rule_is_even_odd() {
-        // No selector 6 → defaults to even_odd = true (Adobe standard).
-        let vm = VectorMaskData(vec![
+        let doc_w = 150.0;
+        let doc_h = 150.0;
+        let vm = default_vm(vec![
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0, doc_w, doc_h),
             end_rec(),
         ]);
-        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
+        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150, 150, 150)
             .expect("default fill rule should produce a mask");
-        // Triangle centre is inside under both rules; just verify it runs.
         assert_eq!(mask[33 * 150 + 50], 255);
     }
 
     #[test]
     fn unlinked_closed_knots_accepted() {
-        // Unlinked knots (selector 2) must be accepted for closed subpaths.
-        let vm = VectorMaskData(vec![
+        let doc_w = 150.0;
+        let doc_h = 150.0;
+        let vm = default_vm(vec![
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_UNLINKED, 0.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_UNLINKED, 100.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_UNLINKED, 50.0, 100.0),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_UNLINKED, 0.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_UNLINKED, 100.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_UNLINKED, 50.0, 100.0, doc_w, doc_h),
             end_rec(),
         ]);
-        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
+        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150, 150, 150)
             .expect("unlinked closed knots should produce a mask");
         assert_eq!(mask[33 * 150 + 50], 255);
     }
 
     #[test]
     fn fill_rule_before_subpath_honored() {
-        // Rule record may appear before the subpath length record.
-        let vm = VectorMaskData(vec![
-            fill_rule_rec(0), // even-odd
+        let doc_w = 150.0;
+        let doc_h = 150.0;
+        let vm = default_vm(vec![
+            fill_rule_rec(0),
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0, doc_w, doc_h),
             end_rec(),
         ]);
-        assert!(rasterize_vector_mask(&vm, 0, 0, 150, 150).is_some());
+        assert!(rasterize_vector_mask(&vm, 0, 0, 150, 150, 150, 150).is_some());
     }
 
     #[test]
     fn unclosed_length_record_is_flushed() {
-        // If a new length record appears before the previous subpath is closed
-        // (no prior length record), the old subpath is flushed and finalised.
-        let vm = VectorMaskData(vec![
+        let doc_w = 150.0;
+        let doc_h = 150.0;
+        let vm = default_vm(vec![
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
-            // Second subpath: a tiny triangle far away (won't affect centre).
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0, doc_w, doc_h),
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 500.0, 500.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 600.0, 500.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 550.0, 600.0),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 500.0, 500.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 600.0, 500.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 550.0, 600.0, doc_w, doc_h),
             end_rec(),
         ]);
-        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
+        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150, 150, 150)
             .expect("multiple subpaths should produce a mask");
-        assert_eq!(
-            mask[33 * 150 + 50],
-            255,
-            "first triangle centre should still be opaque"
-        );
+        assert_eq!(mask[33 * 150 + 50], 255);
     }
 
     #[test]
     fn layer_offset_shifts_mask() {
-        // Triangle at (0,0) but layer has offset (10, 10). Centre in local
-        // coords should still be (75,75) for a 150x150 layer.
-        let vm = VectorMaskData(vec![
+        let doc_w = 200.0;
+        let doc_h = 200.0;
+        let vm = default_vm(vec![
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
-            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0, doc_w, doc_h),
+            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0, doc_w, doc_h),
             end_rec(),
         ]);
-        let mask = rasterize_vector_mask(&vm, 10, 10, 200, 200)
+        let mask = rasterize_vector_mask(&vm, 10, 10, 200, 200, 200, 200)
             .expect("offset layer should produce a mask");
-        // Layer-local pixel (40,23) = document (50,33) = centroid of triangle.
         let local_idx = 23 * 200 + 40;
-        assert_eq!(
-            mask[local_idx], 255,
-            "triangle interior should be opaque after offset"
-        );
+        assert_eq!(mask[local_idx], 255);
+    }
+
+    #[test]
+    fn disabled_flag_returns_none() {
+        let vm = VectorMaskData {
+            records: vec![
+                len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
+                corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
+                corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.5, 0.0),
+                corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.25, 0.5),
+                end_rec(),
+            ],
+            flags: VectorMaskFlags { disabled: true, ..Default::default() },
+        };
+        assert!(rasterize_vector_mask(&vm, 0, 0, 100, 100, 100, 100).is_none());
+    }
+
+    #[test]
+    fn invert_flag_flips_mask_alpha() {
+        let vm = VectorMaskData {
+            records: vec![
+                len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
+                corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
+                corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.1, 0.0),
+                corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.1),
+                end_rec(),
+            ],
+            flags: VectorMaskFlags { invert: true, ..Default::default() },
+        };
+        let mask = rasterize_vector_mask(&vm, 0, 0, 100, 100, 100, 100)
+            .expect("invert flag mask should produce output");
+        assert_eq!(mask[0], 0, "inverted: triangle interior becomes transparent");
+        let br = 99 * 100 + 99;
+        assert_eq!(mask[br], 255, "inverted: area outside triangle becomes opaque");
     }
 }

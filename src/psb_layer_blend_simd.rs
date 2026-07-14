@@ -86,9 +86,11 @@ pub enum SeparableBlendKind {
     Subtract,
     Divide,
     // ── Special (treated as Normal) ────────────────────────────────────
-    /// `diss` (Dissolve) — stochastic alpha dither; we treat as Normal.
+    /// `diss` (Dissolve) — stochastic alpha dither; not implemented, treated
+    /// as Normal (dissolve requires random dithering we do not support).
     Dissolve,
-    /// `pass` (Pass Through) — layer-group pass-through, identical to Normal.
+    /// `pass` (Pass Through) — layer-group pass-through.  Treated as Normal
+    /// in flat bottom‑up compositing (no group isolation boundary to preserve).
     PassThrough,
 }
 
