@@ -13,7 +13,7 @@ All notable changes to this project will be documented in this file.
 ### Improved
 - **SDR 16/32-bit tone mapping**: High-bit-depth PSD/PSB documents render with more accurate colour and contrast, especially when the embedded ICC profile is sRGB or Display P3.
 - **HDR composite robustness**: When a layer's alpha or mask channel is corrupted, the layer is safely skipped instead of producing wrong pixels. This prevents colour shifts in damaged HDR files. (Colour-critical users should still verify important images against the original.)
-- **Pipeline cache version bump**: GPU shader caches are rebuilt to match the new blend-mode WGSL shaders, preventing potential runtime mismatches on macOS.
+- **GPU cache rebuild on upgrade**: The GPU shader cache is automatically rebuilt after this update, preventing display glitches caused by stale cached shaders.
 
 ### Fixed
 - **Path-based opener visibility**: The `open_*_source` functions that accept file paths are now restricted to test builds, removing dead code from release binaries.

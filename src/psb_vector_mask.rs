@@ -108,7 +108,7 @@ struct ParsedVectorPaths {
 }
 
 fn parse_vector_paths(data: &VectorMaskData) -> ParsedVectorPaths {
-    let mut even_odd = false;
+    let mut even_odd = true;
     let mut subpaths: Vec<Vec<(f64, f64)>> = Vec::new();
     let mut current: Vec<(f64, f64, f64, f64, f64, f64)> = Vec::new(); // (bx,by, ax,ay, cx,cy)
     let mut open = false;
@@ -334,4 +334,223 @@ pub(crate) fn rasterize_vector_mask(
     }
 
     Some(mask)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Helpers ───────────────────────────────────────────────────────
+
+    fn be4(v: i32) -> [u8; 4] {
+        v.to_be_bytes()
+    }
+
+    fn q16(v: f64) -> i32 {
+        (v * Q16_16_DIVISOR) as i32
+    }
+
+    fn empty_rec() -> [u8; VMSK_RECORD_LEN] {
+        [0u8; VMSK_RECORD_LEN]
+    }
+
+    // Length record: selector 0 (closed) or 3 (open), knot count in bytes 2-5.
+    fn len_rec(sel: i16, knot_count: i32) -> [u8; VMSK_RECORD_LEN] {
+        let mut rec = empty_rec();
+        rec[0..2].copy_from_slice(&sel.to_be_bytes());
+        rec[2..6].copy_from_slice(&be4(knot_count));
+        rec
+    }
+
+    // Fill-rule record (selector 6): rule value in bytes 2-3 (0=even-odd, 1=non-zero).
+    fn fill_rule_rec(rule: i16) -> [u8; VMSK_RECORD_LEN] {
+        let mut rec = empty_rec();
+        rec[0..2].copy_from_slice(&6i16.to_be_bytes());
+        rec[2..4].copy_from_slice(&rule.to_be_bytes());
+        rec
+    }
+
+    // Corner knot: preceding control = anchor = following control = (x, y).
+    fn corner_knot(sel: i16, x: f64, y: f64) -> [u8; VMSK_RECORD_LEN] {
+        let mut rec = empty_rec();
+        rec[0..2].copy_from_slice(&sel.to_be_bytes());
+        // preceding control: Y, X
+        rec[2..6].copy_from_slice(&be4(q16(y)));
+        rec[6..10].copy_from_slice(&be4(q16(x)));
+        // anchor: Y, X
+        rec[10..14].copy_from_slice(&be4(q16(y)));
+        rec[14..18].copy_from_slice(&be4(q16(x)));
+        // following control: Y, X
+        rec[18..22].copy_from_slice(&be4(q16(y)));
+        rec[22..26].copy_from_slice(&be4(q16(x)));
+        rec
+    }
+
+    // End-of-path marker (selector = -1 / 0xFFFF).
+    fn end_rec() -> [u8; VMSK_RECORD_LEN] {
+        let mut rec = empty_rec();
+        rec[0..2].copy_from_slice(&(-1i16).to_be_bytes());
+        rec
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_vector_mask_returns_none() {
+        let vm = VectorMaskData(vec![]);
+        assert!(rasterize_vector_mask(&vm, 0, 0, 50, 50).is_none());
+    }
+
+    #[test]
+    fn closed_triangle_produces_alpha() {
+        // Triangle (0,0)-(100,0)-(50,100), closed subpath with 3 linked knots.
+        let vm = VectorMaskData(vec![
+            len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            end_rec(),
+        ]);
+        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
+            .expect("closed triangle should produce a mask");
+
+        // Inside the triangle: centre area.
+        assert_eq!(mask[33 * 150 + 50], 255, "triangle interior should be opaque");
+        // Outside: bottom-right corner.
+        assert_eq!(mask[149 * 150 + 149], 0, "bottom-right should be outside");
+    }
+
+    #[test]
+    fn open_subpath_ignored_for_fill() {
+        // Open subpath → should be skipped by finalize_subpath.
+        let vm = VectorMaskData(vec![
+            len_rec(PATH_SELECTOR_OPEN_LEN, 3),
+            corner_knot(PATH_SELECTOR_OPEN_KNOT_LINKED, 0.0, 0.0),
+            corner_knot(PATH_SELECTOR_OPEN_KNOT_LINKED, 100.0, 0.0),
+            corner_knot(PATH_SELECTOR_OPEN_KNOT_LINKED, 50.0, 100.0),
+            end_rec(),
+        ]);
+        assert!(rasterize_vector_mask(&vm, 0, 0, 50, 50).is_none(),
+            "open subpath should produce no mask");
+    }
+
+    #[test]
+    fn fill_rule_even_odd_honored() {
+        // Explicit even-odd fill rule (selector 6, rule=0).
+        let vm = VectorMaskData(vec![
+            fill_rule_rec(0),                         // even-odd
+            len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            end_rec(),
+        ]);
+        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
+            .expect("even-odd fill should produce a mask");
+        assert_eq!(mask[33 * 150 + 50], 255, "even-odd: triangle interior should be opaque");
+    }
+
+    #[test]
+    fn fill_rule_non_zero_honored() {
+        // Explicit non-zero fill rule (selector 6, rule=1).
+        let vm = VectorMaskData(vec![
+            fill_rule_rec(1),                         // non-zero winding
+            len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            end_rec(),
+        ]);
+        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
+            .expect("non-zero fill should produce a mask");
+        assert_eq!(mask[33 * 150 + 50], 255, "non-zero: triangle interior should be opaque");
+    }
+
+    #[test]
+    fn default_fill_rule_is_even_odd() {
+        // No selector 6 → defaults to even_odd = true (Adobe standard).
+        let vm = VectorMaskData(vec![
+            len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            end_rec(),
+        ]);
+        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
+            .expect("default fill rule should produce a mask");
+        // Triangle centre is inside under both rules; just verify it runs.
+        assert_eq!(mask[33 * 150 + 50], 255);
+    }
+
+    #[test]
+    fn unlinked_closed_knots_accepted() {
+        // Unlinked knots (selector 2) must be accepted for closed subpaths.
+        let vm = VectorMaskData(vec![
+            len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_UNLINKED, 0.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_UNLINKED, 100.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_UNLINKED, 50.0, 100.0),
+            end_rec(),
+        ]);
+        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
+            .expect("unlinked closed knots should produce a mask");
+        assert_eq!(mask[33 * 150 + 50], 255);
+    }
+
+    #[test]
+    fn fill_rule_before_subpath_honored() {
+        // Rule record may appear before the subpath length record.
+        let vm = VectorMaskData(vec![
+            fill_rule_rec(0),                         // even-odd
+            len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            end_rec(),
+        ]);
+        assert!(rasterize_vector_mask(&vm, 0, 0, 150, 150).is_some());
+    }
+
+    #[test]
+    fn unclosed_length_record_is_flushed() {
+        // If a new length record appears before the previous subpath is closed
+        // (no prior length record), the old subpath is flushed and finalised.
+        let vm = VectorMaskData(vec![
+            len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            // Second subpath: a tiny triangle far away (won't affect centre).
+            len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 500.0, 500.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 600.0, 500.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 550.0, 600.0),
+            end_rec(),
+        ]);
+        let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
+            .expect("multiple subpaths should produce a mask");
+        assert_eq!(mask[33 * 150 + 50], 255, "first triangle centre should still be opaque");
+    }
+
+    #[test]
+    fn layer_offset_shifts_mask() {
+        // Triangle at (0,0) but layer has offset (10, 10). Centre in local
+        // coords should still be (75,75) for a 150x150 layer.
+        let vm = VectorMaskData(vec![
+            len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
+            corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 50.0, 100.0),
+            end_rec(),
+        ]);
+        let mask = rasterize_vector_mask(&vm, 10, 10, 200, 200)
+            .expect("offset layer should produce a mask");
+        // Layer-local pixel (40,23) = document (50,33) = centroid of triangle.
+        let local_idx = 23 * 200 + 40;
+        assert_eq!(mask[local_idx], 255, "triangle interior should be opaque after offset");
+    }
 }

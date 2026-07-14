@@ -397,8 +397,10 @@ pub fn read_composite_from_index(
     // --- Indexed (2): expand palette indices into RGB planar channels ---
     if color_mode == PSD_COLOR_MODE_INDEXED {
         let palette = crate::psb_color_convert::extract_indexed_palette(bytes).ok_or_else(|| {
-            "Indexed (palette) PSD/PSB missing 768-byte palette in Color Mode Data section"
-                .to_string()
+            format!(
+                "Indexed (palette) PSD/PSB missing {}-byte palette in Color Mode Data section",
+                crate::psb_color_convert::INDEXED_PALETTE_BYTES
+            )
         })?;
         // Take ownership of the index plane (avoids borrow conflict with take below).
         let indices_opt = planar_channels[0].take();
