@@ -60,7 +60,8 @@ use parking_lot::Mutex;
 const WORKGROUP: u32 = 16;
 const READBACK_MAX_WAIT: Duration = Duration::from_secs(30);
 /// Short Wait slice so cancel and `device_id_live` can be polled during readback.
-const READBACK_POLL_SLICE: Duration = Duration::from_millis(50);
+/// 1 ms keeps device-replacement detection latency low without busy-waiting.
+const READBACK_POLL_SLICE: Duration = Duration::from_millis(1);
 /// `BlendParamsUniform` bytes (must match WGSL `BlendParams`).
 const BLEND_PARAMS_BYTES: u64 = 32;
 /// Upper bound on uniform dispatches per layer (clip clear/capture/apply/flush).
@@ -1548,6 +1549,10 @@ fn wait_for_readback(
         if now >= deadline {
             return Err("PSD blend readback timed out".into());
         }
+        // Non-blocking poll first: catch already-complete submissions immediately
+        // so device-replacement and cancel detection is not delayed by the wait below.
+        let _ = device.poll(wgpu::PollType::Poll);
+
         // Wake periodically so cancel and device replacement can abort before
         // READBACK_MAX_WAIT instead of blocking in a single long Wait.
         let remaining = deadline.saturating_duration_since(now);
