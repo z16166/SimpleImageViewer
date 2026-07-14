@@ -358,7 +358,7 @@ unsafe fn blend_plane_f32_sse41(
             _mm_max_ps(_mm_add_ps(_mm_add_ps(dc, sc), _mm_set1_ps(-1.0)), zero)
         }
         SeparableBlendKind::LinearLight => {
-            _mm_add_ps(dc, _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(2.0), sc), one))
+            _mm_max_ps(_mm_add_ps(dc, _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(2.0), sc), one)), zero)
         }
         SeparableBlendKind::Difference => {
             let diff = _mm_sub_ps(dc, sc);
@@ -637,9 +637,12 @@ unsafe fn blend_plane_f32_avx2(
             _mm256_add_ps(_mm256_add_ps(dc, sc), _mm256_set1_ps(-1.0)),
             zero,
         ),
-        SeparableBlendKind::LinearLight => _mm256_add_ps(
-            dc,
-            _mm256_sub_ps(_mm256_mul_ps(_mm256_set1_ps(2.0), sc), one),
+        SeparableBlendKind::LinearLight => _mm256_max_ps(
+            _mm256_add_ps(
+                dc,
+                _mm256_sub_ps(_mm256_mul_ps(_mm256_set1_ps(2.0), sc), one),
+            ),
+            zero,
         ),
         SeparableBlendKind::Difference => {
             let diff = _mm256_sub_ps(dc, sc);
@@ -885,7 +888,7 @@ unsafe fn blend_plane_f32_neon(
             vmaxq_f32(vaddq_f32(vaddq_f32(dc, sc), vdupq_n_f32(-1.0)), zero)
         }
         SeparableBlendKind::LinearLight => {
-            vaddq_f32(dc, vsubq_f32(vmulq_f32(vdupq_n_f32(2.0), sc), one))
+            vmaxq_f32(vaddq_f32(dc, vsubq_f32(vmulq_f32(vdupq_n_f32(2.0), sc), one)), zero)
         }
         SeparableBlendKind::Difference => vabsq_f32(vsubq_f32(dc, sc)),
         SeparableBlendKind::Exclusion => {

@@ -20,12 +20,6 @@
 //! review limit while allowing all separable PSD/PSB blend modes to execute
 //! on GPU when the canvas is large enough.
 
-// This module is declared in both `lib.rs` (as `pub mod` for `cargo test --lib`)
-// and `main.rs` (as `mod` for the binary crate).  The binary crate's
-// `psb_layer_blend_gpu` is the sole consumer; the lib crate sees dead code.
-// Silencing with `dead_code` is the lesser evil — prefer removal once
-// `cargo test --lib` no longer needs the lib declaration.
-#![allow(dead_code)]
 
 /// WGSL `mode` uniform values (must match shader entry points).
 pub(crate) const BLEND_MODE_NORMAL: u32 = 0;
@@ -448,7 +442,7 @@ fn cs_blend_linear_light(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (sa <= 0.0) { return; }
     let dst_coord = vec2<i32>(dx, dy);
     let dst = textureLoad(target, dst_coord);
-    let blended = dst.rgb + 2.0 * src.rgb - 1.0;
+    let blended = max(vec3<f32>(0.0), dst.rgb + 2.0 * src.rgb - 1.0);
     blend_store(dst_coord, src, dst, blended);
 }
 

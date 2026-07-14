@@ -22,7 +22,6 @@ pub mod simd_swizzle;
 
 // PSD/PSB SIMD helpers — registered here for `cargo test --lib` coverage
 // (also declared in `main.rs` as private `mod` for the binary crate).
-pub mod psb_blend_gpu_shaders;
 pub mod psb_blend_nonseparable;
 pub mod psb_blend_nonseparable_full;
 pub mod psb_blend_separable;

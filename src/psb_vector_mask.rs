@@ -59,7 +59,7 @@ fn read_path_coord(rec: &[u8; VMSK_RECORD_LEN], offset: usize) -> f64 {
 ///
 /// # Wire format
 ///
-/// Each sub-point stores **Y** in the first 4 bytes (big-endian Q16.16) and
+/// Each sub-point stores **Y** in the first 4 bytes (big-endian signed 8.24) and
 /// **X** in the next 4 bytes.  This function reads them in the correct
 /// storage order and returns **(X, Y)** so callers always see a conventional
 /// `(x, y)` tuple.
@@ -72,7 +72,7 @@ fn read_path_point(rec: &[u8; VMSK_RECORD_LEN], base: usize) -> (f64, f64) {
 // Path selector constants (Adobe PSD Path resource spec)
 // ---------------------------------------------------------------------------
 //
-// Each path record is 26 bytes: i16 selector + three Q16.16 sub-points
+// Each path record is 26 bytes: i16 selector + three signed 8.24 sub-points
 // (each 8 bytes: i32 x, i32 y).
 //
 // Selector values:
@@ -99,9 +99,9 @@ const PATH_SELECTOR_INITIAL_FILL: i16 = 8; // initial fill rule record
 
 // Byte offsets for sub-points within a knot record (selectors 1/2/4/5).
 //   [0-1]  selector (i16)
-//   [2-9]  preceding control point Y, X  (Q16.16)
-//   [10-17] anchor point Y, X            (Q16.16)
-//   [18-25] following control point Y, X (Q16.16)
+//   [2-9]  preceding control point Y, X  (signed 8.24)
+//   [10-17] anchor point Y, X            (signed 8.24)
+//   [18-25] following control point Y, X (signed 8.24)
 const KNOT_PRECEDING_XY: usize = 2;
 const KNOT_ANCHOR_XY: usize = 10;
 const KNOT_FOLLOWING_XY: usize = 18;

@@ -141,11 +141,11 @@ pub fn extract_indexed_palette(bytes: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 /// Interleave one row of Indexed-mode data into RGBA8.
 ///
 /// `src` holds 8-bit palette indices. `palette` is 768 bytes (256 × 3, RGB).
-pub fn indexed_row_to_rgba8(dst_row: &mut [u8], src: &[u8], palette: &[u8], width: usize) {
+fn indexed_row_to_rgba8(dst_row: &mut [u8], src: &[u8], palette: &[u8], width: usize) {
     for col in 0..width {
         let idx = if col < src.len() {
             src[col] as usize
@@ -205,14 +205,14 @@ pub fn multichannel_row_to_rgba8(
 // Duotone (mode 8): stored as single grayscale channel
 // ---------------------------------------------------------------------------
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 /// Interleave one row of Duotone-mode data into RGBA8.
 ///
 /// Duotone image data is stored identically to Grayscale: one channel of
 /// 8/16/32-bit samples. The duotone curves and ink colours are stored in
 /// the Color Mode Data section but are too complex to apply automatically;
 /// we render as plain grayscale.
-pub fn duotone_row_to_rgba8(
+fn duotone_row_to_rgba8(
     dst_row: &mut [u8],
     gray: &[u8],
     alpha: Option<&[u8]>,
