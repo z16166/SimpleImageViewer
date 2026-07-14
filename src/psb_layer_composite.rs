@@ -176,6 +176,12 @@ pub(crate) fn apply_mask_density(mask: &mut [u8], density: u8) {
 /// Apply a separable box-blur approximation of Gaussian feather to a
 /// layer-sized mask buffer.  `feather` is the pixel radius; values ≤ 0.5
 /// produce a no-op (the blur kernel would be smaller than 1 px).
+///
+/// **Note**: this is a moving-average (box) blur, not a true Gaussian
+/// convolution.  Compared to Photoshop's Gaussian feather, a box blur of
+/// the same radius produces a slightly sharper edge transition.  For most
+/// masks the difference is subtle; a future switch to a proper Gaussian
+/// kernel (e.g. repeated box blurs or a separable IIR) could close the gap.
 /// Uses a simple 2-pass (horizontal + vertical) moving-average filter.
 pub(crate) fn apply_mask_feather(mask: &mut [u8], w: u32, h: u32, feather: f64) {
     if feather <= 0.5 || w < 2 || h < 2 {
@@ -757,9 +763,10 @@ fn parse_layer_mask_data(
 }
 
 /// When the mask data block is long enough, parse the real user mask rect
-/// used by channel id -3. Density/feather parameter bytes (flags bit 4) are
-/// skipped when present; if their layout cannot be trusted, real mask is
-/// left as `None` and channel -3 falls back to the user-mask rect.
+/// used by channel id -3. Density/feather parameters (flags bit 4) have
+/// already been consumed by `parse_layer_mask_data` before calling this
+/// function; if their layout was untrustworthy, the real mask is left as
+/// `None` and channel -3 falls back to the user-mask rect.
 ///
 /// Common on-disk sizes after the 20-byte user-mask header:
 /// - +16 bytes: real-mask rect only (total 36)
@@ -2589,5 +2596,79 @@ mod tests {
         oversized.right = crate::psb_reader::PSD_MAX_DIMENSION as i32 + 1;
         oversized.bottom = 1;
         assert!(!layer_will_decode(&oversized, true));
+    }
+
+    // ── apply_mask_density / apply_mask_feather ───────────────────────
+
+    #[test]
+    fn mask_density_255_is_noop() {
+        let mut m = vec![0u8, 128, 200, 255];
+        super::apply_mask_density(&mut m, 255);
+        assert_eq!(m, vec![0u8, 128, 200, 255]);
+    }
+
+    #[test]
+    fn mask_density_0_clears_all() {
+        let mut m = vec![0u8, 128, 200, 255];
+        super::apply_mask_density(&mut m, 0);
+        assert_eq!(m, vec![0u8, 0, 0, 0]);
+    }
+
+    #[test]
+    fn mask_density_half_scales() {
+        let mut m = vec![0u8, 128, 200, 255];
+        super::apply_mask_density(&mut m, 128);
+        assert_eq!(m, vec![0, 64, 100, 128]);
+    }
+
+    #[test]
+    fn mask_feather_noop_when_radius_small() {
+        let mut m = vec![0u8, 0, 255, 255].repeat(4);
+        super::apply_mask_feather(&mut m, 2, 2, 0.3);
+        assert_eq!(m, vec![0u8, 0, 255, 255].repeat(4));
+    }
+
+    #[test]
+    fn mask_feather_single_row() {
+        // 2 rows × 8 cols: feather blurs horizontally. Top row is the gradient.
+        let mut m = vec![
+            0u8, 0, 0, 255, 255, 255, 255, 255, // row 0: hard step
+            0, 0, 0, 255, 255, 255, 255, 255,    // row 1: same
+        ];
+        let orig = m.clone();
+        super::apply_mask_feather(&mut m, 8, 2, 1.5);
+        assert_ne!(m, orig, "feather should change a 8×2 gradient");
+        assert!(m[0] > 0, "left edge should blur inward: got {}", m[0]);
+    }
+
+    #[test]
+    fn mask_feather_single_column() {
+        // 2 cols × 8 rows: feather blurs vertically.
+        let mut m = vec![
+            0u8, 0,
+            0, 0,
+            0, 0,
+            255, 255,
+            255, 255,
+            255, 255,
+            255, 255,
+            255, 255,
+        ];
+        let orig = m.clone();
+        super::apply_mask_feather(&mut m, 2, 8, 1.5);
+        assert_ne!(m, orig);
+        assert!(m[0] > 0, "top edge should blur downward: got {}", m[0]);
+    }
+
+    #[test]
+    fn mask_density_and_feather_compose() {
+        let mut m = vec![0u8, 128, 200, 255].repeat(8);
+        super::apply_mask_density(&mut m, 128);
+        assert_eq!(m[1], 64);
+        super::apply_mask_feather(&mut m, 4, 2, 1.0);
+        assert!(
+            m[0] != 0 || m[2] != 100,
+            "feather should change density-scaled values after density"
+        );
     }
 }
