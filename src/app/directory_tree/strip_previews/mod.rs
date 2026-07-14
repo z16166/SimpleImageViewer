@@ -76,11 +76,15 @@ pub(super) fn send_strip_inflight_release(
     kind: crate::app::directory_tree_strip_cache::DirectoryTreeStripInflightReleaseKind,
     root_wake: Option<&crate::app::RootRedrawWake>,
 ) -> bool {
+    // `key.index` is a submit-time hint and may be stale after reorder; include path for diagnosis.
     let index = key.index;
+    let path = key.path.display().to_string();
     let release =
         crate::app::directory_tree_strip_cache::DirectoryTreeStripInflightRelease { key, kind };
     if let Err(err) = release_tx.try_send(release) {
-        log::warn!("[DirectoryTree] Strip inflight release dropped for index {index}: {err}");
+        log::warn!(
+            "[DirectoryTree] Strip inflight release dropped for index {index} path {path}: {err}"
+        );
         return false;
     }
     if let Some(wake) = root_wake {
@@ -299,7 +303,7 @@ impl ImageViewerApp {
         );
         for i in 0..self.strip_cold_awaiting_scratch.len() {
             let path = self.strip_cold_awaiting_scratch[i].clone();
-            let Some(index) = self.image_files.iter().position(|p| p == &path) else {
+            let Some(index) = self.strip_path_current_index(&path) else {
                 // Path dropped from the list -- clear the stale await entry.
                 self.directory_tree_strip_cold_awaiting_main_loader
                     .remove(&path);
@@ -330,7 +334,7 @@ impl ImageViewerApp {
         );
         for i in 0..self.strip_cold_awaiting_scratch.len() {
             let path = self.strip_cold_awaiting_scratch[i].clone();
-            if let Some(index) = self.image_files.iter().position(|p| p == &path) {
+            if let Some(index) = self.strip_path_current_index(&path) {
                 self.request_main_load_for_strip_deferred_index(index);
             }
         }
@@ -367,12 +371,16 @@ impl ImageViewerApp {
                 }
             }
         }
+        let _ = self.image_strip_path_index();
+        let path_to_index = &self
+            .cached_image_strip_path_index
+            .as_ref()
+            .expect("warmed above")
+            .1;
         for (path, flag) in &self.directory_tree_strip_inflight_cancel {
-            let keep = self
-                .image_files
-                .iter()
-                .position(|p| p == path)
-                .is_some_and(|idx| retain.contains(&idx));
+            let keep = path_to_index
+                .get(path)
+                .is_some_and(|idx| retain.contains(idx));
             if !keep {
                 flag.cancel();
             }
@@ -684,26 +692,38 @@ impl ImageViewerApp {
         // actually changed. When the directory is idle this skips several path-keyed retains
         // that can each grow to directory scale (10k+ entries).
         //
-        // This per-frame path retains only the long-lived attempt/cache sets below. Inflight
-        // tokens/cancel flags, cold_awaiting_main_loader, pending_main_handoff, and the
-        // pending_gpu_* deques are pruned by worker-completion callbacks or by the full retain
-        // in `reconcile_directory_tree_strip_state_for_current_list`. A silently crashed
-        // background worker could therefore leave entries until the next explicit reconcile.
         let current_gen = self.directory_tree.list.lock().image_list_generation;
         if current_gen != self.strip_stale_retain_last_generation {
             self.strip_stale_retain_last_generation = current_gen;
             let live: std::collections::HashSet<std::path::PathBuf> =
                 self.image_files.iter().cloned().collect();
+            for (path, flag) in &self.directory_tree_strip_inflight_cancel {
+                if !live.contains(path) {
+                    flag.cancel();
+                }
+            }
             self.directory_tree_strip_cache
                 .retain(|path| live.contains(path));
             self.directory_tree_strip_tiled_attempted
                 .retain(|path| live.contains(path));
             self.directory_tree_strip_generate_inflight
                 .retain(|path| live.contains(path));
+            self.directory_tree_strip_inflight_tokens
+                .retain(|path, _| live.contains(path));
+            self.directory_tree_strip_inflight_cancel
+                .retain(|path, _| live.contains(path));
             self.directory_tree_strip_static_full_decode_inflight
                 .retain(|path| live.contains(path));
             self.directory_tree_strip_cold_attempted
                 .retain(|path| live.contains(path));
+            self.directory_tree_strip_cold_awaiting_main_loader
+                .retain(|path| live.contains(path));
+            self.directory_tree_strip_pending_main_handoff
+                .retain(|path, _| live.contains(path));
+            self.directory_tree_strip_pending_gpu_initial
+                .retain(|upload| live.contains(&upload.key.path));
+            self.directory_tree_strip_pending_gpu_refined
+                .retain(|upload| live.contains(&upload.key.path));
         }
     }
 

@@ -70,6 +70,12 @@ impl ImageViewerApp {
             .1
     }
 
+    /// Resolve `path` to its current row via [`Self::image_strip_path_index`].
+    #[inline]
+    pub(crate) fn strip_path_current_index(&mut self, path: &std::path::Path) -> Option<usize> {
+        self.image_strip_path_index().get(path).copied()
+    }
+
     #[inline]
     pub(crate) fn strip_cache_contains_index(&self, index: usize) -> bool {
         self.image_files

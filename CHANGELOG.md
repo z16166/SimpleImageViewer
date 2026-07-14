@@ -19,6 +19,7 @@ All notable changes to this project will be documented in this file.
 - **Tagged block scanning performance**: Scanning for layer and image-resource blocks uses a faster search algorithm, improving load times for PSDs with many tagged blocks.
 
 ### Fixed
+- **Folder list thumbnails after sort or refresh**: Switching folders, sorting the file list, or refreshing no longer leaves navigation-strip thumbnails on the wrong files.
 - **Path-based opener visibility**: The `open_*_source` functions that accept file paths are now restricted to test builds, removing dead code from release binaries.
 - **Damaged layer handling**: When a layer's alpha or mask channel is corrupted, the layer is safely skipped instead of producing wrong pixels in the composite.
 - **Channel data integrity**: Stricter validation catches PSD files where declared channel sizes do not match the actual layer data, preventing garbled composites from malformed files.

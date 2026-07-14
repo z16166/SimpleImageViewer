@@ -301,8 +301,14 @@ impl ImageViewerApp {
         if cache_rev != snap.revision {
             return true;
         }
-        // Even at an unchanged GPU revision the path->index mapping may have shifted after a
-        // list reorder, so compare the projected index maps against the published snapshot.
+        // Steady-state fast path: same GPU revision and same file-list generation as the last
+        // published preview means index projection cannot have drifted. Column-sort clears the
+        // snapshot (revision mismatch) instead of bumping `image_list_generation`.
+        let image_list_gen = self.directory_tree.list.lock().image_list_generation;
+        if image_list_gen == snap.image_list_generation {
+            return false;
+        }
+        // Generation advanced without a GPU revision bump -- rematch projected index maps.
         // Use the generation-cached path index (needs `&mut self` to warm) instead of rebuilding.
         let _ = self.image_strip_path_index();
         let path_to_index = &self

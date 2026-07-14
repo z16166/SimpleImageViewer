@@ -1054,7 +1054,7 @@ impl ImageViewerApp {
             let Some(handoff) = self.directory_tree_strip_pending_main_handoff.remove(&path) else {
                 continue;
             };
-            let Some(index) = self.image_files.iter().position(|p| p == &path) else {
+            let Some(index) = self.strip_path_current_index(&path) else {
                 continue;
             };
             self.schedule_or_queue_strip_pending_gpu_resample(
@@ -1076,7 +1076,7 @@ impl ImageViewerApp {
         let Some(handoff) = self.directory_tree_strip_pending_main_handoff.remove(path) else {
             return;
         };
-        let Some(index) = self.image_files.iter().position(|p| p == path) else {
+        let Some(index) = self.strip_path_current_index(path) else {
             return;
         };
         self.schedule_or_queue_strip_pending_gpu_resample(

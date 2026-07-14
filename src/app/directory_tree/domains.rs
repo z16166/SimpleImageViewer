@@ -219,6 +219,9 @@ pub(crate) struct DirectoryTreeListSnapshot {
 pub(crate) struct DirectoryTreePreviewSnapshot {
     pub(super) revision: u64,
     pub(super) list_publish_generation: u64,
+    /// `DirectoryTreeListState::image_list_generation` at the time this preview was published.
+    /// Used by needs-publish fast path so steady-state frames skip remapping projections.
+    pub(super) image_list_generation: u64,
     pub(super) textures: HashMap<usize, egui::TextureHandle>,
     pub(super) logical_sizes: HashMap<usize, (u32, u32)>,
     pub(super) buffer_tags:
@@ -372,6 +375,7 @@ pub(super) fn publish_list_snapshot(
 pub(super) fn publish_preview_snapshot(
     swap: &ArcSwap<DirectoryTreePreviewSnapshot>,
     list_publish_generation: u64,
+    image_list_generation: u64,
     row_count: usize,
     cache_revision: u64,
     textures: &HashMap<usize, egui::TextureHandle>,
@@ -399,6 +403,7 @@ pub(super) fn publish_preview_snapshot(
     }
     let revision_matches = cache_revision == prev.revision;
     let list_gen_matches = list_publish_generation == prev.list_publish_generation;
+    let image_list_gen_matches = image_list_generation == prev.image_list_generation;
     let textures_match = preview_textures.len() == prev.textures.len()
         && preview_textures.iter().all(|(index, handle)| {
             prev.textures
@@ -413,12 +418,19 @@ pub(super) fn publish_preview_snapshot(
         && preview_buffer_tags
             .iter()
             .all(|(index, tag)| prev.buffer_tags.get(index) == Some(tag));
-    if revision_matches && list_gen_matches && textures_match && logical_match && tags_match {
+    if revision_matches
+        && list_gen_matches
+        && image_list_gen_matches
+        && textures_match
+        && logical_match
+        && tags_match
+    {
         return false;
     }
     swap.store(Arc::new(DirectoryTreePreviewSnapshot {
         revision: cache_revision,
         list_publish_generation,
+        image_list_generation,
         textures: preview_textures,
         logical_sizes: preview_logical_sizes,
         buffer_tags: preview_buffer_tags,
@@ -468,6 +480,7 @@ pub(super) fn publish_domain_snapshots(ctx: &mut DirectoryTreePublishContext<'_>
     ) && publish_preview_snapshot(
         ctx.preview_snapshot,
         ctx.list.publish_generation,
+        ctx.list.image_list_generation,
         ctx.list.image_rows.len(),
         revision,
         textures,

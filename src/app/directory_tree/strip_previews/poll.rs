@@ -157,7 +157,7 @@ impl ImageViewerApp {
         let _failure_reason = failure.reason;
         let path = failure.key.path.clone();
         if self.finish_strip_preview_job_for_key(&failure.key) {
-            let Some(active_index) = self.image_files.iter().position(|p| p == &path) else {
+            let Some(active_index) = self.strip_path_current_index(&path) else {
                 return;
             };
             self.mark_strip_cold_awaiting_main_loader(active_index);
