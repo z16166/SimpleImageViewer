@@ -133,6 +133,106 @@ impl DescriptorParser<'_> {
                 self.read_id_string()?;
                 Some(DescriptorValue::Skipped)
             }
+            // --- Unit Float: 4-byte unit ID + 8-byte double ---
+            b"UnFl" => {
+                self.read_bytes(4)?; // unit ID
+                self.read_bytes(8)?; // double value
+                Some(DescriptorValue::Skipped)
+            }
+            // --- Global Class: same structure as Objc/GlbO ---
+            b"GlbC" => self.parse_descriptor().map(DescriptorValue::Object),
+            // --- Alias: 4-byte length + data ---
+            b"alis" => {
+                let alias_len = self.read_u32()? as usize;
+                self.read_bytes(alias_len)?;
+                Some(DescriptorValue::Skipped)
+            }
+            // --- Raw Data: 4-byte length + data ---
+            b"tdta" => {
+                let data_len = self.read_u32()? as usize;
+                self.read_bytes(data_len)?;
+                Some(DescriptorValue::Skipped)
+            }
+            // --- Compound/Inline Structure: stored as descriptor ---
+            b"comp" => {
+                self.parse_descriptor()?;
+                Some(DescriptorValue::Skipped)
+            }
+            // --- Object Reference: reference form + form-specific data ---
+            b"obj " => {
+                let form = self.read_bytes(4)?;
+                let form_arr: [u8; 4] = form.try_into().ok()?;
+                Self::skip_reference_form(self, form_arr)?;
+                Some(DescriptorValue::Skipped)
+            }
+            // --- Type Tool Info Reference: class ID + descriptor ---
+            b"type" => {
+                self.read_id_string()?;
+                self.parse_descriptor()?;
+                Some(DescriptorValue::Skipped)
+            }
+            _ => None,
+        }
+    }
+
+    /// Skip a reference form body for the `obj ` OSType.
+    ///
+    /// Each form is identified by a 4-byte OSType code followed by form-specific
+    /// data. Handles all forms documented in the Adobe PSD specification:
+    /// `Clss`, `Enmr`, `Idnt`, `indx`, `name`, `rele`, `Alis`, `desc`, `prop`.
+    fn skip_reference_form(&mut self, form: [u8; 4]) -> Option<()> {
+        match &form {
+            b"Clss" => {
+                // Class reference: className (Unicode) + classID (ID string)
+                self.read_unicode_string()?;
+                self.read_id_string()?;
+                Some(())
+            }
+            b"Enmr" => {
+                // Enumerated reference: classID + enumType + enumValue
+                self.read_id_string()?;
+                self.read_id_string()?;
+                self.read_id_string()?;
+                Some(())
+            }
+            b"Idnt" => {
+                // Identifier reference: 4-byte integer
+                self.read_bytes(4)?;
+                Some(())
+            }
+            b"indx" => {
+                // Index reference: 4-byte integer
+                self.read_bytes(4)?;
+                Some(())
+            }
+            b"name" => {
+                // Name reference: Unicode string
+                self.read_unicode_string()?;
+                Some(())
+            }
+            b"rele" => {
+                // Offset reference: container class ID + 4-byte offset
+                self.read_id_string()?;
+                self.read_bytes(4)?;
+                Some(())
+            }
+            b"Alis" => {
+                // Alias reference: length-prefixed alias data
+                let alias_len = self.read_u32()? as usize;
+                self.read_bytes(alias_len)?;
+                Some(())
+            }
+            b"desc" => {
+                // Descriptor reference: inline descriptor
+                self.parse_descriptor()?;
+                Some(())
+            }
+            b"prop" => {
+                // Property reference: classID + propertyID
+                self.read_id_string()?;
+                self.read_id_string()?;
+                Some(())
+            }
             _ => None,
         }
     }
@@ -264,6 +364,261 @@ mod tests {
         push_descriptor_header(&mut bytes, 1);
         push_key(&mut bytes, b"bad ");
         bytes.extend_from_slice(b"????");
+
+        assert!(parse_versioned_descriptor(&bytes).is_none());
+    }
+
+    #[test]
+    fn new_ostypes_are_gracefully_skipped() {
+        // Each new OSType must be parseable without failing the descriptor.
+        // Test each type in its own single-key descriptor.
+
+        // --- UnFl (Unit Float): 4-byte unit + 8-byte double ---
+        {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&16u32.to_be_bytes());
+            push_descriptor_header(&mut bytes, 1);
+            push_key(&mut bytes, b"val ");
+            bytes.extend_from_slice(b"UnFl");
+            bytes.extend_from_slice(&1u32.to_be_bytes()); // unit ID (angle)
+            bytes.extend_from_slice(&42.5f64.to_be_bytes());
+            assert!(parse_versioned_descriptor(&bytes).is_some());
+        }
+
+        // --- GlbC (Global Class): same as Objc, a descriptor ---
+        {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&16u32.to_be_bytes());
+            push_descriptor_header(&mut bytes, 1);
+            push_key(&mut bytes, b"cls ");
+            bytes.extend_from_slice(b"GlbC");
+            push_descriptor_header(&mut bytes, 1);
+            push_key(&mut bytes, b"id  ");
+            bytes.extend_from_slice(b"long");
+            bytes.extend_from_slice(&42i32.to_be_bytes());
+            assert!(parse_versioned_descriptor(&bytes).is_some());
+        }
+
+        // --- alis (Alias): 4-byte length + data ---
+        {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&16u32.to_be_bytes());
+            push_descriptor_header(&mut bytes, 1);
+            push_key(&mut bytes, b"fil ");
+            bytes.extend_from_slice(b"alis");
+            bytes.extend_from_slice(&4u32.to_be_bytes()); // length = 4
+            bytes.extend_from_slice(b"file");
+            assert!(parse_versioned_descriptor(&bytes).is_some());
+        }
+
+        // --- tdta (Raw Data): 4-byte length + data ---
+        {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&16u32.to_be_bytes());
+            push_descriptor_header(&mut bytes, 1);
+            push_key(&mut bytes, b"raw ");
+            bytes.extend_from_slice(b"tdta");
+            bytes.extend_from_slice(&3u32.to_be_bytes()); // length = 3
+            bytes.extend_from_slice(b"\x01\x02\x03");
+            assert!(parse_versioned_descriptor(&bytes).is_some());
+        }
+
+        // --- comp (Compound/Inline Structure): descriptor ---
+        {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&16u32.to_be_bytes());
+            push_descriptor_header(&mut bytes, 1);
+            push_key(&mut bytes, b"cval");
+            bytes.extend_from_slice(b"comp");
+            push_descriptor_header(&mut bytes, 0); // compound has descriptor format
+            assert!(parse_versioned_descriptor(&bytes).is_some());
+        }
+
+        // --- obj  (Object Reference): Clss form ---
+        {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&16u32.to_be_bytes());
+            push_descriptor_header(&mut bytes, 1);
+            push_key(&mut bytes, b"ref ");
+            bytes.extend_from_slice(b"obj ");
+            bytes.extend_from_slice(b"Clss");
+            push_unicode_string(&mut bytes, "Layer");
+            push_class_id(&mut bytes, b"Lyr ");
+            assert!(parse_versioned_descriptor(&bytes).is_some());
+        }
+
+        // --- type (Type Tool Info Reference): class ID + descriptor ---
+        {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&16u32.to_be_bytes());
+            push_descriptor_header(&mut bytes, 1);
+            push_key(&mut bytes, b"txt ");
+            bytes.extend_from_slice(b"type");
+            push_class_id(&mut bytes, b"TxLr"); // class ID
+            push_descriptor_header(&mut bytes, 0); // sub-descriptor
+            assert!(parse_versioned_descriptor(&bytes).is_some());
+        }
+    }
+
+    #[test]
+    fn object_reference_all_forms_are_skipped() {
+        // Test each obj  reference form to ensure it doesn\'t corrupt parsing.
+        // Each test descriptor has two keys: the reference under test and a
+        // trailing `long` key.  If the reference skip is correct the `long`
+        // value is still readable.
+
+        fn make_descriptor_with_ref(form: &[u8], ref_body: &[u8]) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&16u32.to_be_bytes());
+            push_descriptor_header(&mut bytes, 2);
+            // Key 1: reference under test
+            push_key(&mut bytes, b"ref ");
+            bytes.extend_from_slice(b"obj ");
+            bytes.extend_from_slice(form);
+            bytes.extend_from_slice(ref_body);
+            // Key 2: sentinel long value — must be reachable after the ref
+            push_key(&mut bytes, b"val ");
+            bytes.extend_from_slice(b"long");
+            bytes.extend_from_slice(&99i32.to_be_bytes());
+            bytes
+        }
+
+        // Clss: className (Unicode) + classID (ID)
+        {
+            let mut ref_body = Vec::new();
+            push_unicode_string(&mut ref_body, "MyClass");
+            push_class_id(&mut ref_body, b"Cls ");
+            let bytes = make_descriptor_with_ref(b"Clss", &ref_body);
+            let parsed = parse_versioned_descriptor(&bytes).expect("Clss ref");
+            assert_eq!(
+                parsed.get("val "),
+                Some(&DescriptorValue::Long(99)),
+                "Clss: trailing value corrupted"
+            );
+        }
+
+        // Enmr: classID + enumType + enumValue
+        {
+            let mut ref_body = Vec::new();
+            push_class_id(&mut ref_body, b"Lyr ");
+            push_class_id(&mut ref_body, b"Md  ");
+            push_class_id(&mut ref_body, b"Nrml");
+            let bytes = make_descriptor_with_ref(b"Enmr", &ref_body);
+            let parsed = parse_versioned_descriptor(&bytes).expect("Enmr ref");
+            assert_eq!(
+                parsed.get("val "),
+                Some(&DescriptorValue::Long(99)),
+                "Enmr: trailing value corrupted"
+            );
+        }
+
+        // Idnt: 4-byte integer
+        {
+            let ref_body = 12345u32.to_be_bytes();
+            let bytes = make_descriptor_with_ref(b"Idnt", &ref_body);
+            let parsed = parse_versioned_descriptor(&bytes).expect("Idnt ref");
+            assert_eq!(
+                parsed.get("val "),
+                Some(&DescriptorValue::Long(99)),
+                "Idnt: trailing value corrupted"
+            );
+        }
+
+        // indx: 4-byte integer
+        {
+            let ref_body = 7u32.to_be_bytes();
+            let bytes = make_descriptor_with_ref(b"indx", &ref_body);
+            let parsed = parse_versioned_descriptor(&bytes).expect("indx ref");
+            assert_eq!(
+                parsed.get("val "),
+                Some(&DescriptorValue::Long(99)),
+                "indx: trailing value corrupted"
+            );
+        }
+
+        // name: Unicode string
+        {
+            let ref_body = {
+                let mut v = Vec::new();
+                push_unicode_string(&mut v, "MyLayer");
+                v
+            };
+            let bytes = make_descriptor_with_ref(b"name", &ref_body);
+            let parsed = parse_versioned_descriptor(&bytes).expect("name ref");
+            assert_eq!(
+                parsed.get("val "),
+                Some(&DescriptorValue::Long(99)),
+                "name: trailing value corrupted"
+            );
+        }
+
+        // rele: container class ID + 4-byte offset
+        {
+            let mut ref_body = Vec::new();
+            push_class_id(&mut ref_body, b"Lyr ");
+            ref_body.extend_from_slice(&100u32.to_be_bytes());
+            let bytes = make_descriptor_with_ref(b"rele", &ref_body);
+            let parsed = parse_versioned_descriptor(&bytes).expect("rele ref");
+            assert_eq!(
+                parsed.get("val "),
+                Some(&DescriptorValue::Long(99)),
+                "rele: trailing value corrupted"
+            );
+        }
+
+        // Alis: 4-byte length + alias data
+        {
+            let mut ref_body = Vec::new();
+            ref_body.extend_from_slice(&4u32.to_be_bytes());
+            ref_body.extend_from_slice(b"path");
+            let bytes = make_descriptor_with_ref(b"Alis", &ref_body);
+            let parsed = parse_versioned_descriptor(&bytes).expect("Alis ref");
+            assert_eq!(
+                parsed.get("val "),
+                Some(&DescriptorValue::Long(99)),
+                "Alis: trailing value corrupted"
+            );
+        }
+
+        // desc: inline descriptor
+        {
+            let ref_body = {
+                let mut v = Vec::new();
+                push_descriptor_header(&mut v, 0);
+                v
+            };
+            let bytes = make_descriptor_with_ref(b"desc", &ref_body);
+            let parsed = parse_versioned_descriptor(&bytes).expect("desc ref");
+            assert_eq!(
+                parsed.get("val "),
+                Some(&DescriptorValue::Long(99)),
+                "desc: trailing value corrupted"
+            );
+        }
+
+        // prop: classID + propertyID
+        {
+            let mut ref_body = Vec::new();
+            push_class_id(&mut ref_body, b"Lyr ");
+            push_class_id(&mut ref_body, b"nm  ");
+            let bytes = make_descriptor_with_ref(b"prop", &ref_body);
+            let parsed = parse_versioned_descriptor(&bytes).expect("prop ref");
+            assert_eq!(
+                parsed.get("val "),
+                Some(&DescriptorValue::Long(99)),
+                "prop: trailing value corrupted"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_reference_form_fails_closed() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&16u32.to_be_bytes());
+        push_descriptor_header(&mut bytes, 1);
+        push_key(&mut bytes, b"ref ");
+        bytes.extend_from_slice(b"obj ");
+        bytes.extend_from_slice(b"????"); // unknown reference form
 
         assert!(parse_versioned_descriptor(&bytes).is_none());
     }

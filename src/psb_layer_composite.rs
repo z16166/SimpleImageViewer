@@ -163,6 +163,14 @@ pub struct LayerRecord {
     pub section_type: Option<u32>,
 }
 
+/// `lsct` section type constants for [`LayerRecord::section_type`].
+///
+/// See Adobe Photoshop PSD specification § `Layer section divider`.
+pub(crate) const SECTION_TYPE_OPEN_FOLDER: u32 = 1;
+pub(crate) const SECTION_TYPE_CLOSED_FOLDER: u32 = 2;
+pub(crate) const SECTION_TYPE_BOUNDING_DIVIDER: u32 = 3;
+pub(crate) const SECTION_TYPE_LAYER_GROUP: u32 = 4;
+
 impl LayerRecord {
     pub fn is_hidden(&self) -> bool {
         self.flags & 2 != 0
@@ -1087,8 +1095,10 @@ pub(crate) fn compute_effective_visibility_with_flags(
 
         if layer.is_section_divider {
             match layer.section_type {
-                Some(1) | Some(2) => stack.push(current),
-                Some(3) if stack.len() > 1 => {
+                Some(SECTION_TYPE_OPEN_FOLDER)
+                | Some(SECTION_TYPE_CLOSED_FOLDER)
+                | Some(SECTION_TYPE_LAYER_GROUP) => stack.push(current),
+                Some(SECTION_TYPE_BOUNDING_DIVIDER) if stack.len() > 1 => {
                     stack.pop();
                 }
                 _ => {}
@@ -1383,6 +1393,7 @@ fn run_composite_pass(
 mod tests {
     use super::{
         CompositeTiming, LAYER_PREFETCH_WINDOW, LayerChannel, LayerInfo, LayerRecord,
+        SECTION_TYPE_BOUNDING_DIVIDER, SECTION_TYPE_CLOSED_FOLDER, SECTION_TYPE_OPEN_FOLDER,
         STRICT_LAYER_COMPOSITE_BLANK, StreamingPeakTracker, checked_layer_pixel_count,
         composite_layers_from_bytes_with_cancel, composite_layers_with_visibility_from_info,
         compute_effective_visibility, dimensions_within_limit, gpu_batch_eligible_decoded_bytes,
@@ -1697,12 +1708,12 @@ mod tests {
         //   4: leaf, visible, inside outer group but outside inner group
         //   5: outer folder header (type 2), visible
         let records = vec![
-            mk_layer(false, true, Some(3)),
-            mk_layer(false, true, Some(3)),
+            mk_layer(false, true, Some(SECTION_TYPE_BOUNDING_DIVIDER)),
+            mk_layer(false, true, Some(SECTION_TYPE_BOUNDING_DIVIDER)),
             mk_layer(true, false, None),
-            mk_layer(false, true, Some(1)),
+            mk_layer(false, true, Some(SECTION_TYPE_OPEN_FOLDER)),
             mk_layer(false, false, None),
-            mk_layer(false, true, Some(2)),
+            mk_layer(false, true, Some(SECTION_TYPE_CLOSED_FOLDER)),
         ];
 
         let visible = compute_effective_visibility(&records);
@@ -1721,12 +1732,12 @@ mod tests {
         // Same nesting as above, but the *outer* group is hidden while every
         // leaf/inner-group flag is visible.
         let records = vec![
-            mk_layer(false, true, Some(3)),
-            mk_layer(false, true, Some(3)),
+            mk_layer(false, true, Some(SECTION_TYPE_BOUNDING_DIVIDER)),
+            mk_layer(false, true, Some(SECTION_TYPE_BOUNDING_DIVIDER)),
             mk_layer(false, false, None),
-            mk_layer(false, true, Some(1)),
+            mk_layer(false, true, Some(SECTION_TYPE_OPEN_FOLDER)),
             mk_layer(false, false, None),
-            mk_layer(true, true, Some(2)),
+            mk_layer(true, true, Some(SECTION_TYPE_CLOSED_FOLDER)),
         ];
 
         let strict = compute_effective_visibility(&records);
@@ -1782,7 +1793,10 @@ mod tests {
     fn compute_effective_visibility_unpaired_divider_does_not_panic() {
         // A lone bounding divider (type 3) with no matching folder header
         // above it must not underflow the visibility stack.
-        let records = vec![mk_layer(false, true, Some(3)), mk_layer(false, false, None)];
+        let records = vec![
+            mk_layer(false, true, Some(SECTION_TYPE_BOUNDING_DIVIDER)),
+            mk_layer(false, false, None),
+        ];
 
         let visible = compute_effective_visibility(&records);
 
@@ -1907,7 +1921,7 @@ mod tests {
         let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, true).unwrap();
 
         assert!(scan.is_section_divider);
-        assert_eq!(scan.section_type, Some(2));
+        assert_eq!(scan.section_type, Some(SECTION_TYPE_CLOSED_FOLDER));
     }
 
     #[test]
@@ -1982,7 +1996,7 @@ mod tests {
         let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
 
         assert!(scan.is_section_divider);
-        assert_eq!(scan.section_type, Some(3));
+        assert_eq!(scan.section_type, Some(SECTION_TYPE_BOUNDING_DIVIDER));
     }
 
     #[test]
@@ -2038,7 +2052,7 @@ mod tests {
         let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
 
         assert!(scan.is_section_divider);
-        assert_eq!(scan.section_type, Some(1));
+        assert_eq!(scan.section_type, Some(SECTION_TYPE_OPEN_FOLDER));
     }
 
     #[test]
@@ -2374,7 +2388,7 @@ mod tests {
         zero_opacity.opacity = 0;
         assert!(!layer_will_decode(&zero_opacity, true));
 
-        let divider = mk_layer(false, true, Some(1));
+        let divider = mk_layer(false, true, Some(SECTION_TYPE_OPEN_FOLDER));
         assert!(!layer_will_decode(&divider, true));
 
         let mut oversized = mk_layer(false, false, None);

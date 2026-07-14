@@ -161,7 +161,9 @@ mod tests {
     use super::{
         LayerCompInfo, parse_layer_comps_from_ir, select_layer_comp, visibility_from_layer_comp,
     };
-    use crate::psb_layer_composite::LayerRecord;
+    use crate::psb_layer_composite::{
+        LayerRecord, SECTION_TYPE_BOUNDING_DIVIDER, SECTION_TYPE_OPEN_FOLDER,
+    };
 
     fn push_unicode_string(bytes: &mut Vec<u8>, text: &str) {
         let units: Vec<u16> = text.encode_utf16().collect();
@@ -345,9 +347,13 @@ mod tests {
     #[test]
     fn visibility_from_cmls_applies_enab_then_group_visibility() {
         let records = vec![
-            test_record(false, Some(3), None),
+            test_record(false, Some(SECTION_TYPE_BOUNDING_DIVIDER), None),
             test_record(true, None, Some(cmls_payload(7, true))),
-            test_record(true, Some(1), Some(cmls_payload(7, true))),
+            test_record(
+                true,
+                Some(SECTION_TYPE_OPEN_FOLDER),
+                Some(cmls_payload(7, true)),
+            ),
         ];
 
         let visible = visibility_from_layer_comp(&records, 7);
