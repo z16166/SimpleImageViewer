@@ -576,8 +576,11 @@ impl ImageViewerApp {
                                     &old_files, &new_files,
                                 );
                             } else if sort_perm.is_some() {
-                                // Path-keyed strip state survives a column-sort reorder; only
-                                // bump generation and refresh the snapshot (no index remap).
+                                // Path-keyed strip state survives the reorder (no index remap).
+                                // `reconcile_*` also cancels workers for paths that left the list,
+                                // retains path-keyed attempt/inflight/pending-gpu state to the
+                                // live set, bumps `image_list_generation`, and clears the preview
+                                // snapshot for republish.
                                 self.reconcile_directory_tree_strip_state_for_current_list();
                             }
                         }

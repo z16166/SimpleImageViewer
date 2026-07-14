@@ -767,16 +767,36 @@ impl ImageViewerApp {
 
     /// After a cache-preserving column sort: refresh the preview snapshot and enter bootstrap
     /// mode so visible list rows reschedule strip thumbnails. Path-keyed entries stay valid and
-    /// are republished at their new indices via snapshot projection.
+    /// are republished at their new indices via snapshot projection. Does not bump
+    /// `image_list_generation` (unlike `reconcile_*`); pending GPU uploads keep their generation
+    /// but must rematch `key.index` from path before flush.
     pub(crate) fn prepare_directory_tree_strip_scheduling_after_list_reorder(&mut self) {
         if !self.directory_tree_list_previews_active() {
             return;
         }
         self.cached_image_strip_path_index = None;
+        self.rematch_pending_strip_gpu_upload_indices();
         domains::clear_preview_snapshot(&self.directory_tree.preview_snapshot);
         self.directory_tree_strip_bootstrap_after_scan = true;
         self.directory_tree_strip_bootstrap_frames = 0;
         self.strip_preload_cooldown_frames = 0;
+    }
+
+    /// Rewrite submit-time indices on pending GPU uploads after a path-preserving reorder.
+    fn rematch_pending_strip_gpu_upload_indices(&mut self) {
+        let _ = self.image_strip_path_index();
+        let Some((_, path_to_index)) = self.cached_image_strip_path_index.as_ref() else {
+            return;
+        };
+        for item in self
+            .directory_tree_strip_pending_gpu_initial
+            .iter_mut()
+            .chain(self.directory_tree_strip_pending_gpu_refined.iter_mut())
+        {
+            if let Some(&current_index) = path_to_index.get(&item.key.path) {
+                item.key.index = current_index;
+            }
+        }
     }
 
     // Path-based list realignment for F5 refresh and column sort. Path-keyed state survives

@@ -490,13 +490,12 @@ impl DirectoryTreeStripCache {
             strip_max_side,
             strip_max_side_used,
         } = upsert;
-        if !strip_decoded_ready_for_gpu_upload(decoded, strip_max_side, strip_max_side_used) {
-            debug_assert!(
-                false,
-                "upsert_from_decoded requires strip-sized pixels; schedule background resample first"
-            );
-            return;
-        }
+        // Critical precondition (review-checklist #31): must hold in release too -- callers that
+        // reach here with full-size pixels should have queued a background resample instead.
+        assert!(
+            strip_decoded_ready_for_gpu_upload(decoded, strip_max_side, strip_max_side_used),
+            "upsert_from_decoded requires strip-sized pixels; schedule background resample first"
+        );
         let cached_tag = self.preview_buffer_tag.get(path).copied();
         let cached_stage = self.preview_stage.get(path).copied();
         let cached_dims = self.preview_dimensions(path);
