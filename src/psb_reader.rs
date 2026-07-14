@@ -977,11 +977,9 @@ fn for_each_image_resource<T>(
     let end = (ir_end as usize).min(bytes.len());
     while pos + 12 <= end {
         let sig = &bytes[pos..pos + 4];
-        // 8B64 with a u64 length belongs to Additional Layer Information
-        // (`tagged_block_uses_u64_len`), not Adobe Image Resource Blocks.
-        if sig == b"8B64" {
-            break;
-        }
+        // Only 8BIM is a valid Image Resource signature. 8B64 (with u64 length
+        // in PSB) belongs to Additional Layer Information and is simply an
+        // unrecognised signature here — it cleanly stops the walk.
         if sig != b"8BIM" {
             break;
         }
