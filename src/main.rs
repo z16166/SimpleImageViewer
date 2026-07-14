@@ -52,6 +52,7 @@ pub mod print;
 mod psb_blend_nonseparable;
 mod psb_cmyk_cms;
 mod psb_cmyk_simd;
+mod psb_color_convert;
 mod psb_descriptor;
 mod psb_downconvert_simd;
 mod psb_hdr_blend;

@@ -32,8 +32,9 @@ use crate::psb_layer_composite::{
 };
 use crate::psb_reader::{
     PSD_CHANNEL_ID_ALPHA, PSD_CHANNEL_ID_COLOR_MAX, PSD_CHANNEL_ID_REAL_USER_MASK,
-    PSD_CHANNEL_ID_USER_MASK, PSD_COLOR_MODE_CMYK, PSD_COLOR_MODE_GRAYSCALE, PSD_COLOR_MODE_RGB,
-    PSD_COMPRESSION_RAW, PSD_COMPRESSION_RLE, PSD_COMPRESSION_ZIP, PSD_COMPRESSION_ZIP_PREDICTION,
+    PSD_CHANNEL_ID_USER_MASK, PSD_COLOR_MODE_BITMAP, PSD_COLOR_MODE_CMYK, PSD_COLOR_MODE_DUOTONE,
+    PSD_COLOR_MODE_GRAYSCALE, PSD_COLOR_MODE_LAB, PSD_COLOR_MODE_RGB, PSD_COMPRESSION_RAW,
+    PSD_COMPRESSION_RLE, PSD_COMPRESSION_ZIP, PSD_COMPRESSION_ZIP_PREDICTION,
 };
 
 // -- Layer channel decode ---------------------------------------------
@@ -203,7 +204,10 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
     }
 
     // Gray fast path: broadcast G->RGB via SIMD, then fold opacity/mask into alpha.
-    if args.color_mode == PSD_COLOR_MODE_GRAYSCALE
+    // Also used for Bitmap (0) and Duotone (8) which are single-channel grayscale.
+    if (args.color_mode == PSD_COLOR_MODE_GRAYSCALE
+        || args.color_mode == PSD_COLOR_MODE_BITMAP
+        || args.color_mode == PSD_COLOR_MODE_DUOTONE)
         && let Some(gray) = args.color[0].as_deref()
         && gray.len() >= pixel_count
     {
@@ -274,9 +278,16 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
                 sample(&args.color[2], i),
                 sample(&args.color[3], i),
             ),
-            PSD_COLOR_MODE_GRAYSCALE => {
+            PSD_COLOR_MODE_GRAYSCALE | PSD_COLOR_MODE_BITMAP | PSD_COLOR_MODE_DUOTONE => {
                 let v = sample(&args.color[0], i);
                 (v, v, v)
+            }
+            PSD_COLOR_MODE_LAB => {
+                let l = sample(&args.color[0], i) as f32;
+                let a = sample(&args.color[1], i) as f32;
+                let b_val = sample(&args.color[2], i) as f32;
+                let (r8, g8, b8) = crate::psb_color_convert::lab_pixel(l, a, b_val);
+                (r8, g8, b8)
             }
             _ => (
                 sample(&args.color[0], i),

@@ -31,9 +31,11 @@ use std::sync::{Arc, OnceLock};
 use simple_image_viewer::simd_swizzle;
 
 use crate::psb_reader::{
-    PSD_COLOR_MODE_CMYK, PSD_COMPRESSION_RAW, PSD_COMPRESSION_RLE, PSD_COMPRESSION_ZIP,
-    PSD_COMPRESSION_ZIP_PREDICTION, bytes_per_sample, channel_is_used, cmyk_to_rgb,
-    downconvert_samples_to_u8, extract_icc_profile_from_ir, max_rle_compressed_row_bytes, read_u16,
+    PSD_COLOR_MODE_BITMAP, PSD_COLOR_MODE_CMYK, PSD_COLOR_MODE_DUOTONE, PSD_COLOR_MODE_GRAYSCALE,
+    PSD_COLOR_MODE_INDEXED, PSD_COLOR_MODE_LAB, PSD_COLOR_MODE_MULTICHANNEL, PSD_COLOR_MODE_RGB,
+    PSD_COMPRESSION_RAW, PSD_COMPRESSION_RLE, PSD_COMPRESSION_ZIP, PSD_COMPRESSION_ZIP_PREDICTION,
+    bytes_per_sample, channel_is_used, cmyk_to_rgb, downconvert_samples_to_u8,
+    extract_icc_profile_from_ir, max_rle_compressed_row_bytes, read_u16,
     tiled_compression_supported, unpack_bits_into, validate_rle_row_counts,
 };
 use crate::psb_section_index::PsdSectionIndex;
@@ -642,7 +644,21 @@ fn interleave_tile_row_rgba8(
     };
 
     match color_mode {
-        4 if channels >= 4 => {
+        // Bitmap (0): packed bits → grayscale.
+        PSD_COLOR_MODE_BITMAP => {
+            if let Some(src) = slice(0) {
+                crate::psb_color_convert::bitmap_bits_row_to_rgba8(dst_row, src, end - start);
+                if channels >= 2 {
+                    if let Some(a) = slice(1) {
+                        for col in 0..(end - start).min(a.len()) {
+                            dst_row[col * 4 + 3] = a[col];
+                        }
+                    }
+                }
+            }
+        }
+        // CMYK (4): CMS or naive.
+        PSD_COLOR_MODE_CMYK if channels >= 4 => {
             if let (Some(c), Some(m), Some(y), Some(k)) = (slice(0), slice(1), slice(2), slice(3)) {
                 let a = if channels >= 5 { slice(4) } else { None };
                 let width = c.len().min(m.len()).min(y.len()).min(k.len());
@@ -675,7 +691,8 @@ fn interleave_tile_row_rgba8(
                 );
             }
         }
-        1 => {
+        // Grayscale (1), Duotone (8): single channel broadcast.
+        PSD_COLOR_MODE_GRAYSCALE | PSD_COLOR_MODE_DUOTONE => {
             if let Some(gray) = slice(0) {
                 if channels >= 2
                     && let Some(a) = slice(1)
@@ -686,7 +703,11 @@ fn interleave_tile_row_rgba8(
                 }
             }
         }
-        _ => {
+        // Indexed (2), Multichannel (7), Lab (9), RGB (3): first 3 channels → RGB.
+        PSD_COLOR_MODE_INDEXED
+        | PSD_COLOR_MODE_MULTICHANNEL
+        | PSD_COLOR_MODE_LAB
+        | PSD_COLOR_MODE_RGB => {
             if let (Some(r), Some(g), Some(b)) = (slice(0), slice(1), slice(2)) {
                 if channels >= 4
                     && let Some(a) = slice(3)
@@ -697,6 +718,7 @@ fn interleave_tile_row_rgba8(
                 }
             }
         }
+        _ => {}
     }
 }
 
@@ -714,12 +736,12 @@ fn sample_pixel_rgba8(
             .unwrap_or(0)
     };
     match color_mode {
-        4 if channels >= 4 => {
+        PSD_COLOR_MODE_CMYK if channels >= 4 => {
             let (r, g, b) = cmyk_to_rgb(get(0), get(1), get(2), get(3));
             let a = if channels >= 5 { get(4) } else { 255 };
             [r, g, b, a]
         }
-        1 => {
+        PSD_COLOR_MODE_GRAYSCALE | PSD_COLOR_MODE_DUOTONE | PSD_COLOR_MODE_BITMAP => {
             let v = get(0);
             let a = if channels >= 2 { get(1) } else { 255 };
             [v, v, v, a]

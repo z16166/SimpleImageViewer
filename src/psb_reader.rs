@@ -54,6 +54,16 @@ pub(crate) const PSD_COLOR_MODE_GRAYSCALE: u16 = 1;
 pub(crate) const PSD_COLOR_MODE_RGB: u16 = 3;
 /// Photoshop color mode: CMYK.
 pub(crate) const PSD_COLOR_MODE_CMYK: u16 = 4;
+/// Photoshop color mode: Bitmap (1-bit per pixel, packed 8-per-byte).
+pub(crate) const PSD_COLOR_MODE_BITMAP: u16 = 0;
+/// Photoshop color mode: Indexed (8-bit palette lookup).
+pub(crate) const PSD_COLOR_MODE_INDEXED: u16 = 2;
+/// Photoshop color mode: Multichannel (arbitrary channels, no standard transform).
+pub(crate) const PSD_COLOR_MODE_MULTICHANNEL: u16 = 7;
+/// Photoshop color mode: Duotone (stored as single grayscale channel).
+pub(crate) const PSD_COLOR_MODE_DUOTONE: u16 = 8;
+/// Photoshop color mode: Lab (CIE L*a*b*).
+pub(crate) const PSD_COLOR_MODE_LAB: u16 = 9;
 
 /// Layer channel ID: transparency mask (alpha).
 pub(crate) const PSD_CHANNEL_ID_ALPHA: i16 = -1;
@@ -224,6 +234,99 @@ pub fn read_composite_from_index(
         )?;
     }
 
+    // --- Bitmap depth=1: packed 1-bit per pixel ---
+    // The general read path treats every channel as `pixel_count * bps` bytes,
+    // but depth=1 Bitmap stores packed bits: 8 pixels per byte.
+    if color_mode == PSD_COLOR_MODE_BITMAP && depth == 1 {
+        let packed_count = crate::psb_color_convert::bitmap_packed_byte_count(pixel_count);
+        let packed_row = crate::psb_color_convert::bitmap_packed_byte_count(width as usize);
+        let mut ch_u8 = vec![0u8; pixel_count];
+        match compression {
+            PSD_COMPRESSION_RAW => {
+                ensure_readable_within(
+                    &mut r,
+                    packed_count as u64,
+                    file_size,
+                    "bitmap raw channel",
+                )?;
+                let mut packed = vec![0u8; packed_count];
+                r.read_exact(&mut packed)
+                    .map_err(|e| format!("Read bitmap channel: {e}"))?;
+                crate::psb_color_convert::bitmap_expand_bits_to_u8(&mut ch_u8, &packed);
+            }
+            PSD_COMPRESSION_RLE => {
+                for row in 0..height as usize {
+                    if row & RLE_ROW_DECODE_CANCEL_POLL_INTERVAL == 0 {
+                        check_decode_cancel(cancel)?;
+                    }
+                    let idx = row; // single channel, row = row index
+                    let compressed_len = *row_counts
+                        .get(idx)
+                        .ok_or_else(|| format!("Bitmap RLE row index {idx} out of range"))?;
+                    ensure_readable_within(
+                        &mut r,
+                        compressed_len as u64,
+                        file_size,
+                        "bitmap RLE row",
+                    )?;
+                    let mut packed_row_buf = Vec::new();
+                    let mut compressed = vec![0u8; compressed_len];
+                    r.read_exact(&mut compressed)
+                        .map_err(|e| format!("Read bitmap RLE: {e}"))?;
+                    unpack_bits_into(&mut packed_row_buf, &compressed, packed_row)?;
+                    let dst_start = row * width as usize;
+                    let dst_end = dst_start + width as usize;
+                    crate::psb_color_convert::bitmap_expand_bits_to_u8(
+                        &mut ch_u8[dst_start..dst_end],
+                        &packed_row_buf,
+                    );
+                }
+            }
+            PSD_COMPRESSION_ZIP | PSD_COMPRESSION_ZIP_PREDICTION => {
+                let data_start = r.stream_position().map_err(|e| format!("{e}"))? as usize;
+                let compressed = bytes
+                    .get(data_start..)
+                    .ok_or_else(|| "PSD/PSB ZIP bitmap out of bounds".to_string())?;
+                let packed_total = (channels as usize)
+                    .checked_mul(packed_count)
+                    .ok_or_else(|| "PSD/PSB bitmap ZIP size overflow".to_string())?;
+                let planar = crate::psb_zip::inflate_zlib_exact(compressed, packed_total)?;
+                let raw = planar
+                    .get(..packed_count)
+                    .ok_or_else(|| "PSD/PSB bitmap ZIP channel slice OOB".to_string())?;
+                crate::psb_color_convert::bitmap_expand_bits_to_u8(&mut ch_u8, raw);
+            }
+            _ => return Err(format!("Unsupported compression for bitmap: {compression}").into()),
+        }
+        let mut rgba = vec![255u8; checked_rgba_len(pixel_count)?];
+        // Remainder check: all height rows fit in the sample count.
+        for row in 0..height as usize {
+            if row & RLE_ROW_DECODE_CANCEL_POLL_INTERVAL == 0 {
+                check_decode_cancel(cancel)?;
+            }
+            let s = row * width as usize;
+            let e = s + width as usize;
+            let dstart = s * 4;
+            let dend = e * 4;
+            let dst_row = rgba
+                .get_mut(dstart..dend)
+                .ok_or_else(|| format!("PSD/PSB bitmap RGBA row OOB ({dstart}..{dend})"))?;
+            let src_row = ch_u8.get(s..e).unwrap_or(&[]);
+            for col in 0..width as usize {
+                let v = src_row.get(col).copied().unwrap_or(0);
+                dst_row[col * 4] = v;
+                dst_row[col * 4 + 1] = v;
+                dst_row[col * 4 + 2] = v;
+                dst_row[col * 4 + 3] = 255;
+            }
+        }
+        return Ok(PsbComposite {
+            width,
+            height,
+            pixels: rgba,
+        });
+    }
+
     // Step 1: Read planar channels and down-convert to 8-bit samples.
     let mut planar_channels: Vec<Option<Vec<u8>>> = vec![None; channels as usize];
 
@@ -360,6 +463,42 @@ pub fn read_composite_from_index(
         }
     }
 
+    // --- Indexed (2): expand palette indices into RGB planar channels ---
+    if color_mode == PSD_COLOR_MODE_INDEXED {
+        if let Some(palette) = crate::psb_color_convert::extract_indexed_palette(bytes) {
+            // Take ownership of the index plane (avoids borrow conflict with take below).
+            let indices_opt = planar_channels[0].take();
+            if let Some(indices) = indices_opt {
+                let n = pixel_count.min(indices.len());
+                let orig_alpha = if channels >= 2 {
+                    planar_channels[1].take()
+                } else {
+                    None
+                };
+                let mut r_plane = vec![0u8; n];
+                let mut g_plane = vec![0u8; n];
+                let mut b_plane = vec![0u8; n];
+                for i in 0..n {
+                    let idx = indices[i] as usize;
+                    if idx < 256 {
+                        let pb = idx * 3;
+                        r_plane[i] = palette.get(pb).copied().unwrap_or(0);
+                        g_plane[i] = palette.get(pb + 1).copied().unwrap_or(0);
+                        b_plane[i] = palette.get(pb + 2).copied().unwrap_or(0);
+                    }
+                }
+                let a_plane = orig_alpha.unwrap_or_else(|| vec![255u8; n]);
+                planar_channels = vec![Some(r_plane), Some(g_plane), Some(b_plane), Some(a_plane)];
+            }
+        }
+    }
+    // After Indexed expansion the effective channel count becomes 3 (no alpha) or 4.
+    let channels = if color_mode == PSD_COLOR_MODE_INDEXED {
+        4u32
+    } else {
+        channels
+    };
+
     // Step 2: Interleave into RGBA8 (CMYK goes through lcms2 when possible).
     let mut rgba = vec![255u8; checked_rgba_len(pixel_count)?];
     let cmyk_cms_ok = color_mode == PSD_COLOR_MODE_CMYK
@@ -477,7 +616,15 @@ pub fn rgba8_is_absolutely_blank_with_cancel(
 /// Gray and RGB: all-RGB-0 is a reliable empty-flat signal.
 #[inline]
 pub(crate) fn color_mode_uses_rgb0_blank(color_mode: u16) -> bool {
-    matches!(color_mode, PSD_COLOR_MODE_GRAYSCALE | PSD_COLOR_MODE_RGB)
+    matches!(
+        color_mode,
+        PSD_COLOR_MODE_GRAYSCALE
+            | PSD_COLOR_MODE_RGB
+            | PSD_COLOR_MODE_BITMAP
+            | PSD_COLOR_MODE_INDEXED
+            | PSD_COLOR_MODE_DUOTONE
+            | PSD_COLOR_MODE_LAB
+    )
 }
 
 /// Scan RGBA8; returns `(any_nonzero_rgb, any_nonzero_alpha)`.
@@ -1145,7 +1292,7 @@ pub(crate) fn unpack_bits_into(
 
 pub(crate) fn bytes_per_sample(depth: u16) -> Result<usize, String> {
     match depth {
-        8 => Ok(1),
+        1 | 8 => Ok(1), // depth=1: Bitmap packed bits, same raw byte slot
         16 => Ok(2),
         32 => Ok(4),
         _ => Err(format!(
@@ -1176,8 +1323,13 @@ pub(crate) fn channel_is_used(color_mode: u16, ch_idx: u32, channels: u32) -> bo
         PSD_COLOR_MODE_GRAYSCALE => ch_idx <= 1, // Gray, Alpha
         PSD_COLOR_MODE_RGB => ch_idx <= 3,       // R, G, B, Alpha
         PSD_COLOR_MODE_CMYK => ch_idx < 4 || (channels >= 5 && ch_idx == 4), // C,M,Y,K[,A]
-        // Unsupported modes are rejected by [`ensure_supported_color_mode`]
-        // before decode; never silently treat them as RGB.
+        PSD_COLOR_MODE_BITMAP | PSD_COLOR_MODE_INDEXED | PSD_COLOR_MODE_DUOTONE => {
+            ch_idx <= 1 // single colour channel + optional alpha
+        }
+        PSD_COLOR_MODE_MULTICHANNEL => {
+            ch_idx < channels // all channels are used; first 3→RGB, rest discarded
+        }
+        PSD_COLOR_MODE_LAB => ch_idx <= 3, // L, a, b, Alpha
         _ => false,
     }
 }
@@ -1187,7 +1339,14 @@ pub(crate) fn channel_is_used(color_mode: u16, ch_idx: u32, channels: u32) -> bo
 /// Only Gray / RGB / CMYK have color conversion paths.
 pub(crate) fn ensure_supported_color_mode(color_mode: u16) -> Result<(), String> {
     match color_mode {
-        PSD_COLOR_MODE_GRAYSCALE | PSD_COLOR_MODE_RGB | PSD_COLOR_MODE_CMYK => Ok(()),
+        PSD_COLOR_MODE_GRAYSCALE
+        | PSD_COLOR_MODE_RGB
+        | PSD_COLOR_MODE_CMYK
+        | PSD_COLOR_MODE_BITMAP
+        | PSD_COLOR_MODE_INDEXED
+        | PSD_COLOR_MODE_MULTICHANNEL
+        | PSD_COLOR_MODE_DUOTONE
+        | PSD_COLOR_MODE_LAB => Ok(()),
         _ => Err(rust_i18n::t!("error.psd_unsupported_color_mode", mode = color_mode).to_string()),
     }
 }
@@ -1240,8 +1399,72 @@ fn interleave_row_rgba8(
     start: usize,
     end: usize,
 ) {
+    let width = end.saturating_sub(start);
     match color_mode {
-        4 if channels >= 4 => {
+        // Bitmap (0): packed bits → grayscale.
+        PSD_COLOR_MODE_BITMAP => {
+            if let Some(src) = planar.first().and_then(|ch| ch.as_deref()) {
+                if channels >= 2
+                    && let Some(a_row) = planar.get(1).and_then(|ch| ch.as_deref())
+                {
+                    crate::psb_color_convert::bitmap_bits_row_to_rgba8(dst_row, src, width);
+                    // Apply alpha from channel 1.
+                    for col in 0..width {
+                        dst_row[col * 4 + 3] = a_row.get(start + col).copied().unwrap_or(0xFF);
+                    }
+                } else {
+                    crate::psb_color_convert::bitmap_bits_row_to_rgba8(dst_row, src, width);
+                }
+            }
+        }
+        // Indexed (2): palette lookup via pre-processed planar data (expanded to RGB).
+        // Duotone (8): stored as single grayscale channel.
+        PSD_COLOR_MODE_DUOTONE | PSD_COLOR_MODE_GRAYSCALE => {
+            if let Some(g_row) = planar
+                .first()
+                .and_then(|ch| ch.as_ref())
+                .and_then(|d| d.get(start..end))
+            {
+                if channels >= 2
+                    && let Some(a_row) = planar
+                        .get(1)
+                        .and_then(|ch| ch.as_ref())
+                        .and_then(|d| d.get(start..end))
+                {
+                    simd_swizzle::interleave_rgba(g_row, g_row, g_row, a_row, dst_row);
+                } else {
+                    simd_swizzle::interleave_rgb_with_alpha(g_row, g_row, g_row, 255, dst_row);
+                }
+            }
+        }
+        PSD_COLOR_MODE_RGB | PSD_COLOR_MODE_INDEXED => {
+            // RGB / Indexed (pre-processed to RGB planar data)
+            let r = planar
+                .first()
+                .and_then(|ch| ch.as_ref())
+                .and_then(|d| d.get(start..end));
+            let g = planar
+                .get(1)
+                .and_then(|ch| ch.as_ref())
+                .and_then(|d| d.get(start..end));
+            let b = planar
+                .get(2)
+                .and_then(|ch| ch.as_ref())
+                .and_then(|d| d.get(start..end));
+            if let (Some(r), Some(g), Some(b)) = (r, g, b) {
+                if channels >= 4
+                    && let Some(a_row) = planar
+                        .get(3)
+                        .and_then(|ch| ch.as_ref())
+                        .and_then(|d| d.get(start..end))
+                {
+                    simd_swizzle::interleave_rgba(r, g, b, a_row, dst_row);
+                } else {
+                    simd_swizzle::interleave_rgb_with_alpha(r, g, b, 255, dst_row);
+                }
+            }
+        }
+        PSD_COLOR_MODE_CMYK if channels >= 4 => {
             let c = planar
                 .get(0)
                 .and_then(|ch| ch.as_ref())
@@ -1270,54 +1493,37 @@ fn interleave_row_rgba8(
                 crate::psb_cmyk_simd::cmyk_planes_to_rgba8(c, m, y, k, a, dst_row);
             }
         }
-        1 => {
-            if let Some(g_row) = planar
-                .first()
-                .and_then(|ch| ch.as_ref())
-                .and_then(|d| d.get(start..end))
-            {
-                if channels >= 2
-                    && let Some(a_row) = planar
-                        .get(1)
-                        .and_then(|ch| ch.as_ref())
-                        .and_then(|d| d.get(start..end))
-                {
-                    simd_swizzle::interleave_rgba(g_row, g_row, g_row, a_row, dst_row);
-                } else {
-                    simd_swizzle::interleave_rgb_with_alpha(g_row, g_row, g_row, 255, dst_row);
-                }
+        // Multichannel (7): first 3 channels → RGB.
+        PSD_COLOR_MODE_MULTICHANNEL => {
+            let ch0 = planar.get(0).and_then(|ch| ch.as_deref());
+            let ch1 = planar.get(1).and_then(|ch| ch.as_deref());
+            let ch2 = planar.get(2).and_then(|ch| ch.as_deref());
+            let a = if channels >= 4 {
+                planar.get(3).and_then(|ch| ch.as_deref())
+            } else {
+                None
+            };
+            if let (Some(c0), Some(c1), Some(c2)) = (ch0, ch1, ch2) {
+                crate::psb_color_convert::multichannel_row_to_rgba8(
+                    dst_row, c0, c1, c2, a, start, end,
+                );
             }
         }
-        3 => {
-            // RGB
-            let r = planar
-                .first()
-                .and_then(|ch| ch.as_ref())
-                .and_then(|d| d.get(start..end));
-            let g = planar
-                .get(1)
-                .and_then(|ch| ch.as_ref())
-                .and_then(|d| d.get(start..end));
-            let b = planar
-                .get(2)
-                .and_then(|ch| ch.as_ref())
-                .and_then(|d| d.get(start..end));
-            if let (Some(r), Some(g), Some(b)) = (r, g, b) {
-                if channels >= 4
-                    && let Some(a_row) = planar
-                        .get(3)
-                        .and_then(|ch| ch.as_ref())
-                        .and_then(|d| d.get(start..end))
-                {
-                    simd_swizzle::interleave_rgba(r, g, b, a_row, dst_row);
-                } else {
-                    simd_swizzle::interleave_rgb_with_alpha(r, g, b, 255, dst_row);
-                }
+        // Lab (9): CIE L*a*b* → sRGB.
+        PSD_COLOR_MODE_LAB => {
+            let l_ch = planar.get(0).and_then(|ch| ch.as_deref());
+            let a_ch = planar.get(1).and_then(|ch| ch.as_deref());
+            let b_ch = planar.get(2).and_then(|ch| ch.as_deref());
+            let alpha = if channels >= 4 {
+                planar.get(3).and_then(|ch| ch.as_deref())
+            } else {
+                None
+            };
+            if let (Some(l), Some(a), Some(b)) = (l_ch, a_ch, b_ch) {
+                crate::psb_color_convert::lab_row_to_rgba8(dst_row, l, a, b, alpha, start, end);
             }
         }
-        _ => {
-            // Unsupported modes are rejected before decode; leave the row blank.
-        }
+        _ => {}
     }
 }
 
@@ -2122,7 +2328,15 @@ mod tests {
 
     #[test]
     fn unsupported_color_modes_are_rejected() {
-        for mode in [0u16, 2, 7, 8, 9] {
+        // All supported modes must pass.
+        for mode in [0u16, 1, 2, 3, 4, 7, 8, 9] {
+            assert!(
+                ensure_supported_color_mode(mode).is_ok(),
+                "mode={mode} should now be supported"
+            );
+        }
+        // Modes 5 and 6 are unassigned; any other value is rejected.
+        for mode in [5u16, 6] {
             let err = ensure_supported_color_mode(mode).unwrap_err();
             assert!(
                 err.contains(&mode.to_string()) || err.contains("color"),
@@ -2132,11 +2346,18 @@ mod tests {
             assert!(!channel_is_used(mode, 1, 3));
             assert!(!channel_is_used(mode, 2, 3));
         }
-        assert!(ensure_supported_color_mode(1).is_ok());
-        assert!(ensure_supported_color_mode(3).is_ok());
-        assert!(ensure_supported_color_mode(4).is_ok());
+        // Verify channel usage for supported modes.
         assert!(channel_is_used(3, 0, 3));
         assert!(channel_is_used(3, 2, 3));
+        assert!(channel_is_used(0, 0, 1)); // Bitmap: ch0 used
+        assert!(channel_is_used(0, 1, 2)); // Bitmap: ch1 (alpha) used when present
+        assert!(channel_is_used(2, 0, 1)); // Indexed: ch0 used
+        assert!(channel_is_used(7, 0, 3)); // Multichannel: ch0 used
+        assert!(channel_is_used(7, 2, 3)); // Multichannel: ch2 used
+        assert!(channel_is_used(8, 0, 1)); // Duotone: ch0 used
+        assert!(channel_is_used(9, 0, 4)); // Lab: ch0 used
+        assert!(channel_is_used(9, 2, 4)); // Lab: ch2 used
+        assert!(channel_is_used(9, 3, 4)); // Lab: ch3 (alpha) used
     }
 
     #[test]
