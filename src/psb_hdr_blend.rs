@@ -149,6 +149,7 @@ pub fn blend_separable_span_f32(dst: &mut [f32], src: &[f32], kind: SeparableBle
         return;
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     blend_separable_span_f32_scalar(dst, src, kind);
 }
 
@@ -859,16 +860,16 @@ unsafe fn blend_plane_f32_neon(
             let branch1 = vsubq_f32(
                 dc,
                 vmulq_f32(
-                    vmulq_f32(vsubq_f32(one, vmulq_f32(two, cs)), dc),
+                    vmulq_f32(vsubq_f32(one, vmulq_f32(two, sc)), dc),
                     vsubq_f32(one, dc),
                 ),
             );
             // cs > 0.5: cb + (2*cs - 1) * (d - cb)
             let branch2 = vaddq_f32(
                 dc,
-                vmulq_f32(vsubq_f32(vmulq_f32(two, cs), one), vsubq_f32(d, dc)),
+                vmulq_f32(vsubq_f32(vmulq_f32(two, sc), one), vsubq_f32(d, dc)),
             );
-            let cs_le_half = vcleq_f32(cs, half);
+            let cs_le_half = vcleq_f32(sc, half);
             vbslq_f32(cs_le_half, branch1, branch2)
         }
         SeparableBlendKind::HardLight => {
@@ -879,7 +880,7 @@ unsafe fn blend_plane_f32_neon(
                 one,
                 vmulq_f32(vmulq_f32(two, vsubq_f32(one, dc)), vsubq_f32(one, sc)),
             );
-            let mask = vcleq_f32(cs, half);
+            let mask = vcleq_f32(sc, half);
             vbslq_f32(mask, lo, hi)
         }
         // ── New separable modes (13) ────────────────────────────────────
