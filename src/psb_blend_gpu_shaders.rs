@@ -626,7 +626,7 @@ mod tests {
             assert!(
                 is_gpu_separable_blend(key),
                 "key {:?} should be GPU-separable",
-                core::str::from_utf8(key)
+                core::str::from_utf8(*key)
             );
         }
     }
@@ -640,7 +640,7 @@ mod tests {
             assert!(
                 !is_gpu_separable_blend(key),
                 "key {:?} should NOT be GPU-separable",
-                core::str::from_utf8(key)
+                core::str::from_utf8(*key)
             );
         }
     }

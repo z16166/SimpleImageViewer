@@ -76,6 +76,7 @@ mod psb_layer_comps;
 mod psb_layer_decode;
 mod psb_layer_decode_pool;
 mod psb_layer_rgba_simd;
+mod psb_p25_pipeline;
 mod psb_p25_reveal;
 mod psb_packbits_simd;
 mod psb_reader;
