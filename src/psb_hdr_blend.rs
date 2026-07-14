@@ -81,7 +81,10 @@ pub fn blend_separable_span_f32(dst: &mut [f32], src: &[f32], kind: SeparableBle
         return;
     }
 
-    if !kind.has_simd_kernel() {
+    // Color uses cross-channel blend_color_rgb and cannot be vectorized
+    // per-plane. All other modes (including Overlay/SoftLight/HardLight) have
+    // dedicated SIMD kernels.
+    if kind == SeparableBlendKind::Color {
         blend_separable_span_f32_scalar(dst, src, kind);
         return;
     }
@@ -110,10 +113,7 @@ pub fn blend_separable_span_f32(dst: &mut [f32], src: &[f32], kind: SeparableBle
         return;
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        blend_separable_span_f32_scalar(dst, src, kind);
-    }
+    blend_separable_span_f32_scalar(dst, src, kind);
 }
 
 fn blend_separable_span_f32_scalar(dst: &mut [f32], src: &[f32], kind: SeparableBlendKind) {
@@ -240,10 +240,69 @@ unsafe fn blend_plane_f32_sse41(
         SeparableBlendKind::Multiply => _mm_mul_ps(dc, sc),
         SeparableBlendKind::Screen => _mm_sub_ps(_mm_add_ps(dc, sc), _mm_mul_ps(dc, sc)),
         SeparableBlendKind::LinearDodge => _mm_add_ps(dc, sc),
-        SeparableBlendKind::Overlay
-        | SeparableBlendKind::SoftLight
-        | SeparableBlendKind::HardLight
-        | SeparableBlendKind::Color => sc,
+        SeparableBlendKind::Overlay => {
+            let half = _mm_set1_ps(0.5);
+            let two = _mm_set1_ps(2.0);
+            let lo = _mm_mul_ps(_mm_mul_ps(two, dc), sc);
+            let hi = _mm_sub_ps(
+                one,
+                _mm_mul_ps(
+                    _mm_mul_ps(two, _mm_sub_ps(one, dc)),
+                    _mm_sub_ps(one, sc),
+                ),
+            );
+            let mask = _mm_cmple_ps(dc, half);
+            _mm_blendv_ps(hi, lo, mask)
+        }
+        SeparableBlendKind::SoftLight => {
+            let half = _mm_set1_ps(0.5);
+            let quarter = _mm_set1_ps(0.25);
+            let two = _mm_set1_ps(2.0);
+            // d = cb <= 0.25 ? ((16*cb - 12)*cb + 4)*cb : sqrt(cb)
+            let d_poly = _mm_mul_ps(
+                _mm_add_ps(
+                    _mm_mul_ps(
+                        _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(16.0), dc), _mm_set1_ps(12.0)),
+                        dc,
+                    ),
+                    _mm_set1_ps(4.0),
+                ),
+                dc,
+            );
+            let d_sqrt = _mm_sqrt_ps(dc);
+            let cb_le_quarter = _mm_cmple_ps(dc, quarter);
+            let d = _mm_blendv_ps(d_sqrt, d_poly, cb_le_quarter);
+            // cs <= 0.5: cb - (1 - 2*cs) * cb * (1 - cb)
+            let branch1 = _mm_sub_ps(
+                dc,
+                _mm_mul_ps(
+                    _mm_mul_ps(_mm_sub_ps(one, _mm_mul_ps(two, sc)), dc),
+                    _mm_sub_ps(one, dc),
+                ),
+            );
+            // cs > 0.5: cb + (2*cs - 1) * (d - cb)
+            let branch2 = _mm_add_ps(
+                dc,
+                _mm_mul_ps(_mm_sub_ps(_mm_mul_ps(two, sc), one), _mm_sub_ps(d, dc)),
+            );
+            let cs_le_half = _mm_cmple_ps(sc, half);
+            _mm_blendv_ps(branch2, branch1, cs_le_half)
+        }
+        SeparableBlendKind::HardLight => {
+            let half = _mm_set1_ps(0.5);
+            let two = _mm_set1_ps(2.0);
+            let lo = _mm_mul_ps(_mm_mul_ps(two, dc), sc);
+            let hi = _mm_sub_ps(
+                one,
+                _mm_mul_ps(
+                    _mm_mul_ps(two, _mm_sub_ps(one, dc)),
+                    _mm_sub_ps(one, sc),
+                ),
+            );
+            let mask = _mm_cmple_ps(sc, half);
+            _mm_blendv_ps(hi, lo, mask)
+        }
+        SeparableBlendKind::Color => sc,
     };
     let term1 = _mm_mul_ps(_mm_mul_ps(sa, _mm_sub_ps(one, da)), sc);
     let term2 = _mm_mul_ps(_mm_mul_ps(sa, da), v_b);
@@ -372,10 +431,72 @@ unsafe fn blend_plane_f32_avx2(
         SeparableBlendKind::Multiply => _mm256_mul_ps(dc, sc),
         SeparableBlendKind::Screen => _mm256_sub_ps(_mm256_add_ps(dc, sc), _mm256_mul_ps(dc, sc)),
         SeparableBlendKind::LinearDodge => _mm256_add_ps(dc, sc),
-        SeparableBlendKind::Overlay
-        | SeparableBlendKind::SoftLight
-        | SeparableBlendKind::HardLight
-        | SeparableBlendKind::Color => sc,
+        SeparableBlendKind::Overlay => {
+            let half = _mm256_set1_ps(0.5);
+            let two = _mm256_set1_ps(2.0);
+            let lo = _mm256_mul_ps(_mm256_mul_ps(two, dc), sc);
+            let hi = _mm256_sub_ps(
+                one,
+                _mm256_mul_ps(
+                    _mm256_mul_ps(two, _mm256_sub_ps(one, dc)),
+                    _mm256_sub_ps(one, sc),
+                ),
+            );
+            let mask = _mm256_cmp_ps(dc, half, _CMP_LE_OQ);
+            _mm256_blendv_ps(hi, lo, mask)
+        }
+        SeparableBlendKind::SoftLight => {
+            let half = _mm256_set1_ps(0.5);
+            let quarter = _mm256_set1_ps(0.25);
+            let two = _mm256_set1_ps(2.0);
+            // d = cb <= 0.25 ? ((16*cb - 12)*cb + 4)*cb : sqrt(cb)
+            let d_poly = _mm256_mul_ps(
+                _mm256_add_ps(
+                    _mm256_mul_ps(
+                        _mm256_sub_ps(_mm256_mul_ps(_mm256_set1_ps(16.0), dc), _mm256_set1_ps(12.0)),
+                        dc,
+                    ),
+                    _mm256_set1_ps(4.0),
+                ),
+                dc,
+            );
+            let d_sqrt = _mm256_sqrt_ps(dc);
+            let cb_le_quarter = _mm256_cmp_ps(dc, quarter, _CMP_LE_OQ);
+            let d = _mm256_blendv_ps(d_sqrt, d_poly, cb_le_quarter);
+            // cs <= 0.5: cb - (1 - 2*cs) * cb * (1 - cb)
+            let branch1 = _mm256_sub_ps(
+                dc,
+                _mm256_mul_ps(
+                    _mm256_mul_ps(_mm256_sub_ps(one, _mm256_mul_ps(two, sc)), dc),
+                    _mm256_sub_ps(one, dc),
+                ),
+            );
+            // cs > 0.5: cb + (2*cs - 1) * (d - cb)
+            let branch2 = _mm256_add_ps(
+                dc,
+                _mm256_mul_ps(
+                    _mm256_sub_ps(_mm256_mul_ps(two, sc), one),
+                    _mm256_sub_ps(d, dc),
+                ),
+            );
+            let cs_le_half = _mm256_cmp_ps(sc, half, _CMP_LE_OQ);
+            _mm256_blendv_ps(branch2, branch1, cs_le_half)
+        }
+        SeparableBlendKind::HardLight => {
+            let half = _mm256_set1_ps(0.5);
+            let two = _mm256_set1_ps(2.0);
+            let lo = _mm256_mul_ps(_mm256_mul_ps(two, dc), sc);
+            let hi = _mm256_sub_ps(
+                one,
+                _mm256_mul_ps(
+                    _mm256_mul_ps(two, _mm256_sub_ps(one, dc)),
+                    _mm256_sub_ps(one, sc),
+                ),
+            );
+            let mask = _mm256_cmp_ps(sc, half, _CMP_LE_OQ);
+            _mm256_blendv_ps(hi, lo, mask)
+        }
+        SeparableBlendKind::Color => sc,
     };
     let term1 = _mm256_mul_ps(_mm256_mul_ps(sa, _mm256_sub_ps(one, da)), sc);
     let term2 = _mm256_mul_ps(_mm256_mul_ps(sa, da), v_b);
@@ -487,10 +608,69 @@ unsafe fn blend_plane_f32_neon(
         SeparableBlendKind::Multiply => vmulq_f32(dc, sc),
         SeparableBlendKind::Screen => vsubq_f32(vaddq_f32(dc, sc), vmulq_f32(dc, sc)),
         SeparableBlendKind::LinearDodge => vaddq_f32(dc, sc),
-        SeparableBlendKind::Overlay
-        | SeparableBlendKind::SoftLight
-        | SeparableBlendKind::HardLight
-        | SeparableBlendKind::Color => sc,
+        SeparableBlendKind::Overlay => {
+            let half = vdupq_n_f32(0.5);
+            let two = vdupq_n_f32(2.0);
+            let lo = vmulq_f32(vmulq_f32(two, dc), sc);
+            let hi = vsubq_f32(
+                one,
+                vmulq_f32(
+                    vmulq_f32(two, vsubq_f32(one, dc)),
+                    vsubq_f32(one, sc),
+                ),
+            );
+            let mask = vcleq_f32(dc, half);
+            vbslq_f32(mask, lo, hi)
+        }
+        SeparableBlendKind::SoftLight => {
+            let half = vdupq_n_f32(0.5);
+            let quarter = vdupq_n_f32(0.25);
+            let two = vdupq_n_f32(2.0);
+            // d = cb <= 0.25 ? ((16*cb - 12)*cb + 4)*cb : sqrt(cb)
+            let d_poly = vmulq_f32(
+                vaddq_f32(
+                    vmulq_f32(
+                        vsubq_f32(vmulq_f32(vdupq_n_f32(16.0), dc), vdupq_n_f32(12.0)),
+                        dc,
+                    ),
+                    vdupq_n_f32(4.0),
+                ),
+                dc,
+            );
+            let d_sqrt = vsqrtq_f32(dc);
+            let cb_le_quarter = vcleq_f32(dc, quarter);
+            let d = vbslq_f32(cb_le_quarter, d_poly, d_sqrt);
+            // cs <= 0.5: cb - (1 - 2*cs) * cb * (1 - cb)
+            let branch1 = vsubq_f32(
+                dc,
+                vmulq_f32(
+                    vmulq_f32(vsubq_f32(one, vmulq_f32(two, cs)), dc),
+                    vsubq_f32(one, dc),
+                ),
+            );
+            // cs > 0.5: cb + (2*cs - 1) * (d - cb)
+            let branch2 = vaddq_f32(
+                dc,
+                vmulq_f32(vsubq_f32(vmulq_f32(two, cs), one), vsubq_f32(d, dc)),
+            );
+            let cs_le_half = vcleq_f32(cs, half);
+            vbslq_f32(cs_le_half, branch1, branch2)
+        }
+        SeparableBlendKind::HardLight => {
+            let half = vdupq_n_f32(0.5);
+            let two = vdupq_n_f32(2.0);
+            let lo = vmulq_f32(vmulq_f32(two, dc), sc);
+            let hi = vsubq_f32(
+                one,
+                vmulq_f32(
+                    vmulq_f32(two, vsubq_f32(one, dc)),
+                    vsubq_f32(one, sc),
+                ),
+            );
+            let mask = vcleq_f32(cs, half);
+            vbslq_f32(mask, lo, hi)
+        }
+        SeparableBlendKind::Color => sc,
     };
     let term1 = vmulq_f32(vmulq_f32(sa, vsubq_f32(one, da)), sc);
     let term2 = vmulq_f32(vmulq_f32(sa, da), v_b);
@@ -633,6 +813,9 @@ mod tests {
             SeparableBlendKind::Screen,
             SeparableBlendKind::LinearDodge,
             SeparableBlendKind::Multiply,
+            SeparableBlendKind::Overlay,
+            SeparableBlendKind::SoftLight,
+            SeparableBlendKind::HardLight,
         ] {
             let mut dst_simd = [
                 0.1f32, 0.2, 0.3, 1.0, 0.5, 0.5, 0.5, 0.5, 2.0, 1.5, 0.8, 1.0, 0.0, 0.0, 0.0, 0.0,
