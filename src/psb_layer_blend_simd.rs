@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! SIMD straight-alpha separable blend with all 20 Photoshop/PDF modes.
+//! SIMD straight-alpha separable blend with all 28 blend modes.
 //!
 //! Normal / Screen / Linear Dodge / Multiply / Overlay / Soft Light /
 //! Hard Light are SIMD-accelerated via explicit SSE2/AVX2/NEON kernels

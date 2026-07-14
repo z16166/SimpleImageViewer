@@ -366,7 +366,7 @@ fn cs_blend_linear_burn(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (sa <= 0.0) { return; }
     let dst_coord = vec2<i32>(dx, dy);
     let dst = textureLoad(target, dst_coord);
-    let blended = dst.rgb + src.rgb - 1.0;
+    let blended = max(vec3<f32>(0.0), dst.rgb + src.rgb - 1.0);
     blend_store(dst_coord, src, dst, blended);
 }
 
@@ -539,7 +539,7 @@ fn cs_blend_subtract(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (sa <= 0.0) { return; }
     let dst_coord = vec2<i32>(dx, dy);
     let dst = textureLoad(target, dst_coord);
-    let blended = dst.rgb - src.rgb;
+    let blended = max(vec3<f32>(0.0), dst.rgb - src.rgb);
     blend_store(dst_coord, src, dst, blended);
 }
 

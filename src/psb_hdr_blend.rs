@@ -673,14 +673,17 @@ unsafe fn blend_plane_f32_avx2(
             let two_cs = _mm256_mul_ps(two, sc);
             let cs_le_zero = _mm256_cmp_ps(sc, zero, _CMP_LE_OQ);
             let safe_two_cs = _mm256_max_ps(two_cs, _mm256_set1_ps(HDR_BLEND_EPSILON));
-            let burn = _mm256_sub_ps(one, _mm256_div_ps(_mm256_sub_ps(one, dc), safe_two_cs));
+            let burn = _mm256_sub_ps(
+                one,
+                _mm256_min_ps(one, _mm256_div_ps(_mm256_sub_ps(one, dc), safe_two_cs)),
+            );
             let burn = _mm256_blendv_ps(burn, zero, cs_le_zero);
             let cs_ge_one = _mm256_cmp_ps(sc, one, _CMP_GE_OQ);
             let safe_denom = _mm256_max_ps(
                 _mm256_sub_ps(two, two_cs),
                 _mm256_set1_ps(HDR_BLEND_EPSILON),
             );
-            let dodge = _mm256_div_ps(dc, safe_denom);
+            let dodge = _mm256_min_ps(one, _mm256_div_ps(dc, safe_denom));
             let dodge = _mm256_blendv_ps(dodge, one, cs_ge_one);
             _mm256_blendv_ps(dodge, burn, cs_le_half)
         }
@@ -915,11 +918,14 @@ unsafe fn blend_plane_f32_neon(
             let two_cs = vmulq_f32(two, sc);
             let cs_le_zero = vcleq_f32(sc, zero);
             let safe_two_cs = vmaxq_f32(two_cs, vdupq_n_f32(HDR_BLEND_EPSILON));
-            let burn = vsubq_f32(one, vdivq_f32(vsubq_f32(one, dc), safe_two_cs));
+            let burn = vsubq_f32(
+                one,
+                vminq_f32(one, vdivq_f32(vsubq_f32(one, dc), safe_two_cs)),
+            );
             let burn = vbslq_f32(cs_le_zero, zero, burn);
             let cs_ge_one = vcgeq_f32(sc, one);
             let safe_denom = vmaxq_f32(vsubq_f32(two, two_cs), vdupq_n_f32(HDR_BLEND_EPSILON));
-            let dodge = vdivq_f32(dc, safe_denom);
+            let dodge = vminq_f32(one, vdivq_f32(dc, safe_denom));
             let dodge = vbslq_f32(cs_ge_one, one, dodge);
             vbslq_f32(cs_le_half, burn, dodge)
         }
