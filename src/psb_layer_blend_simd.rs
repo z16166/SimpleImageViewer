@@ -119,6 +119,7 @@ pub(crate) fn f32_to_u8_round(v: f32) -> u8 {
 
 /// WGSL expression that must stay bit-aligned with [`f32_to_u8_round`] for
 /// non-negative clamped inputs (shader string / review checklist 22).
+#[allow(dead_code)] // used from binary crate tests, not from lib
 pub(crate) const UNIT_TO_U8_WGSL_FLOOR_BIAS: &str = "floor(x * 255.0 + 0.5)";
 
 #[inline]

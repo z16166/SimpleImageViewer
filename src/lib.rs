@@ -19,3 +19,14 @@ pub mod constants;
 pub mod simd_downsample;
 pub mod simd_pixel_convert;
 pub mod simd_swizzle;
+
+// PSD/PSB SIMD helpers — registered here for `cargo test --lib` coverage
+// (also declared in `main.rs` as private `mod` for the binary crate).
+pub mod psb_blend_nonseparable;
+pub mod psb_downconvert_simd;
+pub mod psb_hdr_blend;
+pub mod psb_hdr_interleave_simd;
+pub mod psb_layer_blend_simd;
+pub mod psb_layer_rgba_simd;
+pub mod psb_packbits_simd;
+pub mod psb_simd_mul_div255;

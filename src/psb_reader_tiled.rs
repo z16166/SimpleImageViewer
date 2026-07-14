@@ -402,9 +402,9 @@ impl PsbTiledSource {
 
 /// Standalone path-based opener (maps the file itself). Prefer
 /// [`open_tiled_source_from_mmap`] when the caller already holds an `Arc<Mmap>`
-/// (checklist #29 / `load_psd`). Kept for tests and direct callers; production
-/// `load_psd` uses the mmap-reusing entry.
-#[allow(dead_code)]
+/// (checklist #29 / `load_psd`). Test-only: production `load_psd` uses the
+/// mmap-reusing entry to avoid a second open/mmap.
+#[cfg(test)]
 pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
     // On Windows, use FILE_FLAG_RANDOM_ACCESS to disable aggressive sequential
     // prefetching. Tile workers access scattered regions of a 6GB+ file -- the

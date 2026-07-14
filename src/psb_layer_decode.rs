@@ -417,6 +417,9 @@ pub(crate) fn layer_planes_to_rgba_f32(
         };
 
         let base_alpha = alpha.and_then(|a| a.get(i)).copied().unwrap_or(1.0);
+        // PSD convention: apply layer opacity first, then user/vector mask
+        // (two separate multiplications; do not fuse). Matches Adobe's order
+        // so partial opacity + mask stays bit-identical to Photoshop.
         let mut a = base_alpha * opacity_f;
         if let Some(m) = mask {
             let mv = m.get(i).copied().unwrap_or(1.0);

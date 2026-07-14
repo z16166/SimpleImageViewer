@@ -27,6 +27,17 @@
 //! absolute blank, while P2 rejects any zero-information solid composite.
 //! Therefore, a solid white or gray flattened Image Data preview may remain at
 //! P1 by design even when it looks like a placeholder and layers differ.
+//!
+//! **HDR vs SDR zero-info criteria:** Unlike the SDR pipeline (which uses
+//! only zero-information at P2+ and exact u8 lanes), the HDR path applies
+//! *both* `rgba_f32_is_absolutely_blank_with_cancel` and
+//! `rgba_f32_is_zero_information_with_cancel` (joined with `||`) at every
+//! stage — P2, P2.5a, and P2.5b. Floats use 1e-8 EPS instead of exact lanes
+//! because layer blend / ICC / tone-map leave residual noise. HDR also gates
+//! on `NoDrawableVisibleLayers` (geometry-level) before any pixel scan.
+//! A composite that passes SDR P1 but fails SDR P2 may also be caught at
+//! the HDR P2 combined barrier, causing the HDR state machine to degrade
+//! deeper before delegating to the SDR fallback.
 
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 use crate::psb_hdr_composite::composite_layers_hdr_with_visibility_from_info;
@@ -414,7 +425,7 @@ fn decode_psd_hdr_main_p25b_heuristic(
                     cand_i
                 );
                 log::debug!("PSD HDR main P2.5b pass1 fail cand={cand_i}: {e}");
-                remember_p25_reveal_err(reveal_err, e);
+                crate::psb_p25_reveal::remember_p25_reveal_err(reveal_err, e);
             }
         }
 
@@ -453,7 +464,7 @@ fn decode_psd_hdr_main_p25b_heuristic(
                     cand_i
                 );
                 log::debug!("PSD HDR main P2.5b force-open fail cand={cand_i}: {e}");
-                remember_p25_reveal_err(reveal_err, e);
+                crate::psb_p25_reveal::remember_p25_reveal_err(reveal_err, e);
             }
         }
     }
@@ -509,18 +520,9 @@ fn decode_psd_hdr_main_p25b_show_all(
                 "[PreloadDebug][PsdHdrMain] stage=P25b_force_open_all_fail err={e}"
             );
             log::debug!("PSD HDR main P2.5b force-open-all unavailable: {e}");
-            remember_p25_reveal_err(reveal_err, e);
+            crate::psb_p25_reveal::remember_p25_reveal_err(reveal_err, e);
             Ok(None)
         }
-    }
-}
-
-fn remember_p25_reveal_err(
-    slot: &mut Option<crate::loader::DecodeError>,
-    err: crate::loader::DecodeError,
-) {
-    if !err.is_no_drawable_visible_layers() {
-        *slot = Some(err);
     }
 }
 

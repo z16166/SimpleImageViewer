@@ -56,7 +56,15 @@ pub struct PsdMainDecode {
 /// max-bbox reveal, or force-open-all drawable leaves. Neither P2.5 path uses
 /// fuzzy pixel heuristics.
 /// P3 accepts an IR thumbnail under the same zero-information barrier as P2.
-/// All barriers are full-buffer SIMD scans.
+/// All barriers are full-buffer SIMD scans (exact u8 comparison).
+///
+/// **SDR vs HDR zero-info criteria:** The HDR pipeline ("src/psb_hdr_main.rs")
+/// differs in two ways: (a) it applies *both* absolutely-blank and
+/// zero-information checks (joined with `||`) at P2/P2.5a/P2.5b, not just
+/// zero-information; (b) floats are compared with 1e-8 EPS instead of exact
+/// u8 lanes. HDR also gates on a geometry-level `NoDrawableVisibleLayers`
+/// before any pixel scan. These differences mean a composite that passes SDR
+/// P1 but fails SDR P2 may also be caught at the HDR P2 combined barrier.
 pub fn decode_psd_sdr_main_from_bytes_with_cancel(
     bytes: &[u8],
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -635,7 +643,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
                     cand_i
                 );
                 log::debug!("PSD SDR main P2.5b pass1 fail cand={cand_i}: {e}");
-                remember_p25_reveal_err(reveal_err, e);
+                crate::psb_p25_reveal::remember_p25_reveal_err(reveal_err, e);
             }
         }
 
@@ -682,7 +690,7 @@ fn decode_psd_sdr_main_p25b_heuristic(
                     cand_i
                 );
                 log::debug!("PSD SDR main P2.5b force-open fail cand={cand_i}: {e}");
-                remember_p25_reveal_err(reveal_err, e);
+                crate::psb_p25_reveal::remember_p25_reveal_err(reveal_err, e);
             }
         }
     }
@@ -745,20 +753,9 @@ fn decode_psd_sdr_main_p25b_show_all(
                 "[PreloadDebug][PsdSdrMain] stage=P25b_force_open_all_fail err={e}"
             );
             log::debug!("PSD SDR main P2.5b force-open-all unavailable: {e}");
-            remember_p25_reveal_err(reveal_err, e);
+            crate::psb_p25_reveal::remember_p25_reveal_err(reveal_err, e);
             Ok(None)
         }
-    }
-}
-
-/// Keep a P2.5b structural failure for the final error path; ignore blank-layer
-/// soft failures so "all layers hidden" can still be reported when appropriate.
-fn remember_p25_reveal_err(
-    slot: &mut Option<crate::loader::DecodeError>,
-    err: crate::loader::DecodeError,
-) {
-    if !err.is_no_drawable_visible_layers() {
-        *slot = Some(err);
     }
 }
 

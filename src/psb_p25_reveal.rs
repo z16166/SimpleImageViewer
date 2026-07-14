@@ -59,10 +59,12 @@ pub fn rank_max_bbox_top_level(records: &[LayerRecord], limit: usize) -> Vec<Max
             let Some(start) = open_group_starts.pop() else {
                 continue;
             };
-            if open_group_starts.is_empty() {
-                let members: Vec<usize> = (start..=index).collect();
-                push_candidate(records, index, members, &mut ranked);
+            // Still inside a nested group — not a top-level close yet.
+            if !open_group_starts.is_empty() {
+                continue;
             }
+            let members: Vec<usize> = (start..=index).collect();
+            push_candidate(records, index, members, &mut ranked);
             continue;
         }
         if open_group_starts.is_empty() {
@@ -237,6 +239,18 @@ fn is_drawable_leaf(record: &LayerRecord) -> bool {
         && !record.is_empty_bounds()
         && record.opacity > 0
         && dimensions_within_limit(record.width(), record.height())
+}
+
+/// Suppress `p25_reveal_err` on `NoDrawableVisibleLayers` (the caller already
+/// tracks that flag separately and should prefer the more specific OSD stage).
+/// Shared by SDR and HDR main state machines.
+pub(crate) fn remember_p25_reveal_err(
+    slot: &mut Option<crate::loader::DecodeError>,
+    err: crate::loader::DecodeError,
+) {
+    if !err.is_no_drawable_visible_layers() {
+        *slot = Some(err);
+    }
 }
 
 #[cfg(test)]
