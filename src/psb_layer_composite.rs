@@ -363,21 +363,11 @@ unsafe fn feather_horizontal_sse41(mask: &[u8], tmp: &mut [f32], wp: usize, hp: 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn feather_vertical_sse41(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
     use core::arch::x86_64::*;
-    for col in 0..wp {
-        // Scalar top edge (row < radius).
-        for row in 0..radius.min(hp) {
-            let mut accum = 0.0f32;
-            for (k, &kw) in kernel.iter().enumerate() {
-                let sy = (row as i64 + k as i64 - radius as i64).clamp(0, hp as i64 - 1) as usize;
-                accum += tmp[sy * wp + col] * kw;
-            }
-            let v = (accum + 0.5) as u32;
-            mask[row * wp + col] = v.min(255) as u8;
-        }
-        // SIMD interior.
-        let interior_end = hp.saturating_sub(radius + 3);
-        let mut row = radius;
-        while row + 4 <= interior_end {
+    for row in 0..hp {
+        let use_simd = row >= radius && row + radius + 3 < hp;
+        let interior_end = if use_simd { wp.saturating_sub(3) } else { 0 };
+        let mut col = 0usize;
+        while col + 4 <= interior_end {
             let mut acc = _mm_setzero_ps();
             for (k, &kw) in kernel.iter().enumerate() {
                 let src_row = row + k - radius;
@@ -385,7 +375,6 @@ unsafe fn feather_vertical_sse41(tmp: &[f32], mask: &mut [u8], wp: usize, hp: us
                 let kw4 = _mm_set1_ps(kw);
                 acc = _mm_add_ps(acc, _mm_mul_ps(f32vals, kw4));
             }
-            // Round and pack to u8.
             let rounded = _mm_add_ps(acc, _mm_set1_ps(0.5));
             let i32vals = _mm_cvttps_epi32(rounded);
             let clamped = _mm_min_epi32(i32vals, _mm_set1_epi32(255));
@@ -393,13 +382,12 @@ unsafe fn feather_vertical_sse41(tmp: &[f32], mask: &mut [u8], wp: usize, hp: us
             let u32bits = _mm_cvtsi128_si32(u8vals) as u32;
             let bytes = u32bits.to_le_bytes();
             mask[row * wp + col] = bytes[0];
-            mask[(row + 1) * wp + col] = bytes[1];
-            mask[(row + 2) * wp + col] = bytes[2];
-            mask[(row + 3) * wp + col] = bytes[3];
-            row += 4;
+            mask[row * wp + col + 1] = bytes[1];
+            mask[row * wp + col + 2] = bytes[2];
+            mask[row * wp + col + 3] = bytes[3];
+            col += 4;
         }
-        // Scalar bottom edge.
-        for row in row..hp {
+        for col in col..wp {
             let mut accum = 0.0f32;
             for (k, &kw) in kernel.iter().enumerate() {
                 let sy = (row as i64 + k as i64 - radius as i64).clamp(0, hp as i64 - 1) as usize;
@@ -472,21 +460,11 @@ unsafe fn feather_horizontal_avx2(mask: &[u8], tmp: &mut [f32], wp: usize, hp: u
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn feather_vertical_avx2(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
     use core::arch::x86_64::*;
-    for col in 0..wp {
-        // Scalar top edge.
-        for row in 0..radius.min(hp) {
-            let mut accum = 0.0f32;
-            for (k, &kw) in kernel.iter().enumerate() {
-                let sy = (row as i64 + k as i64 - radius as i64).clamp(0, hp as i64 - 1) as usize;
-                accum += tmp[sy * wp + col] * kw;
-            }
-            let v = (accum + 0.5) as u32;
-            mask[row * wp + col] = v.min(255) as u8;
-        }
-        // SIMD interior: 8-wide.
-        let interior_end = hp.saturating_sub(radius + 7);
-        let mut row = radius;
-        while row + 8 <= interior_end {
+    for row in 0..hp {
+        let use_simd = row >= radius && row + radius + 7 < hp;
+        let interior_end = if use_simd { wp.saturating_sub(7) } else { 0 };
+        let mut col = 0usize;
+        while col + 8 <= interior_end {
             let mut acc = _mm256_setzero_ps();
             for (k, &kw) in kernel.iter().enumerate() {
                 let src_row = row + k - radius;
@@ -494,11 +472,9 @@ unsafe fn feather_vertical_avx2(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usi
                 let kw8 = _mm256_set1_ps(kw);
                 acc = _mm256_add_ps(acc, _mm256_mul_ps(f32vals, kw8));
             }
-            // Round, clamp, pack to 8× u8.
             let rounded = _mm256_add_ps(acc, _mm256_set1_ps(0.5));
             let i32vals = _mm256_cvttps_epi32(rounded);
             let clamped = _mm256_min_epi32(i32vals, _mm256_set1_epi32(255));
-            // Pack i32 → i16 → u8.
             let lo16 = _mm_packs_epi32(
                 _mm256_castsi256_si128(clamped),
                 _mm256_extracti128_si256(clamped, 1),
@@ -507,12 +483,11 @@ unsafe fn feather_vertical_avx2(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usi
             let u64bits = _mm_cvtsi128_si64(u8vals) as u64;
             let bytes = u64bits.to_le_bytes();
             for j in 0..8 {
-                mask[(row + j) * wp + col] = bytes[j];
+                mask[row * wp + col + j] = bytes[j];
             }
-            row += 8;
+            col += 8;
         }
-        // Scalar bottom edge.
-        for row in row..hp {
+        for col in col..wp {
             let mut accum = 0.0f32;
             for (k, &kw) in kernel.iter().enumerate() {
                 let sy = (row as i64 + k as i64 - radius as i64).clamp(0, hp as i64 - 1) as usize;
@@ -578,21 +553,11 @@ unsafe fn feather_horizontal_neon(mask: &[u8], tmp: &mut [f32], wp: usize, hp: u
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn feather_vertical_neon(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
     use core::arch::aarch64::*;
-    for col in 0..wp {
-        // Scalar top edge.
-        for row in 0..radius.min(hp) {
-            let mut accum = 0.0f32;
-            for (k, &kw) in kernel.iter().enumerate() {
-                let sy = (row as i64 + k as i64 - radius as i64).clamp(0, hp as i64 - 1) as usize;
-                accum += tmp[sy * wp + col] * kw;
-            }
-            let v = (accum + 0.5) as u32;
-            mask[row * wp + col] = v.min(255) as u8;
-        }
-        // NEON interior: 4-wide.
-        let interior_end = hp.saturating_sub(radius + 3);
-        let mut row = radius;
-        while row + 4 <= interior_end {
+    for row in 0..hp {
+        let use_simd = row >= radius && row + radius + 3 < hp;
+        let interior_end = if use_simd { wp.saturating_sub(3) } else { 0 };
+        let mut col = 0usize;
+        while col + 4 <= interior_end {
             let mut acc = vdupq_n_f32(0.0);
             for (k, &kw) in kernel.iter().enumerate() {
                 let src_row = row + k - radius;
@@ -600,20 +565,19 @@ unsafe fn feather_vertical_neon(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usi
                 let kw4 = vdupq_n_f32(kw);
                 acc = vmlaq_f32(acc, f32vals, kw4);
             }
-            // Round and clamp.
             let rounded = vaddq_f32(acc, vdupq_n_f32(0.5));
             let i32vals = vcvtq_s32_f32(rounded);
             let clamped = vminq_s32(i32vals, vdupq_n_s32(255));
             let u8vals = vqmovun_s16(vcombine_s16(vmovn_s32(clamped), vdup_n_s16(0)));
-            let u32bits = vget_lane_u32(vreinterpret_u32_u8(vget_low_u8(u8vals)), 0);
+            let u32bits = vget_lane_u32(vreinterpret_u32_u8(u8vals), 0);
             let bytes = u32bits.to_le_bytes();
-            for j in 0..4 {
-                mask[(row + j) * wp + col] = bytes[j];
-            }
-            row += 4;
+            mask[row * wp + col] = bytes[0];
+            mask[row * wp + col + 1] = bytes[1];
+            mask[row * wp + col + 2] = bytes[2];
+            mask[row * wp + col + 3] = bytes[3];
+            col += 4;
         }
-        // Scalar bottom edge.
-        for row in row..hp {
+        for col in col..wp {
             let mut accum = 0.0f32;
             for (k, &kw) in kernel.iter().enumerate() {
                 let sy = (row as i64 + k as i64 - radius as i64).clamp(0, hp as i64 - 1) as usize;
@@ -3045,4 +3009,47 @@ mod tests {
             "feather should change density-scaled values after density"
         );
     }
+
+    // ── Large-mask tests that exercise SIMD interior paths ────────────
+
+    #[test]
+    fn mask_feather_large_horizontal_hits_simd() {
+        // 32x8 mask with feather=8 => radius=ceil(2.5*4)=10.
+        // wp=32 >= 2*10+4=24 => SSE41/AVX2 interior is reachable.
+        let mut m = vec![0u8; 8 * 32];
+        for col in 16..32 { m[col] = 255; }
+        // Second row same
+        for col in 16..32 { m[32 + col] = 255; }
+        for row in 2..8 {
+            let off = row * 32;
+            for col in 16..32 { m[off + col] = 255; }
+        }
+        super::apply_mask_feather(&mut m, 32, 8, 8.0);
+        // Leftmost pixel should have blurred inward from the hard edge at col 16.
+        assert!(m[0] == 0, "far left should stay 0: got {}", m[0]);
+        // Pixels near the edge should be between 0 and 255.
+        assert!(m[14] > 0 && m[14] < 255, "edge pixel should be partial: got {}", m[14]);
+        assert!(m[16] > 0 && m[16] < 255, "edge pixel should be partial: got {}", m[16]);
+        // Center of the white area should be 255.
+        assert!(m[24] >= 250, "far right should be near 255: got {}", m[24]);
+    }
+
+    #[test]
+    fn mask_feather_large_vertical_hits_simd() {
+        // 8x32 mask: vertical test for SIMD path (row-major).
+        let mut m = vec![0u8; 32 * 8];
+        for row in 16..32 {
+            let off = row * 8;
+            for col in 0..8 { m[off + col] = 255; }
+        }
+        super::apply_mask_feather(&mut m, 8, 32, 8.0);
+        // Top rows should be 0, bottom rows 255, edge rows partial.
+        assert!(m[0] == 0, "top should stay 0: got {}", m[0]);
+        let edge_idx = 14 * 8;
+        assert!(m[edge_idx] > 0 && m[edge_idx] < 255,
+            "vertical edge pixel should be partial: got {}", m[edge_idx]);
+        let far_idx = 28 * 8;
+        assert!(m[far_idx] == 255, "bottom should be 255: got {}", m[far_idx]);
+    }
+
 }
