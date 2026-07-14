@@ -69,14 +69,14 @@ fn read_path_point(rec: &[u8; VMSK_RECORD_LEN], base: usize) -> (f64, f64) {
 //                                      1=keep transparent)
 //  -1   End of path (0xFFFF)
 
-const PATH_SELECTOR_CLOSED_LEN: i16 = 0;   // closed subpath length record
-const PATH_SELECTOR_CLOSED_KNOT_LINKED: i16 = 1;   // closed Bezier knot, linked
+const PATH_SELECTOR_CLOSED_LEN: i16 = 0; // closed subpath length record
+const PATH_SELECTOR_CLOSED_KNOT_LINKED: i16 = 1; // closed Bezier knot, linked
 const PATH_SELECTOR_CLOSED_KNOT_UNLINKED: i16 = 2; // closed Bezier knot, unlinked
-const PATH_SELECTOR_OPEN_LEN: i16 = 3;     // open subpath length record
-const PATH_SELECTOR_OPEN_KNOT_LINKED: i16 = 4;     // open Bezier knot, linked
-const PATH_SELECTOR_OPEN_KNOT_UNLINKED: i16 = 5;   // open Bezier knot, unlinked
-const PATH_SELECTOR_FILL_RULE: i16 = 6;             // path fill rule record
-const PATH_SELECTOR_INITIAL_FILL: i16 = 8;          // initial fill rule record
+const PATH_SELECTOR_OPEN_LEN: i16 = 3; // open subpath length record
+const PATH_SELECTOR_OPEN_KNOT_LINKED: i16 = 4; // open Bezier knot, linked
+const PATH_SELECTOR_OPEN_KNOT_UNLINKED: i16 = 5; // open Bezier knot, unlinked
+const PATH_SELECTOR_FILL_RULE: i16 = 6; // path fill rule record
+const PATH_SELECTOR_INITIAL_FILL: i16 = 8; // initial fill rule record
 
 // Byte offsets for sub-points within a knot record (selectors 1/2/4/5).
 //   [0-1]  selector (i16)
@@ -419,7 +419,11 @@ mod tests {
             .expect("closed triangle should produce a mask");
 
         // Inside the triangle: centre area.
-        assert_eq!(mask[33 * 150 + 50], 255, "triangle interior should be opaque");
+        assert_eq!(
+            mask[33 * 150 + 50],
+            255,
+            "triangle interior should be opaque"
+        );
         // Outside: bottom-right corner.
         assert_eq!(mask[149 * 150 + 149], 0, "bottom-right should be outside");
     }
@@ -434,15 +438,17 @@ mod tests {
             corner_knot(PATH_SELECTOR_OPEN_KNOT_LINKED, 50.0, 100.0),
             end_rec(),
         ]);
-        assert!(rasterize_vector_mask(&vm, 0, 0, 50, 50).is_none(),
-            "open subpath should produce no mask");
+        assert!(
+            rasterize_vector_mask(&vm, 0, 0, 50, 50).is_none(),
+            "open subpath should produce no mask"
+        );
     }
 
     #[test]
     fn fill_rule_even_odd_honored() {
         // Explicit even-odd fill rule (selector 6, rule=0).
         let vm = VectorMaskData(vec![
-            fill_rule_rec(0),                         // even-odd
+            fill_rule_rec(0), // even-odd
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
             corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
             corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
@@ -451,14 +457,18 @@ mod tests {
         ]);
         let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
             .expect("even-odd fill should produce a mask");
-        assert_eq!(mask[33 * 150 + 50], 255, "even-odd: triangle interior should be opaque");
+        assert_eq!(
+            mask[33 * 150 + 50],
+            255,
+            "even-odd: triangle interior should be opaque"
+        );
     }
 
     #[test]
     fn fill_rule_non_zero_honored() {
         // Explicit non-zero fill rule (selector 6, rule=1).
         let vm = VectorMaskData(vec![
-            fill_rule_rec(1),                         // non-zero winding
+            fill_rule_rec(1), // non-zero winding
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
             corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
             corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
@@ -467,7 +477,11 @@ mod tests {
         ]);
         let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
             .expect("non-zero fill should produce a mask");
-        assert_eq!(mask[33 * 150 + 50], 255, "non-zero: triangle interior should be opaque");
+        assert_eq!(
+            mask[33 * 150 + 50],
+            255,
+            "non-zero: triangle interior should be opaque"
+        );
     }
 
     #[test]
@@ -505,7 +519,7 @@ mod tests {
     fn fill_rule_before_subpath_honored() {
         // Rule record may appear before the subpath length record.
         let vm = VectorMaskData(vec![
-            fill_rule_rec(0),                         // even-odd
+            fill_rule_rec(0), // even-odd
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
             corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.0),
             corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 100.0, 0.0),
@@ -533,7 +547,11 @@ mod tests {
         ]);
         let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150)
             .expect("multiple subpaths should produce a mask");
-        assert_eq!(mask[33 * 150 + 50], 255, "first triangle centre should still be opaque");
+        assert_eq!(
+            mask[33 * 150 + 50],
+            255,
+            "first triangle centre should still be opaque"
+        );
     }
 
     #[test]
@@ -551,6 +569,9 @@ mod tests {
             .expect("offset layer should produce a mask");
         // Layer-local pixel (40,23) = document (50,33) = centroid of triangle.
         let local_idx = 23 * 200 + 40;
-        assert_eq!(mask[local_idx], 255, "triangle interior should be opaque after offset");
+        assert_eq!(
+            mask[local_idx], 255,
+            "triangle interior should be opaque after offset"
+        );
     }
 }
