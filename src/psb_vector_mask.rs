@@ -45,8 +45,16 @@ fn read_path_coord(rec: &[u8; VMSK_RECORD_LEN], offset: usize) -> f64 {
 }
 
 /// Read a (x, y) pair from a path sub-point starting at `base`.
+///
+/// # Wire format
+///
+/// Each sub-point stores **Y** in the first 4 bytes (big-endian Q16.16) and
+/// **X** in the next 4 bytes.  This function reads them in the correct
+/// storage order and returns **(X, Y)** so callers always see a conventional
+/// `(x, y)` tuple.
 fn read_path_point(rec: &[u8; VMSK_RECORD_LEN], base: usize) -> (f64, f64) {
-    (read_path_coord(rec, base), read_path_coord(rec, base + 4))
+    // bytes [base..base+4) = Y, bytes [base+4..base+8) = X
+    (read_path_coord(rec, base + 4), read_path_coord(rec, base))
 }
 
 // ---------------------------------------------------------------------------

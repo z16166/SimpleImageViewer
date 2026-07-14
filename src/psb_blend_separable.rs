@@ -96,12 +96,15 @@ pub fn blend_vivid_light(cb: f32, cs: f32) -> f32 {
     }
 }
 
-/// `B(cb, cs) = cb + 2 * cs - 1`
+/// `B(cb, cs) = max(0, cb + 2 * cs - 1)`
 ///
-/// Adobe "Linear Light".
+/// Adobe "Linear Light".  The `.max(0.0)` prevents negative colour values
+/// that can arise when both operands are zero or near-zero (negative colour
+/// values are never meaningful, even in HDR mode where values above 1.0 are
+/// intentionally preserved as headroom).
 #[inline]
 pub fn blend_linear_light(cb: f32, cs: f32) -> f32 {
-    cb + 2.0 * cs - 1.0
+    (cb + 2.0 * cs - 1.0).max(0.0)
 }
 
 /// `B(cb, cs)`: Pin Light — `min(cb, 2*cs)` when `cs <= 0.5`, else `max(cb, 2*cs - 1)`.

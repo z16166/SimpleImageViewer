@@ -153,6 +153,15 @@ fn blend_store(dst_coord: vec2<i32>, src: vec4<f32>, dst: vec4<f32>,
     }
     let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
     let out_rgb = co / max(out_a, 1e-20);
+    // Explicit SDR clamp: the current `rgba8unorm` texture format implicitly
+    // clamps to [0, 1] on `textureStore`, but writing the clamp here defends
+    // against any future switch to float-format textures (where negatives
+    // would write through unmodified and corrupt downstream blending / tone
+    // mapping).  Blended values above 1.0 *are* meaningful in HDR, but the
+    // current SDR compositor never preserves headroom, so clamping to 1.0 is
+    // correct.  A future HDR GPU path should differentiate its clamping
+    // strategy per mode.
+    let out_rgb = clamp(out_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     textureStore(target, dst_coord, vec4<f32>(out_rgb, out_a));
 }
 
