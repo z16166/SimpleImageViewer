@@ -173,80 +173,68 @@ pub(crate) fn apply_mask_density(mask: &mut [u8], density: u8) {
     }
 }
 
-/// Apply a separable box-blur approximation of Gaussian feather to a
-/// layer-sized mask buffer.  `feather` is the pixel radius; values ≤ 0.5
-/// produce a no-op (the blur kernel would be smaller than 1 px).
+/// Apply a separable Gaussian blur as a Photoshop-compatible mask feather.
+/// `feather` is the pixel radius; values ≤ 0.5 produce a no-op.
 ///
-/// **Note**: this is a moving-average (box) blur, not a true Gaussian
-/// convolution.  Compared to Photoshop's Gaussian feather, a box blur of
-/// the same radius produces a slightly sharper edge transition.  For most
-/// masks the difference is subtle; a future switch to a proper Gaussian
-/// kernel (e.g. repeated box blurs or a separable IIR) could close the gap.
-/// Uses a simple 2-pass (horizontal + vertical) moving-average filter.
+/// Sigma is derived as `feather / 2.0`; the kernel spans ±2.5σ (capturing
+/// >99 % of the Gaussian mass), clamped to the image edge.
 pub(crate) fn apply_mask_feather(mask: &mut [u8], w: u32, h: u32, feather: f64) {
     if feather <= 0.5 || w < 2 || h < 2 {
         return;
     }
-    let radius = feather.round() as u32;
+    let sigma = feather / 2.0;
+    let radius = (sigma * 2.5).ceil() as u32;
     if radius == 0 {
         return;
     }
     let kernel_len = (radius * 2 + 1) as usize;
 
-    // Work buffer for the horizontal pass result.
-    let mut tmp = vec![0u16; (w as usize) * (h as usize)];
+    // Precompute Gaussian kernel weights and normalize so they sum to 1.0.
+    let mut kernel = Vec::with_capacity(kernel_len);
+    let s2 = -(2.0 * sigma * sigma);
+    let mut total = 0.0f64;
+    for i in 0..kernel_len {
+        let x = (i as f64) - radius as f64;
+        let w = (x * x / s2).exp();
+        kernel.push(w);
+        total += w;
+    }
+    let inv_total = 1.0 / total;
+    for w in &mut kernel {
+        *w *= inv_total;
+    }
 
-    // Horizontal pass: for each row, compute a moving sum.
-    for row in 0..h as usize {
-        let src_off = row * w as usize;
-        let dst_off = src_off;
-        // Initial sum for the first pixel.
-        let mut sum: u32 = 0;
-        let mut count: u32 = 0;
-        for k in 0..kernel_len.min(w as usize) {
-            sum += u32::from(mask[src_off + k]);
-            count += 1;
-        }
-        tmp[dst_off] = ((sum + count / 2) / count) as u16;
-        for col in 1..w as usize {
-            let add_col = col + radius as usize;
-            if add_col < w as usize {
-                sum += u32::from(mask[src_off + add_col]);
-                count += 1;
+    let wp = w as usize;
+    let hp = h as usize;
+    let pixel_count = wp * hp;
+
+    // Temporary buffer: horizontal pass stores f32 intermediate values.
+    let mut tmp = vec![0.0f32; pixel_count];
+
+    // Horizontal pass.
+    for row in 0..hp {
+        let row_off = row * wp;
+        for col in 0..wp {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sx = (col as i64 + k as i64 - radius as i64).clamp(0, wp as i64 - 1) as usize;
+                accum += f32::from(mask[row_off + sx]) * kw as f32;
             }
-            let sub_col = col.wrapping_sub(radius as usize + 1);
-            if sub_col < w as usize {
-                sum -= u32::from(mask[src_off + sub_col]);
-                count -= 1;
-            }
-            let c = if count > 0 { count } else { 1 };
-            tmp[dst_off + col] = ((sum + c / 2) / c) as u16;
+            tmp[row_off + col] = accum;
         }
     }
 
-    // Vertical pass: for each column, read from tmp, write to mask.
-    for col in 0..w as usize {
-        let mut sum: u32 = 0;
-        let mut count: u32 = 0;
-        for k in 0..kernel_len.min(h as usize) {
-            sum += u32::from(tmp[col + k * w as usize]);
-            count += 1;
-        }
-        let idx = col;
-        mask[idx] = ((sum + count / 2) / count) as u8;
-        for row in 1..h as usize {
-            let add_row = row + radius as usize;
-            if add_row < h as usize {
-                sum += u32::from(tmp[col + add_row * w as usize]);
-                count += 1;
+    // Vertical pass, writing directly back to mask.
+    for col in 0..wp {
+        for row in 0..hp {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sy = (row as i64 + k as i64 - radius as i64).clamp(0, hp as i64 - 1) as usize;
+                accum += tmp[sy * wp + col] * kw as f32;
             }
-            let sub_row = row.wrapping_sub(radius as usize + 1);
-            if sub_row < h as usize {
-                sum -= u32::from(tmp[col + sub_row * w as usize]);
-                count -= 1;
-            }
-            let c = if count > 0 { count } else { 1 };
-            mask[row * w as usize + col] = ((sum + c / 2) / c) as u8;
+            // Clamp to [0, 255] and round to nearest.
+            let v = (accum + 0.5) as u32;
+            mask[row * wp + col] = v.min(255) as u8;
         }
     }
 }
@@ -2636,7 +2624,7 @@ mod tests {
             0, 0, 0, 255, 255, 255, 255, 255,    // row 1: same
         ];
         let orig = m.clone();
-        super::apply_mask_feather(&mut m, 8, 2, 1.5);
+        super::apply_mask_feather(&mut m, 8, 2, 4.0);
         assert_ne!(m, orig, "feather should change a 8×2 gradient");
         assert!(m[0] > 0, "left edge should blur inward: got {}", m[0]);
     }
@@ -2655,7 +2643,7 @@ mod tests {
             255, 255,
         ];
         let orig = m.clone();
-        super::apply_mask_feather(&mut m, 2, 8, 1.5);
+        super::apply_mask_feather(&mut m, 2, 8, 4.0);
         assert_ne!(m, orig);
         assert!(m[0] > 0, "top edge should blur downward: got {}", m[0]);
     }
@@ -2665,7 +2653,7 @@ mod tests {
         let mut m = vec![0u8, 128, 200, 255].repeat(8);
         super::apply_mask_density(&mut m, 128);
         assert_eq!(m[1], 64);
-        super::apply_mask_feather(&mut m, 4, 2, 1.0);
+        super::apply_mask_feather(&mut m, 4, 2, 2.0);
         assert!(
             m[0] != 0 || m[2] != 100,
             "feather should change density-scaled values after density"
