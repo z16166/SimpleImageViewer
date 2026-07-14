@@ -88,15 +88,11 @@ pub fn blend_color_dodge(cb: f32, cs: f32) -> f32 {
 #[inline]
 pub fn blend_vivid_light(cb: f32, cs: f32) -> f32 {
     if cs <= 0.5 {
-        if cs <= 0.0 {
-            0.0
-        } else {
-            1.0 - (1.0 - cb) / (2.0 * cs)
-        }
-    } else if cs >= 1.0 {
-        1.0
+        // Vivid Light burn = ColorBurn(cb, 2*cs), per PDF ISO 32000-1.
+        blend_color_burn(cb, 2.0 * cs)
     } else {
-        (cb / (2.0 * (1.0 - cs))).min(1.0)
+        // Vivid Light dodge = ColorDodge(cb, 2*cs-1), per PDF ISO 32000-1.
+        blend_color_dodge(cb, 2.0 * cs - 1.0)
     }
 }
 
