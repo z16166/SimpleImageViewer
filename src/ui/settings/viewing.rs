@@ -161,38 +161,6 @@ pub(super) fn draw_viewing_tab(
             app.queue_save();
         }
 
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label(t!("label.psd_hidden_layer_strategy"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                use crate::settings::PsdHiddenLayerStrategy;
-                let old_strategy = app.settings.psd_hidden_layer_strategy;
-                let selected_text = app.settings.psd_hidden_layer_strategy.label();
-                egui::ComboBox::from_id_salt("psd_hidden_layer_strategy_combo")
-                    .selected_text(selected_text)
-                    .show_ui(ui, |ui| {
-                        stable_selectable_value(
-                            ui,
-                            &mut app.settings.psd_hidden_layer_strategy,
-                            PsdHiddenLayerStrategy::Heuristic,
-                            PsdHiddenLayerStrategy::Heuristic.label(),
-                        );
-                        stable_selectable_value(
-                            ui,
-                            &mut app.settings.psd_hidden_layer_strategy,
-                            PsdHiddenLayerStrategy::ShowAllLayers,
-                            PsdHiddenLayerStrategy::ShowAllLayers.label(),
-                        );
-                    })
-                    .response
-                    .on_hover_text(t!("hint.psd_hidden_layer_strategy"));
-                if old_strategy != app.settings.psd_hidden_layer_strategy {
-                    app.reload_after_psd_hidden_layer_strategy_change();
-                    app.queue_save();
-                }
-            });
-        });
-
         ui.add_space(4.0);
         ui.add_enabled_ui(app.settings.raw_high_quality, |ui| {
             ui.horizontal(|ui| {
@@ -226,6 +194,38 @@ pub(super) fn draw_viewing_tab(
         })
         .response
         .on_hover_text(t!("hint.raw_demosaic_mode"));
+
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(t!("label.psd_hidden_layer_strategy"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                use crate::settings::PsdHiddenLayerStrategy;
+                let old_strategy = app.settings.psd_hidden_layer_strategy;
+                let selected_text = app.settings.psd_hidden_layer_strategy.label();
+                egui::ComboBox::from_id_salt("psd_hidden_layer_strategy_combo")
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        stable_selectable_value(
+                            ui,
+                            &mut app.settings.psd_hidden_layer_strategy,
+                            PsdHiddenLayerStrategy::Heuristic,
+                            PsdHiddenLayerStrategy::Heuristic.label(),
+                        );
+                        stable_selectable_value(
+                            ui,
+                            &mut app.settings.psd_hidden_layer_strategy,
+                            PsdHiddenLayerStrategy::ShowAllLayers,
+                            PsdHiddenLayerStrategy::ShowAllLayers.label(),
+                        );
+                    })
+                    .response
+                    .on_hover_text(t!("hint.psd_hidden_layer_strategy"));
+                if old_strategy != app.settings.psd_hidden_layer_strategy {
+                    app.reload_after_psd_hidden_layer_strategy_change();
+                    app.queue_save();
+                }
+            });
+        });
     });
 
     ui.add_space(8.0);

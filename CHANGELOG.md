@@ -17,6 +17,8 @@ All notable changes to this project will be documented in this file.
 - **GPU cache rebuild on upgrade**: The GPU shader cache is automatically rebuilt after this update, preventing display glitches caused by stale cached shaders.
 - **Descriptor parsing robustness**: PSD files with complex resource data (Layer Comps, vector masks, object effects) now parse more reliably, with support for additional descriptor value types and stricter depth limits to prevent issues from malformed files.
 - **Tagged block scanning performance**: Scanning for layer and image-resource blocks uses a faster search algorithm, improving load times for PSDs with many tagged blocks.
+- **Fit-to-window maximum zoom**: Zooming in to the maximum level in fit-to-window mode now stops precisely at 100% (actual pixel level), avoiding the previous 105% overshoot with the navigation sidebar open.
+- **Reordered RAW settings**: The "Demosaic mode" option now sits directly below "RAW high quality preview" for a more logical settings flow.
 
 ### Fixed
 - **Folder list thumbnails after sort or refresh**: Switching folders, sorting the file list, or refreshing no longer leaves navigation-strip thumbnails on the wrong files.

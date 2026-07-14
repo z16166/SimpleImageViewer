@@ -280,3 +280,8 @@ pub const PIXEL_POINTER_STATIONARY_THRESHOLD_SQ: f32 = 0.01;
 pub const PIXEL_TOOLTIP_PADDING_X: f32 = 6.0;
 /// Vertical inner padding of the pixel inspector hover tooltip in logical pixels.
 pub const PIXEL_TOOLTIP_PADDING_Y: f32 = 4.0;
+
+/// Maximum zoom factor multiplier (applied on top of fit-to-window or original-size scale).
+pub const ZOOM_FACTOR_MAX: f32 = 20.0;
+/// Minimum zoom factor multiplier.
+pub const ZOOM_FACTOR_MIN: f32 = 0.05;

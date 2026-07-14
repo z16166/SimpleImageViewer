@@ -106,7 +106,7 @@ impl ImageViewerApp {
                 } else {
                     factor
                 };
-                self.zoom_at_mouse(factor, mouse_pos, canvas_rect);
+                self.zoom_at_mouse(factor, mouse_pos, canvas_rect, ctx);
             }
             AppAction::RotateCW | AppAction::RotateCCW => {
                 let now = ctx.input(|i| i.time);
@@ -120,12 +120,21 @@ impl ImageViewerApp {
         }
     }
 
-    fn zoom_at_mouse(&mut self, factor: f32, mouse_pos: Option<egui::Pos2>, canvas_rect: Rect) {
+    fn zoom_at_mouse(
+        &mut self,
+        factor: f32,
+        mouse_pos: Option<egui::Pos2>,
+        canvas_rect: Rect,
+        ctx: &Context,
+    ) {
         if factor == 1.0 {
             return;
         }
         let old_zoom = self.zoom_factor;
-        self.set_zoom_factor((self.zoom_factor * factor).clamp(0.05, 20.0));
+        let max_zf = self.max_zoom_factor_for_fit_mode(ctx);
+        self.set_zoom_factor(
+            (self.zoom_factor * factor).clamp(crate::constants::ZOOM_FACTOR_MIN, max_zf),
+        );
         let ratio = self.zoom_factor / old_zoom;
 
         if let Some(mouse) = mouse_pos {
