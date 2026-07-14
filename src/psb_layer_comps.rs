@@ -259,6 +259,8 @@ mod tests {
             mask: None,
             real_mask: None,
             vector_mask: None,
+            vector_mask_density: 255,
+            vector_mask_feather: 0.0,
             is_section_divider: section_type.is_some(),
             section_type,
         }

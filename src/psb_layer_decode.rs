@@ -856,7 +856,24 @@ pub(crate) fn decode_one_layer(
             params.image_width,
             params.image_height,
         ) {
-            Some(vm_mask) => mask = Some(vm_mask),
+            Some(mut vm_mask) => {
+                // Apply vector-mask density/feather from the Layer Mask Data block.
+                if record.vector_mask_density < 255 {
+                    crate::psb_layer_composite::apply_mask_density(
+                        &mut vm_mask,
+                        record.vector_mask_density,
+                    );
+                }
+                if record.vector_mask_feather > 0.0 {
+                    crate::psb_layer_composite::apply_mask_feather(
+                        &mut vm_mask,
+                        width,
+                        height,
+                        record.vector_mask_feather,
+                    );
+                }
+                mask = Some(vm_mask);
+            }
             None => {}
         }
     }
@@ -1403,6 +1420,8 @@ mod tests {
             mask: None,
             real_mask: None,
             vector_mask: None,
+            vector_mask_density: 255,
+            vector_mask_feather: 0.0,
             is_section_divider,
             section_type,
         }

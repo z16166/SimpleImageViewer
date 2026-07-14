@@ -25,12 +25,6 @@
 //!   0/3 = subpath length records, 1/2/4/5 = Bezier knots,
 //!   6 = fill rule record, 8 = initial fill rule, -1 = end of path.
 //!
-//! **Known limitation**: vector-mask density and feather (bits 2–3 of the
-//! layer mask parameters flags) are parsed from the Layer Mask Data block
-//! but only the user-mask values (bits 0–1) are currently applied to the
-//! decoded pixel mask.  Vector-mask density scaling and blur are not yet
-//! implemented; documents that rely on vector-mask feathering may show
-//! visible differences from Photoshop.
 
 use crate::psb_layer_composite::{
     VMSK_RECORD_LEN, VectorMaskData, checked_layer_pixel_count,

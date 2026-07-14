@@ -277,6 +277,10 @@ pub struct LayerRecord {
     pub real_mask: Option<LayerMaskInfo>,
     /// Vector mask path data from a `vmsk`/`vsms` tagged block.
     pub vector_mask: Option<VectorMaskData>,
+    /// Vector mask density (0-255) from the Layer Mask Data parameters block.
+    pub vector_mask_density: u8,
+    /// Vector mask feather radius (pixels) from the Layer Mask Data parameters.
+    pub vector_mask_feather: f64,
     pub is_section_divider: bool,
     pub section_type: Option<u32>,
 }
@@ -587,6 +591,8 @@ fn parse_layer_record(
         mask,
         real_mask,
         vector_mask,
+        vector_mask_density,
+        vector_mask_feather,
         is_section_divider,
         section_type,
         name,
@@ -615,6 +621,8 @@ fn parse_layer_record(
         mask,
         real_mask,
         vector_mask,
+        vector_mask_density,
+        vector_mask_feather,
         is_section_divider,
         section_type,
     })
@@ -631,6 +639,8 @@ struct ParsedLayerExtra {
     layer_id: Option<u32>,
     cmls_payload: Option<Vec<u8>>,
     fill_opacity: Option<u8>,
+    vector_mask_density: u8,
+    vector_mask_feather: f64,
 }
 
 fn parse_layer_extra(
@@ -644,6 +654,8 @@ fn parse_layer_extra(
             mask: None,
             real_mask: None,
             vector_mask: None,
+            vector_mask_density: 255,
+            vector_mask_feather: 0.0,
             is_section_divider: false,
             section_type: None,
             name: String::new(),
@@ -660,10 +672,11 @@ fn parse_layer_extra(
     // color + flags (+ 2-byte pad). When >= 36 bytes, a real user mask rect
     // follows (after optional density/feather parameters when flags bit 4 is
     // set). Shorter blocks leave both masks as `None`.
-    let (mask, real_mask) = if mask_size >= LAYER_MASK_USER_HEADER_LEN {
+    // parse_layer_mask_data now returns vector density/feather too.
+    let (mask, real_mask, vector_mask_density, vector_mask_feather) = if mask_size >= LAYER_MASK_USER_HEADER_LEN {
         parse_layer_mask_data(r, mask_end)?
     } else {
-        (None, None)
+        (None, None, 255, 0.0)
     };
     r.set_position(mask_end);
 
@@ -697,6 +710,8 @@ fn parse_layer_extra(
         layer_id,
         cmls_payload,
         fill_opacity,
+        vector_mask_density,
+        vector_mask_feather,
     })
 }
 
@@ -712,19 +727,22 @@ const LAYER_MASK_FLAGS_HAS_PARAMETERS: u8 = 0x10;
 fn parse_layer_mask_data(
     r: &mut std::io::Cursor<&[u8]>,
     mask_end: u64,
-) -> Result<(Option<LayerMaskInfo>, Option<LayerMaskInfo>), String> {
+) -> Result<(Option<LayerMaskInfo>, Option<LayerMaskInfo>, u8, f64), String> {
     let Some(mut mask) = parse_layer_mask_rect(r, mask_end)? else {
-        return Ok((None, None));
+        return Ok((None, None, 255, 0.0));
     };
 
-    // Read density/feather parameters when present; store in user mask.
+    // Read density/feather parameters when present.
+    let mut vector_density = 255u8;
+    let mut vector_feather = 0.0f64;
     if mask.has_parameters_applied {
-        let (density, feather, ok) = read_mask_parameters_prefix(r, mask_end)?;
-        mask.density = density;
-        mask.feather = feather;
+        let (ud, uf, vd, vf, ok) = read_mask_parameters_prefix(r, mask_end)?;
+        mask.density = ud;
+        mask.feather = uf;
+        vector_density = vd;
+        vector_feather = vf;
         if !ok {
-            // Parameter layout is untrustworthy — skip real mask.
-            return Ok((Some(mask), None));
+            return Ok((Some(mask), None, vector_density, vector_feather));
         }
     }
 
@@ -735,7 +753,7 @@ fn parse_layer_mask_data(
     }
 
     let real_mask = parse_real_user_mask_rect(r, mask_end, &mask)?;
-    Ok((Some(mask), real_mask))
+    Ok((Some(mask), real_mask, vector_density, vector_feather))
 }
 
 /// When the mask data block is long enough, parse the real user mask rect
@@ -786,26 +804,25 @@ fn parse_real_user_mask_rect(
 
 /// Read the density/feather parameter prefix that follows the user-mask
 /// header when flags bit 4 is set, and return the parsed values.
-/// Returns `(density, feather, plausible_header_found)`.
+/// Returns `(user_density, user_feather, vector_density, vector_feather, plausible)`.
 /// When a flag bit is absent, density defaults to 255 and feather to 0.0.
 fn read_mask_parameters_prefix(
     r: &mut std::io::Cursor<&[u8]>,
     mask_end: u64,
-) -> Result<(u8, f64, bool), String> {
+) -> Result<(u8, f64, u8, f64, bool), String> {
     let remaining_before = mask_end.saturating_sub(r.position());
     if remaining_before < 1 {
-        return Ok((255, 0.0, false));
+        return Ok((255, 0.0, 255, 0.0, false));
     }
     let mut present = [0u8; 1];
     r.read_exact(&mut present)
         .map_err(|e| format!("Read layer mask parameters flags: {e}"))?;
     // Bit 0: user density (1 byte), bit 1: user feather (8 bytes),
     // bit 2: vector density (1 byte), bit 3: vector feather (8 bytes).
-    // We read user density and feather; vector values are ignored
-    // (handled by the vector-mask path).
     let mut density: u8 = 255;
     let mut feather: f64 = 0.0;
-    let mut need = 0u64;
+    let mut vector_density: u8 = 255;
+    let mut vector_feather: f64 = 0.0;
 
     if present[0] & 0x01 != 0 {
         let mut buf = [0u8; 1];
@@ -817,25 +834,23 @@ fn read_mask_parameters_prefix(
         let mut buf = [0u8; 8];
         r.read_exact(&mut buf)
             .map_err(|e| format!("Read layer mask feather: {e}"))?;
-        // f64 stored big-endian per PSD convention.
         feather = f64::from_be_bytes(buf).max(0.0);
     }
-    // Consume vector density/feather bytes without storing them.
     if present[0] & 0x04 != 0 {
-        need = need.saturating_add(1);
+        let mut buf = [0u8; 1];
+        r.read_exact(&mut buf)
+            .map_err(|e| format!("Read vector mask density: {e}"))?;
+        vector_density = buf[0];
     }
     if present[0] & 0x08 != 0 {
-        need = need.saturating_add(8);
-    }
-    if need > 0 {
-        if checked_end(r.position(), need, mask_end, "layer mask parameters").is_err() {
-            return Ok((density, feather, false));
-        }
-        crate::psb_reader::seek_forward(r, need)?;
+        let mut buf = [0u8; 8];
+        r.read_exact(&mut buf)
+            .map_err(|e| format!("Read vector mask feather: {e}"))?;
+        vector_feather = f64::from_be_bytes(buf).max(0.0);
     }
     let remaining = mask_end.saturating_sub(r.position());
     let ok = remaining == 0 || remaining >= 4 * 4;
-    Ok((density, feather, ok))
+    Ok((density, feather, vector_density, vector_feather, ok))
 }
 
 /// Parse the rect + default color + flags fields at the start of a layer's
@@ -1633,6 +1648,8 @@ mod tests {
                 mask: None,
                 real_mask: None,
                 vector_mask: None,
+            vector_mask_density: 255,
+            vector_mask_feather: 0.0,
                 is_section_divider: false,
                 section_type: None,
             });
@@ -1800,6 +1817,8 @@ mod tests {
             mask: None,
             real_mask: None,
             vector_mask: None,
+            vector_mask_density: 255,
+            vector_mask_feather: 0.0,
             is_section_divider,
             section_type,
         }
