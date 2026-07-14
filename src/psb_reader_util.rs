@@ -102,9 +102,9 @@ const IR_THUMBNAIL_PS5: u16 = 1036;
 /// Photoshop IR 1033/1036 thumbnail resource header length (bytes before JPEG payload).
 /// Layout: format(4) + width(4) + height(4) + widthbytes(4) + size(4) + compressed(4)
 /// + bits/pixel(2) + planes(2) = 28.
-const IR_JPEG_THUMBNAIL_HEADER_LEN: usize = 28;
+pub(crate) const IR_JPEG_THUMBNAIL_HEADER_LEN: usize = 28;
 /// Offset of "Size after compression" (u32 BE) in the IR 1033/1036 thumbnail header.
-const IR_JPEG_THUMBNAIL_COMPRESSED_SIZE_OFFSET: usize = 20;
+pub(crate) const IR_JPEG_THUMBNAIL_COMPRESSED_SIZE_OFFSET: usize = 20;
 /// Photoshop Image Resource: ICC Profile Settings (raw ICC bytes).
 const IR_ICC_PROFILE: u16 = 1039;
 /// Pixel-index mask for cancel polling in RGBA8 full-buffer scans (~every 256 KiB).
@@ -676,7 +676,7 @@ pub(crate) fn extract_photoshop_thumbnail_from_ir(
 
 /// Walk Photoshop Image Resources (8BIM), invoking `on_resource` for each.
 /// Returns the first `Some` from the callback.
-fn for_each_image_resource<T>(
+pub(crate) fn for_each_image_resource<T>(
     bytes: &[u8],
     ir_start: u64,
     ir_end: u64,
@@ -734,7 +734,7 @@ fn for_each_image_resource<T>(
     None
 }
 
-fn decode_photoshop_thumbnail_resource(data: &[u8]) -> Option<PsbComposite> {
+pub(crate) fn decode_photoshop_thumbnail_resource(data: &[u8]) -> Option<PsbComposite> {
     if data.len() < IR_JPEG_THUMBNAIL_HEADER_LEN {
         return None;
     }
@@ -956,6 +956,11 @@ pub(crate) fn interleave_row_rgba8(
     let width = end.saturating_sub(start);
     match color_mode {
         // Bitmap (0): packed bits → grayscale.
+        // Notes:
+        //   - depth=1 Bitmap is handled by an early-exit path in the reader
+        //     (psb_reader.rs) that calls `bitmap_bits_row_to_rgba8` directly,
+        //     so this branch normally only sees depths > 1 (if any exist).
+        //   - We keep it as a defensive fallback for unexpected bit depths.
         PSD_COLOR_MODE_BITMAP => {
             if let Some(src) = planar.first().and_then(|ch| ch.as_deref()) {
                 if channels >= 2

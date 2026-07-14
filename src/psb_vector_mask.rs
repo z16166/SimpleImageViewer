@@ -20,6 +20,10 @@
 //! threshold (checklist #12). Path records are 26 bytes each (i16 selector +
 //! three Q16.16 sub-points); the rasteriser produces a layer-sized alpha matte
 //! using even-odd or non-zero winding fill.
+//!
+//! Selector values follow the Adobe PSD Path resource specification:
+//!   0/3 = subpath length records, 1/2/4/5 = Bezier knots,
+//!   6 = fill rule record, 8 = initial fill rule, -1 = end of path.
 
 use crate::psb_layer_composite::{VMSK_RECORD_LEN, VectorMaskData, checked_layer_pixel_count};
 
@@ -29,7 +33,7 @@ use crate::psb_layer_composite::{VMSK_RECORD_LEN, VectorMaskData, checked_layer_
 
 /// Read a single fixed-point coordinate (Q16.16) from a path record byte
 /// slice at the given offset. The coordinate is an i32 big-endian stored in
-/// 4 bytes; dividing by 65536.0 yields the document-pixel float value.
+/// 4 bytes; dividing by [`Q16_16_DIVISOR`] yields the document-pixel float value.
 fn read_path_coord(rec: &[u8; VMSK_RECORD_LEN], offset: usize) -> f64 {
     i32::from_be_bytes([
         rec[offset],
@@ -37,7 +41,7 @@ fn read_path_coord(rec: &[u8; VMSK_RECORD_LEN], offset: usize) -> f64 {
         rec[offset + 2],
         rec[offset + 3],
     ]) as f64
-        / 65536.0
+        / Q16_16_DIVISOR
 }
 
 /// Read a (x, y) pair from a path sub-point starting at `base`.
@@ -46,16 +50,49 @@ fn read_path_point(rec: &[u8; VMSK_RECORD_LEN], base: usize) -> (f64, f64) {
 }
 
 // ---------------------------------------------------------------------------
-// Path selector constants (Adobe PSD spec)
+// Path selector constants (Adobe PSD Path resource spec)
 // ---------------------------------------------------------------------------
+//
+// Each path record is 26 bytes: i16 selector + three Q16.16 sub-points
+// (each 8 bytes: i32 x, i32 y).
+//
+// Selector values:
+//   0   Closed subpath length record  (knot count follows in bytes 2-5)
+//   1   Closed subpath Bezier knot, linked
+//   2   Closed subpath Bezier knot, unlinked
+//   3   Open subpath length record    (knot count follows in bytes 2-5)
+//   4   Open subpath Bezier knot, linked
+//   5   Open subpath Bezier knot, unlinked
+//   6   Path fill rule record         (rule value in bytes 2-3: 0=even-odd,
+//                                      1=non-zero winding)
+//   8   Initial fill rule record      (rule value in bytes 2-3: 0=fill,
+//                                      1=keep transparent)
+//  -1   End of path (0xFFFF)
 
-const PATH_SELECTOR_CLOSED_START: i16 = 0; // closed subpath start (first knot)
-const PATH_SELECTOR_OPEN_START: i16 = 2; // open subpath start (first knot)
-const PATH_SELECTOR_KNOT_LINKED: i16 = 4; // bezier knot, linked
-const PATH_SELECTOR_KNOT_UNLINKED: i16 = 5; // bezier knot, unlinked
-const PATH_SELECTOR_SUBPATH_END: i16 = 6; // subpath end (padding)
-const PATH_SELECTOR_EVEN_ODD: i16 = -2; // 0xFFFE: even-odd fill rule
-const PATH_SELECTOR_NON_ZERO: i16 = -3; // 0xFFFD: non-zero winding fill rule
+const PATH_SELECTOR_CLOSED_LEN: i16 = 0;   // closed subpath length record
+const PATH_SELECTOR_CLOSED_KNOT_LINKED: i16 = 1;   // closed Bezier knot, linked
+const PATH_SELECTOR_CLOSED_KNOT_UNLINKED: i16 = 2; // closed Bezier knot, unlinked
+const PATH_SELECTOR_OPEN_LEN: i16 = 3;     // open subpath length record
+const PATH_SELECTOR_OPEN_KNOT_LINKED: i16 = 4;     // open Bezier knot, linked
+const PATH_SELECTOR_OPEN_KNOT_UNLINKED: i16 = 5;   // open Bezier knot, unlinked
+const PATH_SELECTOR_FILL_RULE: i16 = 6;             // path fill rule record
+const PATH_SELECTOR_INITIAL_FILL: i16 = 8;          // initial fill rule record
+
+// Byte offsets for sub-points within a knot record (selectors 1/2/4/5).
+//   [0-1]  selector (i16)
+//   [2-9]  preceding control point Y, X  (Q16.16)
+//   [10-17] anchor point Y, X            (Q16.16)
+//   [18-25] following control point Y, X (Q16.16)
+const KNOT_PRECEDING_XY: usize = 2;
+const KNOT_ANCHOR_XY: usize = 10;
+const KNOT_FOLLOWING_XY: usize = 18;
+
+/// Q16.16 fixed-point divisor: 2^16 = 65536.  Converts i32 Q16.16 → f64.
+const Q16_16_DIVISOR: f64 = 65536.0;
+
+/// Number of line segments per cubic Bezier curve when rasterising.
+/// Higher values produce smoother curves at the cost of more vertices.
+const SEGMENTS_PER_CURVE: usize = 32;
 
 // ---------------------------------------------------------------------------
 // Path parsing
@@ -79,39 +116,41 @@ fn parse_vector_paths(data: &VectorMaskData) -> ParsedVectorPaths {
     for rec in &data.0 {
         let sel = i16::from_be_bytes([rec[0], rec[1]]);
         match sel {
-            PATH_SELECTOR_EVEN_ODD => even_odd = true,
-            PATH_SELECTOR_NON_ZERO => even_odd = false,
-            PATH_SELECTOR_CLOSED_START | PATH_SELECTOR_OPEN_START => {
+            // ── Fill rule (6): bytes 2-3 contain the rule ─────────────
+            PATH_SELECTOR_FILL_RULE => {
+                let rule = i16::from_be_bytes([rec[KNOT_PRECEDING_XY], rec[KNOT_PRECEDING_XY + 1]]);
+                even_odd = rule == 0; // 0 = even-odd, 1 = non-zero winding
+            }
+            // ── Initial fill rule (8): advisory only ─────────────────
+            PATH_SELECTOR_INITIAL_FILL => {
+                // 0 = fill, 1 = keep transparent; we always fill by default.
+            }
+            // ── Length records (0/3): start a new subpath ────────────
+            PATH_SELECTOR_CLOSED_LEN | PATH_SELECTOR_OPEN_LEN => {
                 // Flush previous subpath if any.
                 if !current.is_empty() {
                     finalize_subpath(&current, &mut subpaths, open);
                 }
-                open = sel == PATH_SELECTOR_OPEN_START;
-                let (ax, ay) = read_path_point(rec, 10);
-                let (cx, cy) = read_path_point(rec, 18);
+                open = sel == PATH_SELECTOR_OPEN_LEN;
                 current.clear();
-                current.push((ax, ay, ax, ay, cx, cy));
             }
-            PATH_SELECTOR_KNOT_LINKED | PATH_SELECTOR_KNOT_UNLINKED => {
-                if !current.is_empty() {
-                    let (bx, by) = read_path_point(rec, 2);
-                    let (ax, ay) = read_path_point(rec, 10);
-                    let (cx, cy) = read_path_point(rec, 18);
-                    current.push((bx, by, ax, ay, cx, cy));
-                }
+            // ── Knot records (1/2/4/5): Bezier knot ─────────────────
+            PATH_SELECTOR_CLOSED_KNOT_LINKED
+            | PATH_SELECTOR_CLOSED_KNOT_UNLINKED
+            | PATH_SELECTOR_OPEN_KNOT_LINKED
+            | PATH_SELECTOR_OPEN_KNOT_UNLINKED => {
+                let (bx, by) = read_path_point(rec, KNOT_PRECEDING_XY);
+                let (ax, ay) = read_path_point(rec, KNOT_ANCHOR_XY);
+                let (cx, cy) = read_path_point(rec, KNOT_FOLLOWING_XY);
+                current.push((bx, by, ax, ay, cx, cy));
             }
-            PATH_SELECTOR_SUBPATH_END => {
-                if !current.is_empty() {
-                    finalize_subpath(&current, &mut subpaths, open);
-                    current.clear();
-                }
-            }
-            _ => {} // -1 = end of path, also handled by break in collecting loop
+            // -1 = end of path, also handled by break in collecting loop
+            _ => {}
         }
     }
-    // Flush last partial subpath if any (no terminating selector 6).
+    // Flush last partial subpath if any (no terminating length record).
     if !current.is_empty() {
-        finalize_subpath(&current, &mut subpaths, true);
+        finalize_subpath(&current, &mut subpaths, open);
     }
 
     ParsedVectorPaths { even_odd, subpaths }
@@ -133,7 +172,6 @@ fn finalize_subpath(
 
     // Subdivide cubic bezier segments into line segments.
     let mut poly: Vec<(f64, f64)> = Vec::new();
-    const SEGMENTS_PER_CURVE: usize = 32;
 
     for i in 0..knots.len() - 1 {
         let (_, _, ax1, ay1, cx1, cy1) = knots[i];

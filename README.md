@@ -12,7 +12,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **Image formats** — Common and modern stills, Photoshop documents, and 60+ camera RAW formats (RAW is viewing-only).
   - **Common stills**: JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, QOI
   - **Modern & high-dynamic**: JPEG XL (`.jxl`), AVIF / AVIFS sequences (`.avif`, `.avifs`), OpenEXR (`.exr`), Radiance HDR (`.hdr`), HEIF / HEIC / HIF (including typical iPhone HEIC)
-  - **Photoshop**: PSD & PSB, with a RAM safety check before loading large PSB documents. A solid-color flattened preview may be shown even when its layers differ.
+  - **Photoshop**: PSD & PSB with GPU-accelerated layer compositing, full blend-mode support (including non-separable modes: Hue, Saturation, Color, Luminosity), vector mask rasterisation, and expanded colour-mode support (Bitmap, Indexed, Duotone, Multichannel, Lab). A RAM safety check runs before loading large PSB documents, and high-bit-depth files render with accurate SDR tone mapping.
   - **Camera RAW** (60+): Canon (`.cr2`, `.cr3`), Nikon (`.nef`, `.nrw`), Sony (`.arw`), Fujifilm (`.raf`), Panasonic (`.rw2`), Olympus (`.orf`), Pentax (`.pef`), Hasselblad (`.3fr`), Phase One (`.iiq`), and more
 - **HDR-capable rendering** — HDR-oriented presentation when the file carries HDR or extended brightness range; how strong it looks depends on an HDR-capable display and whether system HDR is enabled.
   - Ultra HDR JPEG and JPEGs with HDR metadata

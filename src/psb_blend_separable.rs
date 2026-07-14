@@ -119,6 +119,11 @@ pub fn blend_pin_light(cb: f32, cs: f32) -> f32 {
 }
 
 /// `B(cb, cs)`: Hard Mix — `1.0` when `cb + cs >= 1.0`, else `0.0`.
+///
+/// **Note**: The threshold (cb + cs >= 1.0) matches the PDF/Adobe definition for
+/// SDR [0, 1] values. For HDR values > 1.0 the result is always 1.0, which is
+/// intentionally coarse — a more nuanced HDR behaviour would need a different
+/// formula (Adobe does not define one).
 #[inline]
 pub fn blend_hard_mix(cb: f32, cs: f32) -> f32 {
     if cb + cs >= 1.0 { 1.0 } else { 0.0 }

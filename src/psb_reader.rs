@@ -396,31 +396,33 @@ pub fn read_composite_from_index(
 
     // --- Indexed (2): expand palette indices into RGB planar channels ---
     if color_mode == PSD_COLOR_MODE_INDEXED {
-        if let Some(palette) = crate::psb_color_convert::extract_indexed_palette(bytes) {
-            // Take ownership of the index plane (avoids borrow conflict with take below).
-            let indices_opt = planar_channels[0].take();
-            if let Some(indices) = indices_opt {
-                let n = pixel_count.min(indices.len());
-                let orig_alpha = if channels >= 2 {
-                    planar_channels[1].take()
-                } else {
-                    None
-                };
-                let mut r_plane = vec![0u8; n];
-                let mut g_plane = vec![0u8; n];
-                let mut b_plane = vec![0u8; n];
-                for i in 0..n {
-                    let idx = indices[i] as usize;
-                    if idx < 256 {
-                        let pb = idx * 3;
-                        r_plane[i] = palette.get(pb).copied().unwrap_or(0);
-                        g_plane[i] = palette.get(pb + 1).copied().unwrap_or(0);
-                        b_plane[i] = palette.get(pb + 2).copied().unwrap_or(0);
-                    }
+        let palette = crate::psb_color_convert::extract_indexed_palette(bytes).ok_or_else(|| {
+            "Indexed (palette) PSD/PSB missing 768-byte palette in Color Mode Data section"
+                .to_string()
+        })?;
+        // Take ownership of the index plane (avoids borrow conflict with take below).
+        let indices_opt = planar_channels[0].take();
+        if let Some(indices) = indices_opt {
+            let n = pixel_count.min(indices.len());
+            let orig_alpha = if channels >= 2 {
+                planar_channels[1].take()
+            } else {
+                None
+            };
+            let mut r_plane = vec![0u8; n];
+            let mut g_plane = vec![0u8; n];
+            let mut b_plane = vec![0u8; n];
+            for i in 0..n {
+                let idx = indices[i] as usize;
+                if idx < 256 {
+                    let pb = idx * 3;
+                    r_plane[i] = palette.get(pb).copied().unwrap_or(0);
+                    g_plane[i] = palette.get(pb + 1).copied().unwrap_or(0);
+                    b_plane[i] = palette.get(pb + 2).copied().unwrap_or(0);
                 }
-                let a_plane = orig_alpha.unwrap_or_else(|| vec![255u8; n]);
-                planar_channels = vec![Some(r_plane), Some(g_plane), Some(b_plane), Some(a_plane)];
             }
+            let a_plane = orig_alpha.unwrap_or_else(|| vec![255u8; n]);
+            planar_channels = vec![Some(r_plane), Some(g_plane), Some(b_plane), Some(a_plane)];
         }
     }
     // After Indexed expansion the effective channel count becomes 3 (no alpha) or 4.

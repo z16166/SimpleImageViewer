@@ -17,8 +17,6 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Path-based opener visibility**: The `open_*_source` functions that accept file paths are now restricted to test builds, removing dead code from release binaries.
-
-### Fixed
 - **Navigation after double-click open**: With “keep gallery directory on double-click” enabled, opening the navigation panel and pressing F5 now stay on the folder you just opened, instead of jumping back to the previously saved gallery folder. Manually choosing another folder in the tree still saves that gallery location as before.
 
 ## [3.0.0] - 2026-07-13
