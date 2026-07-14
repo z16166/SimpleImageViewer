@@ -34,22 +34,23 @@ pub fn blend_darken(cb: f32, cs: f32) -> f32 {
 
 /// `B(cb, cs) = 1 - min(1, (1 - cb) / cs)` when `cs > 0`, else `0`.
 ///
-/// Adobe "Color Burn".
+/// Adobe "Color Burn".  The `min(1, …)` clamp prevents negative values and
+/// matches the PDF / ISO 32000-1 spec (also used in the WGSL shader).
 #[inline]
 pub fn blend_color_burn(cb: f32, cs: f32) -> f32 {
     if cs <= 0.0 {
         0.0
     } else {
-        1.0 - (1.0 - cb) / cs
+        1.0 - ((1.0 - cb) / cs).min(1.0)
     }
 }
 
-/// `B(cb, cs) = cb + cs - 1`
+/// `B(cb, cs) = max(0, cb + cs - 1)`
 ///
 /// Adobe "Linear Burn" (subtractive).
 #[inline]
 pub fn blend_linear_burn(cb: f32, cs: f32) -> f32 {
-    cb + cs - 1.0
+    (cb + cs - 1.0).max(0.0)
 }
 
 // ── Lighten group ─────────────────────────────────────────────────────────
@@ -62,10 +63,11 @@ pub fn blend_lighten(cb: f32, cs: f32) -> f32 {
 
 /// `B(cb, cs) = min(1, cb / (1 - cs))` when `cs < 1`, else `1`.
 ///
-/// Adobe "Color Dodge".
+/// Adobe "Color Dodge".  The `min(1, …)` clamp matches the PDF / ISO 32000-1
+/// spec (also used in the WGSL shader).
 #[inline]
 pub fn blend_color_dodge(cb: f32, cs: f32) -> f32 {
-    if cs >= 1.0 { 1.0 } else { cb / (1.0 - cs) }
+    if cs >= 1.0 { 1.0 } else { (cb / (1.0 - cs)).min(1.0) }
 }
 
 // ── Contrast group ────────────────────────────────────────────────────────
@@ -129,13 +131,13 @@ pub fn blend_exclusion(cb: f32, cs: f32) -> f32 {
 /// Adobe "Subtract".
 #[inline]
 pub fn blend_subtract(cb: f32, cs: f32) -> f32 {
-    cb - cs
+    (cb - cs).max(0.0)
 }
 
 /// `B(cb, cs)`: Adobe "Divide" — `min(1, cb / cs)` when `cs > 0`, else `1`.
 #[inline]
 pub fn blend_divide(cb: f32, cs: f32) -> f32 {
-    if cs <= 0.0 { 1.0 } else { cb / cs }
+    if cs <= 0.0 { 1.0 } else { (cb / cs).min(1.0) }
 }
 
 #[cfg(test)]
@@ -176,14 +178,16 @@ mod tests {
     #[test]
     fn subtract_never_negative() {
         assert!(approx_eq(blend_subtract(0.5, 0.3), 0.2));
-        assert!(approx_eq(blend_subtract(0.3, 0.5), -0.2)); // caller clamps
+        assert!(approx_eq(blend_subtract(0.3, 0.5), 0.0)); // max(0, …) clamps to 0
     }
 
     #[test]
-    fn divide_basic() {
+    fn divide_clamp_overflow() {
         assert!(approx_eq(blend_divide(0.5, 0.5), 1.0));
         assert!(approx_eq(blend_divide(0.0, 0.5), 0.0));
         assert!(approx_eq(blend_divide(0.5, 0.0), 1.0));
+        // 0.8/0.2=4 → min(1,4)=1
+        assert!(approx_eq(blend_divide(0.8, 0.2), 1.0));
     }
 
     #[test]
@@ -193,8 +197,9 @@ mod tests {
     }
 
     #[test]
-    fn linear_burn_negative() {
-        assert!(approx_eq(blend_linear_burn(0.3, 0.3), -0.4));
+    fn linear_burn_never_negative() {
+        assert!(approx_eq(blend_linear_burn(0.3, 0.3), 0.0)); // max(0, …) clamps to 0
+        assert!(approx_eq(blend_linear_burn(0.8, 0.7), 0.5));
     }
 
     #[test]
@@ -202,12 +207,16 @@ mod tests {
         assert!(approx_eq(blend_color_burn(1.0, 0.5), 1.0));
         assert!(approx_eq(blend_color_burn(0.5, 0.0), 0.0));
         assert!(approx_eq(blend_color_burn(0.5, 1.0), 0.5));
+        // (1-0.5)/0.1 = 5 → min(1,5)=1 → 1-1=0, not -4
+        assert!(approx_eq(blend_color_burn(0.5, 0.1), 0.0));
     }
 
     #[test]
-    fn color_dodge_unity_when_cs_zero() {
+    fn color_dodge_clamp_overflow() {
         assert!(approx_eq(blend_color_dodge(0.5, 0.0), 0.5));
         assert!(approx_eq(blend_color_dodge(0.5, 1.0), 1.0));
+        // 0.9/(1-0.1)=1 → min(1,1)=1
+        assert!(approx_eq(blend_color_dodge(0.9, 0.1), 1.0));
     }
 
     #[test]
