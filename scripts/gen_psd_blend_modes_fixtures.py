@@ -70,6 +70,10 @@ def u32(n: int) -> bytes:
     return struct.pack(">I", n)
 
 
+def u64(n: int) -> bytes:
+    return struct.pack(">Q", n)
+
+
 def i32(n: int) -> bytes:
     return struct.pack(">i", n)
 
@@ -107,14 +111,16 @@ def layer_record(
     blend_key: bytes,
     name: str,
     channel_data_lens: list[int],
+    psb: bool = False,
 ) -> bytes:
     """One layer record (no channel image data)."""
     out = bytearray()
     out += i32(top) + i32(left) + i32(bottom) + i32(right)
     out += u16(4)  # channel count
+    len_writer = u64 if psb else u32
     for ch_id, data_len in zip((-1, 0, 1, 2), channel_data_lens):
         out += i16(ch_id)
-        out += u32(data_len)
+        out += len_writer(data_len)
     out += b"8BIM"
     out += blend_key  # 4-byte blend mode key
     out += u8(opacity)
@@ -147,6 +153,7 @@ def build_psd(blend_key: bytes, psb: bool = False) -> bytes:
         blend_key=b"norm",
         name="Base",
         channel_data_lens=base_lens,
+        psb=psb,
     )
     rec_blend = layer_record(
         BLEND_TOP, BLEND_LEFT, BLEND_TOP + BLEND_H, BLEND_LEFT + BLEND_W,
@@ -154,6 +161,7 @@ def build_psd(blend_key: bytes, psb: bool = False) -> bytes:
         blend_key=blend_key,
         name=f"Blend_{blend_key.decode('ascii', errors='replace').strip()}",
         channel_data_lens=blend_lens,
+        psb=psb,
     )
 
     layer_records = rec_base + rec_blend
@@ -162,7 +170,8 @@ def build_psd(blend_key: bytes, psb: bool = False) -> bytes:
     layer_info_body = i16(2) + layer_records + channel_image_data
     if len(layer_info_body) % 2 == 1:
         layer_info_body += b"\x00"
-    layer_info = u32(len(layer_info_body)) + layer_info_body
+    len_writer = u64 if psb else u32
+    layer_info = len_writer(len(layer_info_body)) + layer_info_body
     layer_and_mask = layer_info + u32(0)  # global mask = 0
     if len(layer_and_mask) % 2 == 1:
         layer_and_mask += b"\x00"
@@ -179,7 +188,7 @@ def build_psd(blend_key: bytes, psb: bool = False) -> bytes:
     out += u16(3)  # RGB colour mode
     out += u32(0)  # colour mode data
     out += u32(0)  # image resources
-    out += u32(len(layer_and_mask))
+    out += len_writer(len(layer_and_mask))
     out += layer_and_mask
     # Image Data: raw black so P1 is blank -> P2 composite.
     out += u16(0)  # raw

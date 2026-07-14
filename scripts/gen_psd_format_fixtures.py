@@ -227,15 +227,17 @@ def layer_record(
     opacity: int, clipping: int, blend_key: bytes, name: str,
     channel_data_lens: list[int],
     extra_tags: bytes = b"",
+    psb: bool = False,
 ) -> bytes:
     """One layer record (channel image data follows all records)."""
     out = bytearray()
     out += i32(top) + i32(left) + i32(bottom) + i32(right)
     out += u16(len(channel_data_lens))
+    len_writer = u64 if psb else u32
     for ch_id, data_len in zip(layer_channel_ids_for_len(len(channel_data_lens)),
                                 channel_data_lens):
         out += i16(ch_id)
-        out += u32(data_len)
+        out += len_writer(data_len)
     out += b"8BIM"
     out += blend_key
     out += u8(opacity)
@@ -304,6 +306,7 @@ def build_psd(
             0, 0, CANVAS_H, CANVAS_W,
             opacity=255, clipping=0, blend_key=b"norm",
             name="Base", channel_data_lens=ch_lens_base,
+            psb=psb,
         )
         ch_data += base_ch
 
@@ -323,6 +326,7 @@ def build_psd(
             opacity=255, clipping=0, blend_key=blend_key,
             name="Blend", channel_data_lens=ch_lens_blend,
             extra_tags=extra_tags,
+            psb=psb,
         )
         ch_data += blend_ch
     else:
@@ -335,12 +339,14 @@ def build_psd(
             opacity=255, clipping=0, blend_key=b"norm",
             name="Divider", channel_data_lens=[],
             extra_tags=extra_tags,
+            psb=psb,
         )
 
     # ── Layer & mask info ─────────────────────────────────────────────
     layer_info_body = i16(n_layers) + bytes(records) + bytes(ch_data)
     layer_info_body = pad_even(layer_info_body)
-    layer_info = u32(len(layer_info_body)) + layer_info_body
+    len_writer = u64 if psb else u32
+    layer_info = len_writer(len(layer_info_body)) + layer_info_body
     layer_and_mask = layer_info + u32(0)
     layer_and_mask = pad_even(layer_and_mask)
 
@@ -357,7 +363,7 @@ def build_psd(
     out += u16(mode_code)
     out += u32(0)  # colour mode data
     out += u32(0)  # image resources
-    out += u32(len(layer_and_mask))
+    out += len_writer(len(layer_and_mask))
     out += layer_and_mask
 
     # Image Data (blank → forces P2 composite)
