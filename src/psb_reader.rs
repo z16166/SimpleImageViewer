@@ -420,9 +420,11 @@ pub fn read_composite_from_index(
                             unpack_bits_into(&mut row_raw, &compressed, row_raw_bytes)?;
                             // Safe: `checked_pixel_count` already proved width*height fits
                             // in usize, and row < height here.
-                            let dst_start = row.checked_mul(width as usize).expect(
-                                "width*height overflow: checked_pixel_count guarantees safety",
-                            );
+                            let dst_start = row.checked_mul(width as usize).ok_or_else(|| {
+                                "PSD/PSB layer row*width overflow: checked_pixel_count guarantees \
+                                 safety, but decode paths must not panic"
+                                    .to_string()
+                            })?;
                             let dst_end = dst_start + width as usize;
                             downconvert_samples_to_u8(
                                 &mut ch_u8[dst_start..dst_end],

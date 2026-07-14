@@ -714,7 +714,12 @@ pub(crate) fn decode_layer_to_f32(
                                 raw_u8.iter().map(|&b| b as f32 / 255.0).collect();
                             mask = Some(f32_mask);
                         }
-                        Ok(None) => {}
+                        Ok(None) => {
+                            log::debug!(
+                                "PSD/PSB HDR layer mask ch {} decode returned empty (no mask data)",
+                                ch.id
+                            );
+                        }
                         Err(e) if e.is_cancelled() => return Err(e),
                         Err(e) => {
                             log::debug!(
