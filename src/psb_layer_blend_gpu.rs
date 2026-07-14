@@ -16,39 +16,49 @@
 
 //! Offscreen wgpu compute path for PSD/PSB separable layer blend and clipping groups.
 //!
-//! Handles Normal, Screen, Linear Dodge, and Multiply for the existing SDR RGBA8
-//! display path. PackBits / ICC stay on CPU.
+//! GPU-accelerates all 20 separable blend modes (Normal, Screen, Linear Dodge,
+//! Multiply, Overlay, Soft Light, Hard Light, Darken, Color Burn, Linear Burn,
+//! Lighten, Color Dodge, Vivid Light, Linear Light, Pin Light, Hard Mix,
+//! Difference, Exclusion, Subtract, Divide). PackBits / ICC stay on CPU.
 //!
-//! Checklist #12 approaching-split: large module near the line limit. Natural
-//! future cut is shader/pipeline setup vs orchestration.
+//! Modes that remain on CPU because they require cross-channel or per-pixel
+//! computation (not trivially vectorisable per-channel in the shader):
+//!   - **Non-separable:** Hue (`hue `), Saturation (`sat `), Color (`colr`),
+//!     Luminosity (`lum `) — need SetLum/ClipColor across R/G/B together.
+//!   - **Per-pixel luminance compare:** Darker Color (`dkCl`), Lighter Color
+//!     (`lgCl`) — compare whole-pixel luminance, cannot split per channel.
+//!   - **Stochastic / pass-through:** Dissolve (`diss`), Pass Through (`pass`).
+//!     Dissolve requires per-pixel randomness; Pass Through is equivalent to
+//!     Normal but conceptually a group-level operator.
 //!
-//! # Current GPU shader limitations (as of separable + clip path)
+//! These modes trigger a CPU fallback: `is_gpu_separable_blend` returns false
+//! for them, so `gpu_batch_eligible_decoded_bytes` rejects the whole batch,
+//! and the compositor falls back to `blend_layers_with_clipping` (CPU).
 //!
-//! 1. **Blend modes:** only the four separable keys (`norm` / `scrn` / `lddg` /
-//!    `mul `). Overlay, Soft Light, Hard Light, Color, and other non-separable
-//!    modes stay on the CPU scalar path (GPU admits only the four keys above).
-//! 2. **User mask vs clipping:** user/real mask is folded into layer alpha on
-//!    CPU before upload (not a separate shader pass; acceptable). Clipping
-//!    groups *are* on GPU (`cs_capture_base_alpha` /
-//!    `cs_apply_base_alpha_mask` + CPU-side group orchestration mirroring
-//!    `OpenClipGroup`). Sequential clip groups reuse one document-scoped
-//!    scratch texture pair cleared via `cs_clear_storage` (O(1) VRAM; no
-//!    CPU `vec![0]` full-canvas upload). Peak VRAM is gated by
-//!    [`crate::psb_layer_decode::gpu_batch_eligible_decoded_bytes`] before
-//!    this path runs. Vector masks / knockout / clip-to-folder remain out
-//!    of scope.
-//! 3. **Clip base-alpha mask is alpha-only (intentional):**
+//! # Clipping groups
+//!
+//! Clipping groups run on GPU (`cs_capture_base_alpha` /
+//! `cs_apply_base_alpha_mask` + CPU-side group orchestration mirroring
+//! `OpenClipGroup`). Sequential clip groups reuse one document-scoped
+//! scratch texture pair cleared via `cs_clear_storage` (O(1) VRAM; no
+//! CPU `vec![0]` full-canvas upload). Peak VRAM is gated by
+//! [`crate::psb_layer_decode::gpu_batch_eligible_decoded_bytes`] before
+//! this path runs. Vector masks / knockout / clip-to-folder remain out
+//! of scope.
+//!
+//! 1. **Clip base-alpha mask is alpha-only (intentional):**
 //!    `cs_apply_base_alpha_mask` scales group alpha (and clears RGB only when
 //!    the quantized alpha becomes 0), matching CPU `apply_base_alpha_mask` /
 //!    HDR `apply_one_base_alpha_mask`. Group RGB stays straight (unassociated).
 //!    That is correct for the PDF separable formula used when flushing with
 //!    the base blend (`scrn` / `mul ` / `lddg` / `norm`): coverage is applied
 //!    via `sa`, so premultiplying RGB by the mask would double-attenuate.
-//! 4. **Admission fallback:** if any decoded layer is not GPU-separable, the
+//! 2. **Admission fallback:** if any decoded layer is not GPU-separable, the
 //!    whole stack falls back to CPU `blend_layers_with_clipping` (all-or-
 //!    nothing per document). Same full-CPU fallback on device/OpenGL/size
 //!    gate, OOM, cancel, or readback failure.
-//!
+//! 3. **Shader source** lives in [`crate::psb_blend_gpu_shaders`] (split out
+//!    to keep this file under the review line limit).
 
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -57,10 +67,13 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
+use crate::psb_blend_gpu_shaders::*;
+
 const WORKGROUP: u32 = 16;
 const READBACK_MAX_WAIT: Duration = Duration::from_secs(30);
 /// Short Wait slice so cancel and `device_id_live` can be polled during readback.
-const READBACK_POLL_SLICE: Duration = Duration::from_millis(50);
+/// 1 ms keeps device-replacement detection latency low without busy-waiting.
+const READBACK_POLL_SLICE: Duration = Duration::from_millis(1);
 /// `BlendParamsUniform` bytes (must match WGSL `BlendParams`).
 const BLEND_PARAMS_BYTES: u64 = 32;
 /// Upper bound on uniform dispatches per layer (clip clear/capture/apply/flush).
@@ -86,259 +99,6 @@ fn begin_psd_compute_pass<'a>(
 /// Skip GPU when the canvas is small enough that upload/sync dominate.
 pub(crate) const GPU_BLEND_MIN_SHORT_SIDE: u32 = 512;
 pub(crate) const GPU_BLEND_MIN_PIXELS: u64 = 512 * 512;
-
-/// WGSL `mode` uniform values (must match shader).
-pub(crate) const BLEND_MODE_NORMAL: u32 = 0;
-pub(crate) const BLEND_MODE_SCREEN: u32 = 1;
-pub(crate) const BLEND_MODE_LINEAR_DODGE: u32 = 2;
-pub(crate) const BLEND_MODE_MULTIPLY: u32 = 3;
-
-pub(crate) fn separable_blend_mode_u32(blend: &[u8; 4]) -> u32 {
-    match blend {
-        b"scrn" => BLEND_MODE_SCREEN,
-        b"lddg" => BLEND_MODE_LINEAR_DODGE,
-        b"mul " => BLEND_MODE_MULTIPLY,
-        // Only GPU-implemented keys reach this helper (`is_gpu_separable_blend`).
-        // Overlay / Soft Light / Hard Light / Color / unknown keys fall back to CPU.
-        _ => BLEND_MODE_NORMAL,
-    }
-}
-
-pub(crate) fn is_gpu_separable_blend(blend: &[u8; 4]) -> bool {
-    // Keep GPU admissions aligned with WGSL entry points (four modes).
-    // Overlay / Soft Light / Hard Light / Color are CPU-scalar supported but not GPU yet.
-    matches!(blend, b"norm" | b"scrn" | b"lddg" | b"mul ")
-}
-
-/// Anchor: shader `floor(x * 255.0 + 0.5)` must match this CPU contract string.
-const _: &str = crate::psb_layer_blend_simd::UNIT_TO_U8_WGSL_FLOOR_BIAS;
-
-pub(crate) const PSD_SEPARABLE_BLEND_SHADER: &str = r#"
-struct BlendParams {
-    canvas_w: u32,
-    canvas_h: u32,
-    layer_w: u32,
-    layer_h: u32,
-    layer_left: i32,
-    layer_top: i32,
-    mode: u32,
-    _pad0: u32,
-};
-
-@group(0) @binding(0) var target: texture_storage_2d<rgba8unorm, read_write>;
-@group(0) @binding(1) var layer_tex: texture_2d<f32>;
-@group(0) @binding(2) var<uniform> params: BlendParams;
-
-// One compute pass per document batch; each layer op is still its own
-// dispatch_workgroups. Same-pass sequential dispatches preserve
-// bottom-to-top order (each layer reads the previous composite).
-//
-// Mode-specific entry points keep blend_b branch-free: `mode` is uniform
-// for a dispatch, so Rust selects the pipeline instead of per-pixel ifs.
-
-@compute @workgroup_size(16, 16, 1)
-fn cs_blend_normal(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let sx = i32(gid.x);
-    let sy = i32(gid.y);
-    if (sx >= i32(params.layer_w) || sy >= i32(params.layer_h)) {
-        return;
-    }
-    let dx = params.layer_left + sx;
-    let dy = params.layer_top + sy;
-    if (dx < 0 || dy < 0 || dx >= i32(params.canvas_w) || dy >= i32(params.canvas_h)) {
-        return;
-    }
-
-    let src = textureLoad(layer_tex, vec2<i32>(sx, sy), 0);
-    let sa = src.a;
-    if (sa <= 0.0) {
-        return;
-    }
-
-    let dst_coord = vec2<i32>(dx, dy);
-    // Opaque source replaces destination (out_a = 1 when sa = 1).
-    if (sa >= 1.0) {
-        textureStore(target, dst_coord, vec4<f32>(src.rgb, 1.0));
-        return;
-    }
-
-    let dst = textureLoad(target, dst_coord);
-    let da = dst.a;
-    let out_a = sa + da * (1.0 - sa);
-    if (out_a <= 0.0) {
-        textureStore(target, dst_coord, vec4<f32>(0.0));
-        return;
-    }
-    let blended = src.rgb;
-    let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
-    let out_rgb = co / max(out_a, 1e-20);
-    textureStore(target, dst_coord, vec4<f32>(out_rgb, out_a));
-}
-
-@compute @workgroup_size(16, 16, 1)
-fn cs_blend_screen(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let sx = i32(gid.x);
-    let sy = i32(gid.y);
-    if (sx >= i32(params.layer_w) || sy >= i32(params.layer_h)) {
-        return;
-    }
-    let dx = params.layer_left + sx;
-    let dy = params.layer_top + sy;
-    if (dx < 0 || dy < 0 || dx >= i32(params.canvas_w) || dy >= i32(params.canvas_h)) {
-        return;
-    }
-
-    let src = textureLoad(layer_tex, vec2<i32>(sx, sy), 0);
-    let sa = src.a;
-    if (sa <= 0.0) {
-        return;
-    }
-
-    let dst_coord = vec2<i32>(dx, dy);
-    let dst = textureLoad(target, dst_coord);
-    let da = dst.a;
-    let out_a = sa + da * (1.0 - sa);
-    if (out_a <= 0.0) {
-        textureStore(target, dst_coord, vec4<f32>(0.0));
-        return;
-    }
-    let blended = dst.rgb + src.rgb - dst.rgb * src.rgb;
-    let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
-    let out_rgb = co / max(out_a, 1e-20);
-    textureStore(target, dst_coord, vec4<f32>(out_rgb, out_a));
-}
-
-@compute @workgroup_size(16, 16, 1)
-fn cs_blend_linear_dodge(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let sx = i32(gid.x);
-    let sy = i32(gid.y);
-    if (sx >= i32(params.layer_w) || sy >= i32(params.layer_h)) {
-        return;
-    }
-    let dx = params.layer_left + sx;
-    let dy = params.layer_top + sy;
-    if (dx < 0 || dy < 0 || dx >= i32(params.canvas_w) || dy >= i32(params.canvas_h)) {
-        return;
-    }
-
-    let src = textureLoad(layer_tex, vec2<i32>(sx, sy), 0);
-    let sa = src.a;
-    if (sa <= 0.0) {
-        return;
-    }
-
-    let dst_coord = vec2<i32>(dx, dy);
-    let dst = textureLoad(target, dst_coord);
-    let da = dst.a;
-    let out_a = sa + da * (1.0 - sa);
-    if (out_a <= 0.0) {
-        textureStore(target, dst_coord, vec4<f32>(0.0));
-        return;
-    }
-    let blended = min(dst.rgb + src.rgb, vec3<f32>(1.0));
-    let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
-    let out_rgb = co / max(out_a, 1e-20);
-    textureStore(target, dst_coord, vec4<f32>(out_rgb, out_a));
-}
-
-@compute @workgroup_size(16, 16, 1)
-fn cs_blend_multiply(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let sx = i32(gid.x);
-    let sy = i32(gid.y);
-    if (sx >= i32(params.layer_w) || sy >= i32(params.layer_h)) {
-        return;
-    }
-    let dx = params.layer_left + sx;
-    let dy = params.layer_top + sy;
-    if (dx < 0 || dy < 0 || dx >= i32(params.canvas_w) || dy >= i32(params.canvas_h)) {
-        return;
-    }
-
-    let src = textureLoad(layer_tex, vec2<i32>(sx, sy), 0);
-    let sa = src.a;
-    if (sa <= 0.0) {
-        return;
-    }
-
-    let dst_coord = vec2<i32>(dx, dy);
-    let dst = textureLoad(target, dst_coord);
-    let da = dst.a;
-    let out_a = sa + da * (1.0 - sa);
-    if (out_a <= 0.0) {
-        textureStore(target, dst_coord, vec4<f32>(0.0));
-        return;
-    }
-    let blended = dst.rgb * src.rgb;
-    let co = sa * (1.0 - da) * src.rgb + sa * da * blended + da * (1.0 - sa) * dst.rgb;
-    let out_rgb = co / max(out_a, 1e-20);
-    textureStore(target, dst_coord, vec4<f32>(out_rgb, out_a));
-}
-
-@compute @workgroup_size(16, 16, 1)
-fn cs_capture_base_alpha(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let sx = i32(gid.x);
-    let sy = i32(gid.y);
-    if (sx >= i32(params.layer_w) || sy >= i32(params.layer_h)) {
-        return;
-    }
-    let dx = params.layer_left + sx;
-    let dy = params.layer_top + sy;
-    if (dx < 0 || dy < 0 || dx >= i32(params.canvas_w) || dy >= i32(params.canvas_h)) {
-        return;
-    }
-
-    let base = textureLoad(layer_tex, vec2<i32>(sx, sy), 0);
-    textureStore(target, vec2<i32>(dx, dy), vec4<f32>(base.a, 0.0, 0.0, 0.0));
-}
-
-@compute @workgroup_size(16, 16, 1)
-fn cs_apply_base_alpha_mask(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (gid.x >= params.canvas_w || gid.y >= params.canvas_h) {
-        return;
-    }
-
-    let coord = vec2<i32>(i32(gid.x), i32(gid.y));
-    let mask = textureLoad(layer_tex, coord, 0).r;
-    if (mask <= 0.0) {
-        textureStore(target, coord, vec4<f32>(0.0));
-        return;
-    }
-
-    if (mask >= 1.0) {
-        return;
-    }
-
-    let group = textureLoad(target, coord);
-    // Alpha-only silhouette mask (straight alpha): scale coverage, keep RGB.
-    // Matches CPU `apply_base_alpha_mask`. Do NOT premultiply RGB by `mask` --
-    // subsequent separable blend already weights by `sa` (incl. Screen /
-    // Multiply / Linear Dodge base modes).
-    // Match CPU's u8 alpha math (round-half-away-from-zero) before deciding
-    // whether RGB survives. WGSL `round` is ties-to-even; use floor(x+0.5)
-    // so quantization matches Rust `psb_layer_blend_simd::f32_to_u8_round`
-    // (`UNIT_TO_U8_WGSL_FLOOR_BIAS`).
-    // a_u/m_u are quantized from [0,1] alphas into u8 range [0,255], so
-    // a_u * m_u <= 255*255 = 65025 and fits in u32 without overflow.
-    let a_u = u32(floor(group.a * 255.0 + 0.5));
-    let m_u = u32(floor(mask * 255.0 + 0.5));
-    let out_a_u = (a_u * m_u) / 255u;
-    if (out_a_u == 0u) {
-        textureStore(target, coord, vec4<f32>(0.0));
-        return;
-    }
-    textureStore(target, coord, vec4<f32>(group.rgb, f32(out_a_u) / 255.0));
-}
-
-// Clears a full-canvas storage texture so clip-group scratch can be reused
-// across sequential groups inside one compute pass (no mid-pass queue writes).
-@compute @workgroup_size(16, 16, 1)
-fn cs_clear_storage(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (gid.x >= params.canvas_w || gid.y >= params.canvas_h) {
-        return;
-    }
-    textureStore(target, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(0.0));
-}
-"#;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -453,6 +213,22 @@ struct PsdBlendPipeline {
     blend_screen_pipeline: wgpu::ComputePipeline,
     blend_linear_dodge_pipeline: wgpu::ComputePipeline,
     blend_multiply_pipeline: wgpu::ComputePipeline,
+    blend_overlay_pipeline: wgpu::ComputePipeline,
+    blend_soft_light_pipeline: wgpu::ComputePipeline,
+    blend_hard_light_pipeline: wgpu::ComputePipeline,
+    blend_darken_pipeline: wgpu::ComputePipeline,
+    blend_color_burn_pipeline: wgpu::ComputePipeline,
+    blend_linear_burn_pipeline: wgpu::ComputePipeline,
+    blend_lighten_pipeline: wgpu::ComputePipeline,
+    blend_color_dodge_pipeline: wgpu::ComputePipeline,
+    blend_vivid_light_pipeline: wgpu::ComputePipeline,
+    blend_linear_light_pipeline: wgpu::ComputePipeline,
+    blend_pin_light_pipeline: wgpu::ComputePipeline,
+    blend_hard_mix_pipeline: wgpu::ComputePipeline,
+    blend_difference_pipeline: wgpu::ComputePipeline,
+    blend_exclusion_pipeline: wgpu::ComputePipeline,
+    blend_subtract_pipeline: wgpu::ComputePipeline,
+    blend_divide_pipeline: wgpu::ComputePipeline,
     capture_base_alpha_pipeline: wgpu::ComputePipeline,
     apply_base_alpha_mask_pipeline: wgpu::ComputePipeline,
     clear_storage_pipeline: wgpu::ComputePipeline,
@@ -465,6 +241,22 @@ impl PsdBlendPipeline {
             BLEND_MODE_SCREEN => &self.blend_screen_pipeline,
             BLEND_MODE_LINEAR_DODGE => &self.blend_linear_dodge_pipeline,
             BLEND_MODE_MULTIPLY => &self.blend_multiply_pipeline,
+            BLEND_MODE_OVERLAY => &self.blend_overlay_pipeline,
+            BLEND_MODE_SOFT_LIGHT => &self.blend_soft_light_pipeline,
+            BLEND_MODE_HARD_LIGHT => &self.blend_hard_light_pipeline,
+            BLEND_MODE_DARKEN => &self.blend_darken_pipeline,
+            BLEND_MODE_COLOR_BURN => &self.blend_color_burn_pipeline,
+            BLEND_MODE_LINEAR_BURN => &self.blend_linear_burn_pipeline,
+            BLEND_MODE_LIGHTEN => &self.blend_lighten_pipeline,
+            BLEND_MODE_COLOR_DODGE => &self.blend_color_dodge_pipeline,
+            BLEND_MODE_VIVID_LIGHT => &self.blend_vivid_light_pipeline,
+            BLEND_MODE_LINEAR_LIGHT => &self.blend_linear_light_pipeline,
+            BLEND_MODE_PIN_LIGHT => &self.blend_pin_light_pipeline,
+            BLEND_MODE_HARD_MIX => &self.blend_hard_mix_pipeline,
+            BLEND_MODE_DIFFERENCE => &self.blend_difference_pipeline,
+            BLEND_MODE_EXCLUSION => &self.blend_exclusion_pipeline,
+            BLEND_MODE_SUBTRACT => &self.blend_subtract_pipeline,
+            BLEND_MODE_DIVIDE => &self.blend_divide_pipeline,
             _ => &self.blend_normal_pipeline,
         }
     }
@@ -645,6 +437,39 @@ fn create_pipeline(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: pipeline_cache,
         });
+    // ── New modes (17 additional blend shaders) ────────────────────────
+    macro_rules! pipe_create {
+        ($entry:expr, $label:expr) => {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(concat!(
+                    "simple-image-viewer-psd-blend-",
+                    $label,
+                    "-pipeline"
+                )),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some($entry),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: pipeline_cache,
+            })
+        };
+    }
+    let blend_overlay_pipeline = pipe_create!("cs_blend_overlay", "overlay");
+    let blend_soft_light_pipeline = pipe_create!("cs_blend_soft_light", "soft-light");
+    let blend_hard_light_pipeline = pipe_create!("cs_blend_hard_light", "hard-light");
+    let blend_darken_pipeline = pipe_create!("cs_blend_darken", "darken");
+    let blend_color_burn_pipeline = pipe_create!("cs_blend_color_burn", "color-burn");
+    let blend_linear_burn_pipeline = pipe_create!("cs_blend_linear_burn", "linear-burn");
+    let blend_lighten_pipeline = pipe_create!("cs_blend_lighten", "lighten");
+    let blend_color_dodge_pipeline = pipe_create!("cs_blend_color_dodge", "color-dodge");
+    let blend_vivid_light_pipeline = pipe_create!("cs_blend_vivid_light", "vivid-light");
+    let blend_linear_light_pipeline = pipe_create!("cs_blend_linear_light", "linear-light");
+    let blend_pin_light_pipeline = pipe_create!("cs_blend_pin_light", "pin-light");
+    let blend_hard_mix_pipeline = pipe_create!("cs_blend_hard_mix", "hard-mix");
+    let blend_difference_pipeline = pipe_create!("cs_blend_difference", "difference");
+    let blend_exclusion_pipeline = pipe_create!("cs_blend_exclusion", "exclusion");
+    let blend_subtract_pipeline = pipe_create!("cs_blend_subtract", "subtract");
+    let blend_divide_pipeline = pipe_create!("cs_blend_divide", "divide");
     let capture_base_alpha_pipeline =
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("simple-image-viewer-psd-capture-base-alpha-pipeline"),
@@ -677,6 +502,22 @@ fn create_pipeline(
         blend_screen_pipeline,
         blend_linear_dodge_pipeline,
         blend_multiply_pipeline,
+        blend_overlay_pipeline,
+        blend_soft_light_pipeline,
+        blend_hard_light_pipeline,
+        blend_darken_pipeline,
+        blend_color_burn_pipeline,
+        blend_linear_burn_pipeline,
+        blend_lighten_pipeline,
+        blend_color_dodge_pipeline,
+        blend_vivid_light_pipeline,
+        blend_linear_light_pipeline,
+        blend_pin_light_pipeline,
+        blend_hard_mix_pipeline,
+        blend_difference_pipeline,
+        blend_exclusion_pipeline,
+        blend_subtract_pipeline,
+        blend_divide_pipeline,
         capture_base_alpha_pipeline,
         apply_base_alpha_mask_pipeline,
         clear_storage_pipeline,
@@ -1548,6 +1389,10 @@ fn wait_for_readback(
         if now >= deadline {
             return Err("PSD blend readback timed out".into());
         }
+        // Non-blocking poll first: catch already-complete submissions immediately
+        // so device-replacement and cancel detection is not delayed by the wait below.
+        let _ = device.poll(wgpu::PollType::Poll);
+
         // Wake periodically so cancel and device replacement can abort before
         // READBACK_MAX_WAIT instead of blocking in a single long Wait.
         let remaining = deadline.saturating_duration_since(now);
@@ -1983,5 +1828,72 @@ mod tests {
         };
         assert_eq!(std::mem::size_of_val(&params), 32);
         assert_eq!(params.mode, BLEND_MODE_SCREEN);
+    }
+
+    #[test]
+    fn gpu_screen_semi_transparent_target_matches_cpu_within_one() {
+        // Regression guard: cs_blend_screen on destination with da < 1.0.
+        // The existing gpu_separable_modes_match_cpu_within_one test only
+        // covers da = 1.0 (test_canvas alpha is 255). This variant adds a
+        // semi-transparent canvas to catch any fast-path errors that would
+        // silently produce wrong results when both sa and da are partial.
+        let Some(ctx) = try_test_psd_gpu_context() else {
+            eprintln!("Skipping GPU screen semi-transparent target test: no wgpu device available");
+            return;
+        };
+
+        // Semi-transparent canvas (alpha = 128, i.e. da ≈ 0.5).
+        let mut initial_canvas = test_canvas();
+        for pixel in initial_canvas.chunks_exact_mut(4) {
+            pixel[3] = 128;
+        }
+        let layer_rgba = test_layer_rgba();
+
+        for blend in [*b"scrn"] {
+            let mut cpu_canvas = initial_canvas.clone();
+            let cpu_layers = [ClipLayerRef {
+                left: ACCURACY_LAYER_LEFT,
+                top: ACCURACY_LAYER_TOP,
+                width: ACCURACY_LAYER_W,
+                height: ACCURACY_LAYER_H,
+                blend,
+                clipping: 0,
+                rgba: &layer_rgba,
+            }];
+            blend_layers_with_clipping(
+                &mut cpu_canvas,
+                ACCURACY_CANVAS_W,
+                ACCURACY_CANVAS_H,
+                &cpu_layers,
+                None,
+            )
+            .unwrap();
+
+            let gpu_layers = [DecodedLayerRef {
+                left: ACCURACY_LAYER_LEFT,
+                top: ACCURACY_LAYER_TOP,
+                width: ACCURACY_LAYER_W,
+                height: ACCURACY_LAYER_H,
+                blend,
+                clipping: 0,
+                rgba: &layer_rgba,
+            }];
+            let Some(gpu_canvas) = try_blend_layers_gpu(
+                &ctx,
+                ACCURACY_CANVAS_W,
+                ACCURACY_CANVAS_H,
+                &initial_canvas,
+                &gpu_layers,
+                None,
+            ) else {
+                eprintln!("Skipping GPU screen semi-transparent target test: GPU path unavailable");
+                return;
+            };
+
+            assert!(
+                max_abs_diff(&cpu_canvas, &gpu_canvas) <= 1,
+                "Screen semi-transparent target blend exceeded max abs diff 1"
+            );
+        }
     }
 }

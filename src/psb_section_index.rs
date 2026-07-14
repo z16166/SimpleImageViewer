@@ -44,7 +44,7 @@ pub enum SectionParseError {
     Dimensions(String),
     /// Bit depth is not 8 / 16 / 32.
     UnsupportedDepth(u16),
-    /// Color mode is not Gray / RGB / CMYK.
+    /// Color mode is not one of the supported values (0,1,2,3,4,7,8,9).
     UnsupportedColorMode(u16),
     /// Section length overflows or exceeds the file size.
     SectionOverflow { label: &'static str, detail: String },
@@ -468,7 +468,7 @@ mod tests {
         assert!(SectionParseError::UnsupportedVersion(3).is_structural());
         assert!(SectionParseError::Dimensions("x".into()).is_structural());
         assert!(SectionParseError::UnsupportedDepth(7).is_structural());
-        assert!(SectionParseError::UnsupportedColorMode(9).is_structural());
+        assert!(SectionParseError::UnsupportedColorMode(6).is_structural()); // 6 = unknown
         assert!(
             SectionParseError::SectionOverflow {
                 label: "image resources",
@@ -488,10 +488,10 @@ mod tests {
         bytes[14..18].copy_from_slice(&8u32.to_be_bytes()); // height
         bytes[18..22].copy_from_slice(&8u32.to_be_bytes()); // width
         bytes[22..24].copy_from_slice(&8u16.to_be_bytes()); // depth
-        bytes[24..26].copy_from_slice(&9u16.to_be_bytes()); // Lab -- unsupported
+        bytes[24..26].copy_from_slice(&6u16.to_be_bytes()); // unsupported mode 6
         // color mode data len + ir len + layer len = 0
         let err = PsdSectionIndex::parse(&bytes).unwrap_err();
-        assert_eq!(err, SectionParseError::UnsupportedColorMode(9));
+        assert_eq!(err, SectionParseError::UnsupportedColorMode(6));
         assert!(err.is_structural());
     }
 }

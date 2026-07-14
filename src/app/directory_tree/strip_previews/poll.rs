@@ -16,9 +16,6 @@
 
 //! Asynchronous strip preview result polling and failure recovery.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-
 use eframe::egui;
 
 use crate::app::ImageViewerApp;
@@ -31,26 +28,27 @@ use crate::app::directory_tree_strip_cache::{
 use crate::loader::preview_aspect_matches_logical;
 
 impl ImageViewerApp {
-    pub(super) fn clear_strip_preview_attempt_state(&mut self, index: usize) {
-        self.directory_tree_strip_generate_inflight.remove(&index);
-        self.directory_tree_strip_inflight_tokens.remove(&index);
-        self.directory_tree_strip_inflight_cancel.remove(&index);
+    pub(super) fn clear_strip_preview_attempt_state_by_path(&mut self, path: &std::path::Path) {
+        self.directory_tree_strip_generate_inflight.remove(path);
+        self.directory_tree_strip_inflight_tokens.remove(path);
+        self.directory_tree_strip_inflight_cancel.remove(path);
         self.directory_tree_strip_static_full_decode_inflight
-            .remove(&index);
-        self.directory_tree_strip_tiled_attempted.remove(&index);
-        self.directory_tree_strip_cold_attempted.remove(&index);
+            .remove(path);
+        self.directory_tree_strip_tiled_attempted.remove(path);
+        self.directory_tree_strip_cold_attempted.remove(path);
         self.directory_tree_strip_cold_awaiting_main_loader
-            .remove(&index);
+            .remove(path);
     }
 
     pub(super) fn clear_strip_preview_attempt_state_for_key(
         &mut self,
         key: &DirectoryTreeStripJobKey,
     ) -> bool {
-        let Some(active_index) = self.directory_tree_strip_active_index_for_job_token(key) else {
+        if !self.directory_tree_strip_key_matches_active_job(key) {
             return false;
-        };
-        self.clear_strip_preview_attempt_state(active_index);
+        }
+        let path = key.path.clone();
+        self.clear_strip_preview_attempt_state_by_path(&path);
         true
     }
 
@@ -59,18 +57,16 @@ impl ImageViewerApp {
     /// Also leaves `directory_tree_strip_tiled_attempted` set: empty async tiled previews
     /// (PSD v1 before pixels land) must not clear that flag, or ensure_strip respawns every frame.
     fn finish_strip_preview_job_for_key(&mut self, key: &DirectoryTreeStripJobKey) -> bool {
-        let Some(active_index) = self.directory_tree_strip_active_index_for_job_token(key) else {
+        if !self.directory_tree_strip_key_matches_active_job(key) {
             return false;
-        };
-        self.directory_tree_strip_generate_inflight
-            .remove(&active_index);
-        self.directory_tree_strip_inflight_tokens
-            .remove(&active_index);
-        self.directory_tree_strip_inflight_cancel
-            .remove(&active_index);
+        }
+        let path = key.path.clone();
+        self.directory_tree_strip_generate_inflight.remove(&path);
+        self.directory_tree_strip_inflight_tokens.remove(&path);
+        self.directory_tree_strip_inflight_cancel.remove(&path);
         self.directory_tree_strip_static_full_decode_inflight
-            .remove(&active_index);
-        self.flush_strip_pending_main_handoff_for_index(active_index);
+            .remove(&path);
+        self.flush_strip_pending_main_handoff_for_path(&path);
         true
     }
 
@@ -98,73 +94,6 @@ impl ImageViewerApp {
         // the limited cold-generate budget and block thumbnails for neighboring rows.
         // Keep `tiled_attempted` as well: async PSD/PSB sources return empty previews until
         // composite pixels arrive; clearing would cause a per-frame tiled strip storm.
-    }
-
-    fn strip_preview_result_matches_index(&self, key: &DirectoryTreeStripJobKey) -> bool {
-        self.image_files.get(key.index) == Some(&key.path)
-    }
-
-    fn image_strip_path_index(&mut self) -> &HashMap<PathBuf, usize> {
-        let generation = self.directory_tree.list.lock().image_list_generation;
-        let stale = self
-            .cached_image_strip_path_index
-            .as_ref()
-            .is_none_or(|(g, _)| *g != generation);
-        if stale {
-            let map: HashMap<PathBuf, usize> = self
-                .image_files
-                .iter()
-                .enumerate()
-                .map(|(i, p)| (p.clone(), i))
-                .collect();
-            self.cached_image_strip_path_index = Some((generation, map));
-        }
-        &self
-            .cached_image_strip_path_index
-            .as_ref()
-            .expect("just inserted")
-            .1
-    }
-
-    fn try_apply_relocated_strip_preview_result(
-        &mut self,
-        mut result: DirectoryTreeStripPreviewSuccess,
-        ctx: &egui::Context,
-    ) -> bool {
-        self.finish_strip_preview_job_for_key(&result.key);
-        let Some(&new_index) = self.image_strip_path_index().get(&result.key.path) else {
-            return false;
-        };
-
-        if Self::strip_preview_success_is_permanent_failure(&result) {
-            return false;
-        }
-
-        self.cache_reusable_strip_full_decode(
-            new_index,
-            result.logical,
-            result.reusable_full_decoded.take(),
-        );
-        result.key.index = new_index;
-        self.queue_directory_tree_strip_gpu_upload(DirectoryTreeStripGpuUploadRequest {
-            index: new_index,
-            decoded: result.decoded,
-            stage: result.stage,
-            logical: Some(result.logical),
-            buffer_tag: result.buffer_tag,
-            strip_max_side_used: Some(result.strip_max_side_used),
-            job_key: Some(result.key),
-        });
-        if !self
-            .directory_tree_strip_cache
-            .is_valid_for_logical(new_index, result.logical)
-        {
-            self.directory_tree_strip_tiled_attempted.remove(&new_index);
-            return false;
-        }
-        ctx.request_repaint();
-        ctx.request_repaint_of(self.directory_tree_repaint_viewport_id());
-        true
     }
 
     fn cache_reusable_strip_full_decode(
@@ -226,10 +155,11 @@ impl ImageViewerApp {
 
     fn poll_deferred_strip_result(&mut self, failure: DirectoryTreeStripPreviewFailure) {
         let _failure_reason = failure.reason;
-        let active_index = self
-            .directory_tree_strip_active_index_for_job_token(&failure.key)
-            .unwrap_or(failure.key.index);
+        let path = failure.key.path.clone();
         if self.finish_strip_preview_job_for_key(&failure.key) {
+            let Some(active_index) = self.strip_path_current_index(&path) else {
+                return;
+            };
             self.mark_strip_cold_awaiting_main_loader(active_index);
             // PSD/PSB (and other slow primaries) defer strip to the main loader. Neighbor
             // preload may never cover every visible strip row (e.g. idx 3 with window
@@ -282,20 +212,62 @@ impl ImageViewerApp {
 
     fn poll_successful_strip_result(
         &mut self,
-        result: DirectoryTreeStripPreviewSuccess,
+        mut result: DirectoryTreeStripPreviewSuccess,
         ctx: &egui::Context,
     ) {
-        if !self.strip_preview_result_matches_index(&result.key) {
-            let index = result.key.index;
-            if !self.try_apply_relocated_strip_preview_result(result, ctx) {
-                log::debug!(
-                    "[DirectoryTree] Strip preview relocation failed for index {}",
-                    index
+        // Authoritative identity is the path; index is only a hint. Resolve the path's current
+        // row so relocation after a reorder is transparent. If the path left the list, drop.
+        let path = result.key.path.clone();
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug_throttled!(
+            &format!(
+                "strip:poll_success:{}:{:?}:{:?}",
+                result.key.index, result.stage, result.buffer_tag
+            ),
+            crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
+            "[PreloadDebug][StripPoll] poll_successful idx={} path={} decoded={}x{} logical={}x{} stage={:?} tag={:?}",
+            result.key.index,
+            path.display(),
+            result.decoded.width,
+            result.decoded.height,
+            result.logical.0,
+            result.logical.1,
+            result.stage,
+            result.buffer_tag,
+        );
+        let Some(&current_index) = self.image_strip_path_index().get(&path) else {
+            #[cfg(feature = "preload-debug")]
+            {
+                let at_same_idx = self
+                    .image_files
+                    .get(result.key.index)
+                    .map(|p| p.display().to_string());
+                let list_gen = self.directory_tree.list.lock().image_list_generation;
+                crate::preload_debug!(
+                    "[PreloadDebug][StripPoll] poll_successful idx={} path={} early_return=path_not_found \
+                     list_gen={} image_files_len={} file_at_idx={:?}",
+                    result.key.index,
+                    path.display(),
+                    list_gen,
+                    self.image_files.len(),
+                    at_same_idx,
                 );
             }
+            self.finish_strip_preview_job_for_key(&result.key);
             return;
-        }
+        };
+        result.key.index = current_index;
         if Self::strip_preview_success_is_permanent_failure(&result) {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][StripPoll] poll_successful idx={} path={} early_return=permanent_failure decoded={}x{} logical={}x{}",
+                result.key.index,
+                path.display(),
+                result.decoded.width,
+                result.decoded.height,
+                result.logical.0,
+                result.logical.1,
+            );
             if result.decoded.width == 0 || result.decoded.height == 0 {
                 log::debug!(
                     "[DirectoryTree] Strip preview unavailable for index {} ({})",
@@ -345,9 +317,7 @@ impl ImageViewerApp {
             job_key: Some(job_key.clone()),
         });
         self.cache_reusable_strip_full_decode(index, logical, reusable_full);
-        let cache_valid = self
-            .directory_tree_strip_cache
-            .is_valid_for_logical(index, logical);
+        let cache_valid = self.strip_cache_is_valid_for_logical_index(index, logical);
         #[cfg(feature = "preload-debug")]
         {
             crate::preload_debug_throttled!(
@@ -362,7 +332,7 @@ impl ImageViewerApp {
                 decoded_h,
                 logical.0,
                 logical.1,
-                self.directory_tree_strip_cold_attempted.contains(&index),
+                self.strip_cold_attempted_contains_index(index),
                 self.directory_tree_strip_pending_gpu_initial.len()
                     + self.directory_tree_strip_pending_gpu_refined.len()
             );
@@ -388,18 +358,37 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn poll_directory_tree_strip_preview_results(&mut self, ctx: &egui::Context) {
+        #[cfg(feature = "preload-debug")]
+        let poll_start = std::time::Instant::now();
         while let Ok(release) = self.directory_tree_strip_inflight_release_rx.try_recv() {
             self.handle_strip_inflight_release(release);
         }
+        #[cfg(feature = "preload-debug")]
+        let mut poll_count = 0usize;
         while let Ok(result) = self.directory_tree_strip_preview_rx.try_recv() {
+            #[cfg(feature = "preload-debug")]
+            {
+                poll_count += 1;
+                let key = match &result {
+                    DirectoryTreeStripPreviewJobResult::Success(r) => &r.key,
+                    DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(f) => &f.key,
+                };
+                crate::preload_debug!(
+                    "[PreloadDebug][StripPoll] poll_recv idx={} path={} kind={}",
+                    key.index,
+                    key.path.display(),
+                    match &result {
+                        DirectoryTreeStripPreviewJobResult::Success(_) => "Success",
+                        DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(_) => "Deferred",
+                    },
+                );
+            }
             let key = match &result {
                 DirectoryTreeStripPreviewJobResult::Success(result) => &result.key,
                 DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(failure) => &failure.key,
             };
             if let DirectoryTreeStripJobToken::Worker(_token) = key.job_token
-                && self
-                    .directory_tree_strip_active_index_for_job_token(key)
-                    .is_none()
+                && !self.directory_tree_strip_key_matches_active_job(key)
             {
                 #[cfg(feature = "preload-debug")]
                 crate::preload_debug!(
@@ -428,6 +417,17 @@ impl ImageViewerApp {
                 DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(failure) => {
                     self.poll_deferred_strip_result(failure);
                 }
+            }
+        }
+        #[cfg(feature = "preload-debug")]
+        {
+            let elapsed = poll_start.elapsed();
+            if poll_count > 0 || elapsed.as_micros() > 100 {
+                crate::preload_debug!(
+                    "[PreloadDebug][StripPoll] poll done count={} elapsed={:?}",
+                    poll_count,
+                    elapsed,
+                );
             }
         }
     }
@@ -465,26 +465,30 @@ mod tests {
     #[test]
     fn permanent_failure_keeps_tiled_attempted_to_avoid_retry_storm() {
         let mut app = crate::app::image_management::tests::make_test_app();
-        app.image_files = vec![PathBuf::from("async.psd")];
+        let path = PathBuf::from("async.psd");
+        app.image_files = vec![path.clone()];
         app.directory_tree.list.lock().image_list_generation = 1;
         let token = NonZeroU64::new(9).expect("non-zero");
-        app.directory_tree_strip_generate_inflight.insert(0);
-        app.directory_tree_strip_inflight_tokens.insert(0, token);
-        app.directory_tree_strip_tiled_attempted.insert(0);
+        app.directory_tree_strip_generate_inflight
+            .insert(path.clone());
+        app.directory_tree_strip_inflight_tokens
+            .insert(path.clone(), token);
+        app.directory_tree_strip_tiled_attempted
+            .insert(path.clone());
 
         let key = DirectoryTreeStripJobKey {
             index: 0,
-            path: PathBuf::from("async.psd"),
+            path: path.clone(),
             image_list_generation: 1,
             job_token: DirectoryTreeStripJobToken::Worker(token),
         };
         app.abandon_strip_preview_attempt_after_failure_for_key(&key);
 
         assert!(
-            app.directory_tree_strip_tiled_attempted.contains(&0),
+            app.directory_tree_strip_tiled_attempted.contains(&path),
             "empty async tiled strip must keep tiled_attempted"
         );
-        assert!(!app.directory_tree_strip_generate_inflight.contains(&0));
-        assert!(!app.directory_tree_strip_inflight_tokens.contains_key(&0));
+        assert!(!app.directory_tree_strip_generate_inflight.contains(&path));
+        assert!(!app.directory_tree_strip_inflight_tokens.contains_key(&path));
     }
 }

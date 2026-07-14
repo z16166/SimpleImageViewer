@@ -671,7 +671,10 @@ pub(crate) fn decode_layer_to_f32(
                         alpha = Some(channel_samples_to_f32(&raw, depth, linear, sdr_white_nits)?)
                     }
                     Err(e) if e.is_cancelled() => return Err(e),
-                    Err(e) => log::debug!("PSD/PSB HDR layer alpha decode failed: {e}"),
+                    Err(e) => {
+                        log::debug!("PSD/PSB HDR layer alpha decode failed; skipping layer: {e}");
+                        return Ok(None);
+                    }
                 }
             }
             PSD_CHANNEL_ID_USER_MASK | PSD_CHANNEL_ID_REAL_USER_MASK => {
@@ -711,10 +714,19 @@ pub(crate) fn decode_layer_to_f32(
                                 raw_u8.iter().map(|&b| b as f32 / 255.0).collect();
                             mask = Some(f32_mask);
                         }
-                        Ok(None) => {}
+                        Ok(None) => {
+                            log::debug!(
+                                "PSD/PSB HDR layer mask ch {} decode returned empty (no mask data)",
+                                ch.id
+                            );
+                        }
                         Err(e) if e.is_cancelled() => return Err(e),
                         Err(e) => {
-                            log::debug!("PSD/PSB HDR layer mask ch {} decode failed: {e}", ch.id);
+                            log::debug!(
+                                "PSD/PSB HDR layer mask ch {} decode failed; skipping layer: {e}",
+                                ch.id
+                            );
+                            return Ok(None);
                         }
                     }
                 }
@@ -746,6 +758,16 @@ pub(crate) fn decode_layer_to_f32(
             }
             _ => {}
         }
+    }
+
+    // Verify cumulative channel data fills the layer slice exactly. Under-run
+    // would leave unaccounted bytes; over-run is caught by per-channel bounds.
+    if cursor != channel_data.len() {
+        return Err(DecodeError::Message(
+            "PSD/PSB HDR layer channel data total length mismatch: declared \
+             channel data sizes do not fill the available layer section"
+                .into(),
+        ));
     }
 
     let rgba = layer_planes_to_rgba_f32(
@@ -910,9 +932,16 @@ fn composite_layers_hdr_with_visibility(
     } else {
         HdrColorProfile::LinearSrgb
     };
+    // 32-bit float PSD is scene-linear by spec, same for PQ/HLG HDR 16-bit.
+    // Non-HDR 16-bit (display-referred) should not go through tone-map Reinhard.
+    let reference = if depth == 32 || icc_probe.marks_hdr {
+        HdrReference::SceneLinear
+    } else {
+        HdrReference::DisplayReferred
+    };
     let mut metadata = HdrImageMetadata {
         transfer_function: HdrTransferFunction::Linear,
-        reference: HdrReference::DisplayReferred,
+        reference,
         color_profile,
         luminance: HdrLuminanceMetadata {
             mastering_max_nits: icc_probe.peak_nits,

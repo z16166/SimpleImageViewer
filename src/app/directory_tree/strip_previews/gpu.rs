@@ -55,7 +55,8 @@ struct StripPendingGpuCoalesce {
 }
 
 struct StripThumbnailCacheUpsert<'a> {
-    index: usize,
+    /// Authoritative cache key; must match the decoded pixels' source path.
+    path: &'a std::path::Path,
     decoded: &'a DecodedImage,
     stage: PreviewStage,
     logical_size: Option<(u32, u32)>,
@@ -76,8 +77,15 @@ impl ImageViewerApp {
     fn strip_pending_key_is_visible(
         visible_range: Option<(usize, usize)>,
         key: &DirectoryTreeStripJobKey,
+        path_to_index: &std::collections::HashMap<std::path::PathBuf, usize>,
     ) -> bool {
-        visible_range.is_some_and(|(start, end)| key.index >= start && key.index < end)
+        let Some((start, end)) = visible_range else {
+            return false;
+        };
+        // Resolve the path's current row; submit-time `key.index` may be stale after reorder.
+        path_to_index
+            .get(&key.path)
+            .is_some_and(|&index| index >= start && index < end)
     }
 
     fn decoded_strip_upload_bytes(decoded: &DecodedImage) -> usize {
@@ -117,15 +125,22 @@ impl ImageViewerApp {
         stage: PreviewStage,
         visible_range: Option<(usize, usize)>,
     ) -> Option<DirectoryTreeStripPendingGpuUpload> {
-        let position = match stage {
-            PreviewStage::Initial => self
-                .directory_tree_strip_pending_gpu_initial
-                .iter()
-                .position(|item| !Self::strip_pending_key_is_visible(visible_range, &item.key)),
-            PreviewStage::Refined => self
-                .directory_tree_strip_pending_gpu_refined
-                .iter()
-                .position(|item| !Self::strip_pending_key_is_visible(visible_range, &item.key)),
+        // Resolve visibility via the generation-cached path index, then mutate the queue.
+        // Warm first; find uses disjoint field borrows (cache map + pending queue).
+        let _ = self.image_strip_path_index();
+        let position = {
+            let path_to_index = &self
+                .cached_image_strip_path_index
+                .as_ref()
+                .expect("warmed above")
+                .1;
+            let queue = match stage {
+                PreviewStage::Initial => &self.directory_tree_strip_pending_gpu_initial,
+                PreviewStage::Refined => &self.directory_tree_strip_pending_gpu_refined,
+            };
+            queue.iter().position(|item| {
+                !Self::strip_pending_key_is_visible(visible_range, &item.key, path_to_index)
+            })
         }?;
         match stage {
             PreviewStage::Initial => self
@@ -197,7 +212,7 @@ impl ImageViewerApp {
 
     fn has_ready_pending_strip_upload_at_least_rank(
         &self,
-        index: usize,
+        path: &std::path::Path,
         incoming_rank: u16,
         strip_max_side: u32,
     ) -> bool {
@@ -205,30 +220,31 @@ impl ImageViewerApp {
             .iter()
             .chain(self.directory_tree_strip_pending_gpu_refined.iter())
             .any(|item| {
-                item.key.index == index
+                item.key.path == path
                     && Self::pending_strip_upload_quality_rank(item) >= incoming_rank
                     && Self::pending_strip_upload_ready_for_gpu(item, strip_max_side)
             })
     }
 
-    fn coalesce_pending_gpu_upload_for_index(
+    fn coalesce_pending_gpu_upload_for_path(
         &mut self,
-        index: usize,
+        path: &std::path::Path,
         incoming_stage: PreviewStage,
         incoming_tag: StripPreviewBufferTag,
     ) -> StripPendingGpuCoalesce {
-        // Coalesced uploads either have no worker state or were released by result
-        // polling, so this path only needs to count dropped queued pixels. Do not let
-        // a lower-rank source (for example a full-size SDR fallback) replace an already
-        // queued strip-sized result for the same row; otherwise the fallback can fail the
-        // pre-upload size gate and leave the row stuck on the placeholder.
+        // Coalesce by path: submit-time `key.index` may be stale after a column-sort reorder
+        // that does not bump `image_list_generation`. Coalesced uploads either have no worker
+        // state or were released by result polling, so this path only needs to count dropped
+        // queued pixels. Do not let a lower-rank source (for example a full-size SDR fallback)
+        // replace an already queued strip-sized result for the same path; otherwise the
+        // fallback can fail the pre-upload size gate and leave the row stuck on the placeholder.
         let incoming_rank = strip_preview_quality_rank(incoming_tag, incoming_stage);
         let mut retained_higher_rank = false;
 
         let initial_before = self.directory_tree_strip_pending_gpu_initial.len();
         self.directory_tree_strip_pending_gpu_initial
             .retain(|item| {
-                if item.key.index != index {
+                if item.key.path != path {
                     return true;
                 }
                 if Self::pending_strip_upload_quality_rank(item) > incoming_rank {
@@ -239,13 +255,13 @@ impl ImageViewerApp {
             });
         let mut dropped = initial_before - self.directory_tree_strip_pending_gpu_initial.len();
 
-        // Initial uploads do not evict pending Refined uploads for the same index: Refined
+        // Initial uploads do not evict pending Refined uploads for the same path: Refined
         // pixels are higher quality, and stale keys are rejected again before GPU upload.
         if incoming_stage == PreviewStage::Refined {
             let refined_before = self.directory_tree_strip_pending_gpu_refined.len();
             self.directory_tree_strip_pending_gpu_refined
                 .retain(|item| {
-                    if item.key.index != index {
+                    if item.key.path != path {
                         return true;
                     }
                     if Self::pending_strip_upload_quality_rank(item) > incoming_rank {
@@ -263,6 +279,19 @@ impl ImageViewerApp {
         }
     }
 
+    /// Refresh `key.index` from the current path->row map. Returns false when the path left
+    /// the list or the key's generation no longer matches.
+    fn refresh_strip_job_key_index(&mut self, key: &mut DirectoryTreeStripJobKey) -> bool {
+        if !self.directory_tree_strip_key_matches_current_list(key) {
+            return false;
+        }
+        let Some(&current_index) = self.image_strip_path_index().get(&key.path) else {
+            return false;
+        };
+        key.index = current_index;
+        true
+    }
+
     pub(super) fn queue_directory_tree_strip_gpu_upload(
         &mut self,
         request: DirectoryTreeStripGpuUploadRequest,
@@ -276,18 +305,33 @@ impl ImageViewerApp {
             strip_max_side_used,
             job_key,
         } = request;
-        if !self.directory_tree_list_previews_active() || index >= self.image_files.len() {
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug!(
+            "[PreloadDebug][StripGpu] queue_enter idx={} decoded={}x{} strip_max_side_used={:?} stage={:?} tag={:?} cache_count={}",
+            index,
+            decoded.width,
+            decoded.height,
+            strip_max_side_used,
+            stage,
+            buffer_tag,
+            self.directory_tree_strip_cache.textures().len(),
+        );
+        if !self.directory_tree_list_previews_active() {
             return;
         }
-        let Some(key) =
-            job_key.or_else(|| self.directory_tree_strip_upload_key_for_current_index(index))
-        else {
+        // Prefer job_key.path even when submit-time index is stale/OOB after a reorder.
+        let Some(mut key) = job_key.or_else(|| {
+            (index < self.image_files.len())
+                .then(|| self.directory_tree_strip_upload_key_for_current_index(index))
+                .flatten()
+        }) else {
             return;
         };
-        if !self.directory_tree_strip_key_matches_current_list(&key) {
+        if !self.refresh_strip_job_key_index(&mut key) {
             self.clear_strip_preview_attempt_state_for_key(&key);
             return;
         }
+        let index = key.index;
         let strip_max_side = self
             .settings
             .directory_tree_list_preview_size
@@ -295,7 +339,7 @@ impl ImageViewerApp {
         if !strip_decoded_ready_for_gpu_upload(&decoded, strip_max_side, strip_max_side_used) {
             let incoming_rank = strip_preview_quality_rank(buffer_tag, stage);
             if self.has_ready_pending_strip_upload_at_least_rank(
-                index,
+                &key.path,
                 incoming_rank,
                 strip_max_side,
             ) {
@@ -321,7 +365,7 @@ impl ImageViewerApp {
             );
             return;
         }
-        let coalesce = self.coalesce_pending_gpu_upload_for_index(index, stage, buffer_tag);
+        let coalesce = self.coalesce_pending_gpu_upload_for_path(&key.path, stage, buffer_tag);
         if !coalesce.keep_incoming {
             #[cfg(feature = "preload-debug")]
             crate::preload_debug_throttled!(
@@ -339,7 +383,10 @@ impl ImageViewerApp {
         #[cfg(not(feature = "preload-debug"))]
         let _ = coalesce.dropped;
         let visible_range = self.strip_visible_image_list_range();
-        let incoming_visible = Self::strip_pending_key_is_visible(visible_range, &key);
+        let incoming_visible = {
+            let path_to_index = self.image_strip_path_index();
+            Self::strip_pending_key_is_visible(visible_range, &key, path_to_index)
+        };
         let pending_len = self.directory_tree_strip_pending_gpu_initial.len()
             + self.directory_tree_strip_pending_gpu_refined.len();
         let incoming_bytes = Self::decoded_strip_upload_bytes(&decoded);
@@ -404,7 +451,7 @@ impl ImageViewerApp {
                 decoded_w,
                 decoded_h,
                 logical,
-                self.directory_tree_strip_cache.contains(index),
+                self.strip_cache_contains_index(index),
                 self.directory_tree_strip_cache.textures().len(),
                 pending_len2,
                 coalesced
@@ -443,6 +490,12 @@ impl ImageViewerApp {
     pub(crate) fn flush_directory_tree_strip_pending_gpu_uploads(&mut self, ctx: &egui::Context) {
         let pending_len = self.directory_tree_strip_pending_gpu_initial.len()
             + self.directory_tree_strip_pending_gpu_refined.len();
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug!(
+            "[PreloadDebug][StripGpu] flush enter pending_len={} cache_count={}",
+            pending_len,
+            self.directory_tree_strip_cache.textures().len(),
+        );
         if pending_len == 0 {
             return;
         }
@@ -500,13 +553,15 @@ impl ImageViewerApp {
         }
         #[cfg(feature = "preload-debug")]
         let upload_count = batch.len();
-        for item in batch {
-            if !self.directory_tree_strip_key_matches_current_list(&item.key) {
+        for mut item in batch {
+            // Rematch submit-time index: column sort keeps generation but moves rows, so
+            // writing via a stale index would upsert another path's cache slot.
+            if !self.refresh_strip_job_key_index(&mut item.key) {
                 self.clear_strip_preview_attempt_state_for_key(&item.key);
                 continue;
             }
             #[cfg(feature = "preload-debug")]
-            let cache_before = self.directory_tree_strip_cache.contains(item.key.index);
+            let cache_before = self.directory_tree_strip_cache.contains(&item.key.path);
             self.cache_directory_tree_strip_thumbnail_owned(StripThumbnailCacheOwnedRequest {
                 index: item.key.index,
                 decoded: item.decoded,
@@ -520,7 +575,7 @@ impl ImageViewerApp {
             });
             #[cfg(feature = "preload-debug")]
             {
-                let cache_after = self.directory_tree_strip_cache.contains(item.key.index);
+                let cache_after = self.directory_tree_strip_cache.contains(&item.key.path);
                 let cache_count = self.directory_tree_strip_cache.textures().len();
                 crate::preload_debug_throttled!(
                     &format!(
@@ -641,22 +696,21 @@ impl ImageViewerApp {
         }
         if let Some(logical) = logical_size
             && self.strip_skip_texture_cache_sync_for_deferred_black_sdr(index)
-            && self
-                .directory_tree_strip_cache
-                .is_valid_for_logical(index, logical)
+            && self.strip_cache_is_valid_for_logical_index(index, logical)
         {
-            let cached_tag = self.directory_tree_strip_cache.cached_buffer_tag(index);
-            let cached_stage = self.directory_tree_strip_cache.cached_preview_stage(index);
-            let cached_dims = self.directory_tree_strip_cache.preview_dimensions(index);
+            let path = &self.image_files[index];
+            let cached_tag = self.directory_tree_strip_cache.cached_buffer_tag(path);
+            let cached_stage = self.directory_tree_strip_cache.cached_preview_stage(path);
+            let cached_dims = self.directory_tree_strip_cache.preview_dimensions(path);
             let would_upgrade = decide_strip_preview_replace(&StripPreviewReplaceParams {
-                index,
+                path,
                 source,
                 cached_tag,
                 cached_stage,
                 cached_logical: self
                     .directory_tree_strip_cache
                     .logical_sizes()
-                    .get(&index)
+                    .get(path)
                     .copied(),
                 cached_preview_w: cached_dims.map(|(w, _)| w),
                 cached_preview_h: cached_dims.map(|(_, h)| h),
@@ -679,7 +733,7 @@ impl ImageViewerApp {
         request: StripThumbnailCacheUpsert<'_>,
     ) {
         let StripThumbnailCacheUpsert {
-            index,
+            path,
             decoded,
             stage,
             logical_size,
@@ -689,13 +743,12 @@ impl ImageViewerApp {
             strip_max_side,
         } = request;
         self.directory_tree_strip_cache.upsert_from_decoded(
-            index,
             decoded,
             crate::app::directory_tree_strip_cache::StripDecodedUpsert {
                 stage,
                 buffer_tag,
                 logical_size,
-                path: &self.image_files[index],
+                path,
                 ctx,
                 strip_max_side,
                 strip_max_side_used,
@@ -719,8 +772,23 @@ impl ImageViewerApp {
             ctx,
             bypass_detach_queue,
         } = request;
-        let effective_job_key =
+        let mut effective_job_key =
             job_key.or_else(|| self.directory_tree_strip_upload_key_for_current_index(index));
+        let index = if let Some(key) = effective_job_key.as_mut() {
+            if !self.refresh_strip_job_key_index(key) {
+                self.clear_strip_preview_attempt_state_for_key(key);
+                return;
+            }
+            key.index
+        } else if index < self.image_files.len() {
+            index
+        } else {
+            return;
+        };
+        let cache_path = effective_job_key
+            .as_ref()
+            .map(|key| key.path.clone())
+            .unwrap_or_else(|| self.image_files[index].clone());
         match self.prepare_directory_tree_strip_thumbnail_cache(StripThumbnailCachePrepare {
             index,
             decoded,
@@ -760,7 +828,7 @@ impl ImageViewerApp {
                     );
                 } else {
                     self.upsert_directory_tree_strip_thumbnail_decoded(StripThumbnailCacheUpsert {
-                        index,
+                        path: &cache_path,
                         decoded,
                         stage,
                         logical_size,
@@ -792,8 +860,23 @@ impl ImageViewerApp {
             ctx,
             bypass_detach_queue,
         } = request;
-        let effective_job_key =
+        let mut effective_job_key =
             job_key.or_else(|| self.directory_tree_strip_upload_key_for_current_index(index));
+        let index = if let Some(key) = effective_job_key.as_mut() {
+            if !self.refresh_strip_job_key_index(key) {
+                self.clear_strip_preview_attempt_state_for_key(key);
+                return;
+            }
+            key.index
+        } else if index < self.image_files.len() {
+            index
+        } else {
+            return;
+        };
+        let cache_path = effective_job_key
+            .as_ref()
+            .map(|key| key.path.clone())
+            .unwrap_or_else(|| self.image_files[index].clone());
         match self.prepare_directory_tree_strip_thumbnail_cache(StripThumbnailCachePrepare {
             index,
             decoded: &decoded,
@@ -830,7 +913,7 @@ impl ImageViewerApp {
                     );
                 } else {
                     self.upsert_directory_tree_strip_thumbnail_decoded(StripThumbnailCacheUpsert {
-                        index,
+                        path: &cache_path,
                         decoded: &decoded,
                         stage,
                         logical_size,
@@ -909,22 +992,24 @@ mod tests {
     #[test]
     fn strip_pending_evict_old_token_does_not_clear_new_inflight_token() {
         let mut app = make_strip_test_app();
+        let path0 = PathBuf::from("image-0.png");
         app.directory_tree_strip_pending_gpu_initial
             .push_back(pending_upload(0, PreviewStage::Initial, 1, 0));
-        app.directory_tree_strip_generate_inflight.insert(0);
+        app.directory_tree_strip_generate_inflight
+            .insert(path0.clone());
         let Some(new_token) = NonZeroU64::new(2) else {
             panic!("test token must be non-zero");
         };
         app.directory_tree_strip_inflight_tokens
-            .insert(0, new_token);
+            .insert(path0.clone(), new_token);
 
         let (dropped, released_bytes) = app.evict_strip_pending_gpu_uploads(1, 0, None);
 
         assert_eq!(dropped, 1);
         assert!(released_bytes > 0);
-        assert!(app.directory_tree_strip_generate_inflight.contains(&0));
+        assert!(app.directory_tree_strip_generate_inflight.contains(&path0));
         assert_eq!(
-            app.directory_tree_strip_inflight_tokens.get(&0),
+            app.directory_tree_strip_inflight_tokens.get(&path0),
             Some(&new_token)
         );
     }
@@ -1051,7 +1136,7 @@ mod tests {
 
         assert!(app.directory_tree_strip_pending_gpu_initial.is_empty());
         assert!(app.directory_tree_strip_pending_gpu_refined.is_empty());
-        assert!(app.directory_tree_strip_generate_inflight.contains(&0));
+        assert!(app.strip_generate_inflight_contains_index(0));
     }
 
     #[test]
@@ -1085,7 +1170,7 @@ mod tests {
 
         assert_eq!(app.directory_tree_strip_pending_gpu_initial.len(), 1);
         assert!(app.directory_tree_strip_pending_gpu_refined.is_empty());
-        assert!(!app.directory_tree_strip_generate_inflight.contains(&0));
+        assert!(!app.strip_generate_inflight_contains_index(0));
         let upload = app
             .directory_tree_strip_pending_gpu_initial
             .front()
@@ -1097,6 +1182,11 @@ mod tests {
     #[test]
     fn strip_pending_byte_eviction_preserves_visible_and_drops_offscreen_first() {
         let mut app = make_strip_test_app();
+        app.image_files = vec![
+            PathBuf::from("image-0.png"),
+            PathBuf::from("image-1.png"),
+            PathBuf::from("image-2.png"),
+        ];
         app.directory_tree_strip_pending_gpu_initial
             .push_back(pending_upload(1, PreviewStage::Initial, 11, 0));
         app.directory_tree_strip_pending_gpu_initial
@@ -1119,6 +1209,11 @@ mod tests {
     #[test]
     fn strip_pending_byte_eviction_allows_visible_items_to_exceed_budget() {
         let mut app = make_strip_test_app();
+        app.image_files = vec![
+            PathBuf::from("image-0.png"),
+            PathBuf::from("image-1.png"),
+            PathBuf::from("image-2.png"),
+        ];
         app.directory_tree_strip_pending_gpu_initial
             .push_back(pending_upload(1, PreviewStage::Initial, 11, 0));
         app.directory_tree_strip_pending_gpu_initial
@@ -1141,22 +1236,105 @@ mod tests {
 
         app.flush_directory_tree_strip_pending_gpu_uploads(&ctx);
 
-        assert!(!app.directory_tree_strip_cache.contains(0));
+        assert!(!app.strip_cache_contains_index(0));
         assert!(app.directory_tree_strip_pending_gpu_initial.is_empty());
+    }
+
+    #[test]
+    fn strip_pending_flush_after_reorder_writes_cache_by_path_not_stale_index() {
+        // Column sort keeps image_list_generation; pending uploads still carry the
+        // submit-time index. Flush must upsert under key.path, not image_files[old_index].
+        let mut app = make_strip_test_app();
+        let path_a = PathBuf::from("image-a.png");
+        let path_b = PathBuf::from("image-b.png");
+        app.image_files = vec![path_a.clone(), path_b.clone()];
+        app.directory_tree.list.lock().image_list_generation = 1;
+
+        let mut upload = pending_upload(0, PreviewStage::Initial, 1, 0);
+        upload.key.path = path_a.clone();
+        upload.decoded = decoded_with_marker(0xAA);
+        upload.upload_bytes = ImageViewerApp::decoded_strip_upload_bytes(&upload.decoded);
+        app.directory_tree_strip_pending_gpu_initial
+            .push_back(upload);
+
+        // Reorder like a UI column sort: A moves from index 0 -> 1; generation unchanged.
+        app.image_files = vec![path_b.clone(), path_a.clone()];
+        app.cached_image_strip_path_index = None;
+        let ctx = egui::Context::default();
+
+        app.flush_directory_tree_strip_pending_gpu_uploads(&ctx);
+
+        assert!(
+            app.directory_tree_strip_cache.contains(&path_a),
+            "decoded pixels for A must land under path A after reorder"
+        );
+        assert!(
+            !app.directory_tree_strip_cache.contains(&path_b),
+            "stale submit index 0 must not write A's pixels into B's cache slot"
+        );
+        assert!(app.directory_tree_strip_pending_gpu_initial.is_empty());
+    }
+
+    #[test]
+    fn strip_pending_coalesce_matches_by_path_across_stale_indices() {
+        let mut app = make_strip_test_app();
+        let path_a = PathBuf::from("image-a.png");
+        app.image_files = vec![PathBuf::from("image-b.png"), path_a.clone()];
+        app.directory_tree.list.lock().image_list_generation = 1;
+
+        // Queued under stale index 0 while path A now lives at index 1.
+        let mut stale = pending_upload(0, PreviewStage::Initial, 1, 0);
+        stale.key.path = path_a.clone();
+        stale.decoded = decoded_with_marker(1);
+        stale.upload_bytes = ImageViewerApp::decoded_strip_upload_bytes(&stale.decoded);
+        app.directory_tree_strip_pending_gpu_initial
+            .push_back(stale);
+
+        app.queue_directory_tree_strip_gpu_upload(DirectoryTreeStripGpuUploadRequest {
+            index: 1,
+            decoded: decoded_with_marker(2),
+            stage: PreviewStage::Initial,
+            logical: Some((1, 1)),
+            buffer_tag: StripPreviewBufferTag::StripDecodedPixels,
+            strip_max_side_used: Some(1),
+            job_key: Some(DirectoryTreeStripJobKey {
+                index: 1,
+                path: path_a,
+                image_list_generation: 1,
+                job_token: DirectoryTreeStripJobToken::Worker(
+                    NonZeroU64::new(2).expect("non-zero"),
+                ),
+            }),
+        });
+
+        assert_eq!(app.directory_tree_strip_pending_gpu_initial.len(), 1);
+        let upload = app
+            .directory_tree_strip_pending_gpu_initial
+            .front()
+            .expect("path-coalesced upload");
+        assert_eq!(upload.key.index, 1);
+        assert_eq!(upload.decoded.rgba()[0], 2);
     }
 
     #[test]
     fn strip_pending_key_visibility_treats_empty_range_as_not_visible() {
         let key = strip_job_key(3);
+        let path_to_index = std::collections::HashMap::from([(key.path.clone(), 3usize)]);
 
-        assert!(!ImageViewerApp::strip_pending_key_is_visible(None, &key));
+        assert!(!ImageViewerApp::strip_pending_key_is_visible(
+            None,
+            &key,
+            &path_to_index
+        ));
         assert!(!ImageViewerApp::strip_pending_key_is_visible(
             Some((3, 3)),
-            &key
+            &key,
+            &path_to_index
         ));
         assert!(ImageViewerApp::strip_pending_key_is_visible(
             Some((2, 4)),
-            &key
+            &key,
+            &path_to_index
         ));
     }
 

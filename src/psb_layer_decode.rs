@@ -31,8 +31,9 @@ use crate::psb_layer_composite::{
 };
 use crate::psb_reader::{
     PSD_CHANNEL_ID_ALPHA, PSD_CHANNEL_ID_COLOR_MAX, PSD_CHANNEL_ID_REAL_USER_MASK,
-    PSD_CHANNEL_ID_USER_MASK, PSD_COLOR_MODE_CMYK, PSD_COLOR_MODE_GRAYSCALE, PSD_COLOR_MODE_RGB,
-    PSD_COMPRESSION_RAW, PSD_COMPRESSION_RLE, PSD_COMPRESSION_ZIP, PSD_COMPRESSION_ZIP_PREDICTION,
+    PSD_CHANNEL_ID_USER_MASK, PSD_COLOR_MODE_BITMAP, PSD_COLOR_MODE_CMYK, PSD_COLOR_MODE_DUOTONE,
+    PSD_COLOR_MODE_GRAYSCALE, PSD_COLOR_MODE_LAB, PSD_COLOR_MODE_RGB, PSD_COMPRESSION_RAW,
+    PSD_COMPRESSION_RLE, PSD_COMPRESSION_ZIP, PSD_COMPRESSION_ZIP_PREDICTION,
 };
 
 // -- Layer channel decode ---------------------------------------------
@@ -202,7 +203,10 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
     }
 
     // Gray fast path: broadcast G->RGB via SIMD, then fold opacity/mask into alpha.
-    if args.color_mode == PSD_COLOR_MODE_GRAYSCALE
+    // Also used for Bitmap (0) and Duotone (8) which are single-channel grayscale.
+    if (args.color_mode == PSD_COLOR_MODE_GRAYSCALE
+        || args.color_mode == PSD_COLOR_MODE_BITMAP
+        || args.color_mode == PSD_COLOR_MODE_DUOTONE)
         && let Some(gray) = args.color[0].as_deref()
         && gray.len() >= pixel_count
     {
@@ -273,9 +277,16 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
                 sample(&args.color[2], i),
                 sample(&args.color[3], i),
             ),
-            PSD_COLOR_MODE_GRAYSCALE => {
+            PSD_COLOR_MODE_GRAYSCALE | PSD_COLOR_MODE_BITMAP | PSD_COLOR_MODE_DUOTONE => {
                 let v = sample(&args.color[0], i);
                 (v, v, v)
+            }
+            PSD_COLOR_MODE_LAB => {
+                let l = sample(&args.color[0], i) as f32;
+                let a = sample(&args.color[1], i) as f32;
+                let b_val = sample(&args.color[2], i) as f32;
+                let (r8, g8, b8) = crate::psb_color_convert::lab_pixel(l, a, b_val);
+                (r8, g8, b8)
             }
             _ => (
                 sample(&args.color[0], i),
@@ -417,6 +428,9 @@ pub(crate) fn layer_planes_to_rgba_f32(
         };
 
         let base_alpha = alpha.and_then(|a| a.get(i)).copied().unwrap_or(1.0);
+        // PSD convention: apply layer opacity first, then user/vector mask
+        // (two separate multiplications; do not fuse). Matches Adobe's order
+        // so partial opacity + mask stays bit-identical to Photoshop.
         let mut a = base_alpha * opacity_f;
         if let Some(m) = mask {
             let mv = m.get(i).copied().unwrap_or(1.0);
@@ -476,14 +490,29 @@ pub(crate) fn decode_mask_channel_to_layer(
         return Ok(None);
     }
     let mask_pixels = decode_channel_image(slice, mask_w, mask_h, depth, is_psb, cancel)?;
-    Ok(Some(build_layer_sized_mask(
+    let mut layer_mask = build_layer_sized_mask(
         mask_info,
         &mask_pixels,
         layer_left,
         layer_top,
         layer_w,
         layer_h,
-    )))
+    );
+    // Apply mask density scaling and feather blur when present.
+    if mask_info.needs_post_process() {
+        if mask_info.density < 255 {
+            crate::psb_layer_composite::apply_mask_density(&mut layer_mask, mask_info.density);
+        }
+        if mask_info.feather > 0.0 {
+            crate::psb_layer_composite::apply_mask_feather(
+                &mut layer_mask,
+                layer_w,
+                layer_h,
+                mask_info.feather,
+            );
+        }
+    }
+    Ok(Some(layer_mask))
 }
 
 /// Blit a decoded mask (its own `mask_info` rect, which may differ from the
@@ -675,6 +704,10 @@ pub(crate) struct LayerDecodeParams<'a> {
     pub(crate) should_decode: bool,
     pub(crate) cancel: Option<&'a std::sync::atomic::AtomicBool>,
     pub(crate) cmyk_icc: &'a [u8],
+    /// Full document dimensions (not layer-local), needed for vector mask
+    /// fractional-to-pixel coordinate conversion.
+    pub(crate) image_width: u32,
+    pub(crate) image_height: u32,
 }
 
 /// Decode one layer's channels from `channel_data[*cursor..]`, advancing `*cursor`
@@ -809,6 +842,54 @@ pub(crate) fn decode_one_layer(
         }
     }
 
+    // If no raster mask was decoded from channel -2/-3 but a vector mask
+    // (vmsk/vsms) exists, rasterise it now.
+    if mask.is_none()
+        && let Some(vm) = &record.vector_mask
+    {
+        match crate::psb_vector_mask::rasterize_vector_mask(
+            vm,
+            record.left,
+            record.top,
+            width,
+            height,
+            params.image_width,
+            params.image_height,
+        ) {
+            Some(mut vm_mask) => {
+                // Apply vector-mask density/feather from the Layer Mask Data block.
+                if record.vector_mask_density < 255 {
+                    crate::psb_layer_composite::apply_mask_density(
+                        &mut vm_mask,
+                        record.vector_mask_density,
+                    );
+                }
+                if record.vector_mask_feather > 0.0 {
+                    crate::psb_layer_composite::apply_mask_feather(
+                        &mut vm_mask,
+                        width,
+                        height,
+                        record.vector_mask_feather,
+                    );
+                }
+                mask = Some(vm_mask);
+            }
+            None => {}
+        }
+    }
+
+    // Verify that the total declared channel data exactly fills the layer's
+    // data slice.  A mismatch (under- or over-run) means the channel-length
+    // table is inconsistent with the Layer Info section size, which may lead
+    // to channel-data cross-contamination.
+    if *cursor != channel_data.len() {
+        return Err(crate::loader::DecodeError::Message(
+            "PSD/PSB layer channel data total length mismatch: declared channel \
+             data sizes do not fill the available layer section"
+                .into(),
+        ));
+    }
+
     if !can_decode || layer_failed {
         return Ok(None);
     }
@@ -901,7 +982,7 @@ pub(crate) fn gpu_batch_eligible_decoded_bytes(
         if !layer_will_decode(record, visible_i) {
             continue;
         }
-        if !crate::psb_layer_blend_gpu::is_gpu_separable_blend(&record.blend) {
+        if !crate::psb_blend_gpu_shaders::is_gpu_separable_blend(&record.blend) {
             return None;
         }
         if record.clipping != 0 {
@@ -993,6 +1074,8 @@ pub(crate) fn decode_layers_for_composite(
                 should_decode,
                 cancel,
                 cmyk_icc: info.cmyk_icc.as_slice(),
+                image_width: info.width,
+                image_height: info.height,
             },
         )
     };
@@ -1074,7 +1157,7 @@ pub(crate) fn run_composite_pass_gpu_batch(
     // GPU dispatch must never depend solely on a prediction.
     let all_separable = layers
         .iter()
-        .all(|l| crate::psb_layer_blend_gpu::is_gpu_separable_blend(&l.blend));
+        .all(|l| crate::psb_blend_gpu_shaders::is_gpu_separable_blend(&l.blend));
     let has_clipping = crate::psb_layer_clip::any_layer_clipped(&clip_refs);
     let used_gpu = if !all_separable {
         false
@@ -1175,6 +1258,8 @@ pub(crate) fn run_composite_pass_cpu_streaming(
                 should_decode,
                 cancel,
                 cmyk_icc: info.cmyk_icc.as_slice(),
+                image_width: info.width,
+                image_height: info.height,
             },
         )
     };
@@ -1334,6 +1419,9 @@ mod tests {
             mask_size: 0,
             mask: None,
             real_mask: None,
+            vector_mask: None,
+            vector_mask_density: 255,
+            vector_mask_feather: 0.0,
             is_section_divider,
             section_type,
         }
@@ -1456,6 +1544,8 @@ mod tests {
                 should_decode: true,
                 cancel: None,
                 cmyk_icc: &[],
+                image_width: 100,
+                image_height: 100,
             },
         );
 
@@ -1484,6 +1574,8 @@ mod tests {
             default_color: 0,
             disabled: false,
             has_parameters_applied: false,
+            density: 255,
+            feather: 0.0,
         });
         record.channels = vec![LayerChannel {
             id: -2,
@@ -1505,6 +1597,8 @@ mod tests {
                 should_decode: true,
                 cancel: None,
                 cmyk_icc: &[],
+                image_width: 100,
+                image_height: 100,
             },
         );
 
@@ -1554,6 +1648,8 @@ mod tests {
                 should_decode: true,
                 cancel: None,
                 cmyk_icc: &[],
+                image_width: 100,
+                image_height: 100,
             },
         );
         assert!(
@@ -1652,6 +1748,8 @@ mod tests {
             default_color: 0,
             disabled: false,
             has_parameters_applied: false,
+            density: 255,
+            feather: 0.0,
         };
         let mask_pixels = vec![10, 20, 30, 40];
 
@@ -1678,6 +1776,8 @@ mod tests {
             default_color: 255,
             disabled: false,
             has_parameters_applied: false,
+            density: 255,
+            feather: 0.0,
         };
         let mask_pixels = vec![99];
 

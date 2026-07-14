@@ -1188,11 +1188,13 @@ impl ImageViewerApp {
         self.texture_cache.remove(idx);
         self.clear_installed_display_mode(idx);
         crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
-        self.directory_tree_strip_cache.remove_index(idx);
-        self.directory_tree_strip_tiled_attempted.remove(&idx);
-        self.directory_tree_strip_cold_attempted.remove(&idx);
-        self.directory_tree_strip_cold_awaiting_main_loader
-            .remove(&idx);
+        if let Some(path) = self.image_files.get(idx).cloned() {
+            self.directory_tree_strip_cache.remove_path(&path);
+            self.directory_tree_strip_tiled_attempted.remove(&path);
+            self.directory_tree_strip_cold_attempted.remove(&path);
+            self.directory_tree_strip_cold_awaiting_main_loader
+                .remove(&path);
+        }
         if self
             .tile_manager
             .as_ref()

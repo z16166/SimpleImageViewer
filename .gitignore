@@ -56,3 +56,7 @@ docs
 AGENTS.md
 !src/
 !libraries/
+
+# Reasonix agent config
+.reasonix/
+reasonix.toml

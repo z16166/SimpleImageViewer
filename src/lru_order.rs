@@ -211,9 +211,10 @@ where
     }
 }
 
+#[cfg(test)]
 impl LruOrder<usize> {
     /// Drop indices for which `keep` returns false, preserving relative order of survivors.
-    pub(crate) fn retain(&mut self, mut keep: impl FnMut(usize) -> bool) {
+    fn retain(&mut self, mut keep: impl FnMut(usize) -> bool) {
         let mut cur = self.head;
         while let Some(key) = cur {
             let next = self.nodes.get(&key).and_then(|links| links.next);
@@ -225,7 +226,7 @@ impl LruOrder<usize> {
     }
 
     /// Rebuild keys via `old_to_new`, dropping entries mapped to [`usize::MAX`].
-    pub(crate) fn partial_remap(&mut self, old_to_new: &[usize]) {
+    fn partial_remap(&mut self, old_to_new: &[usize]) {
         self.remap_ordered(|index| {
             if index >= old_to_new.len() {
                 return None;
@@ -236,7 +237,7 @@ impl LruOrder<usize> {
     }
 
     /// Rebuild keys via `old_to_new`, dropping entries mapped to [`usize::MAX`].
-    pub(crate) fn permute(&mut self, old_to_new: &[usize]) {
+    fn permute(&mut self, old_to_new: &[usize]) {
         self.remap_ordered(|index| {
             if index >= old_to_new.len() {
                 return None;

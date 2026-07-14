@@ -17,7 +17,9 @@
 //! Pure-geometry PSD/PSB P2.5 max-bounding-box reveal helpers.
 
 use crate::psb_layer_composite::{
-    LayerRecord, compute_effective_visibility, dimensions_within_limit,
+    LayerRecord, SECTION_TYPE_BOUNDING_DIVIDER, SECTION_TYPE_CLOSED_FOLDER,
+    SECTION_TYPE_LAYER_GROUP, SECTION_TYPE_OPEN_FOLDER, compute_effective_visibility,
+    dimensions_within_limit,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,18 +53,25 @@ pub fn rank_max_bbox_top_level(records: &[LayerRecord], limit: usize) -> Vec<Max
 
     for (index, record) in records.iter().enumerate() {
         let section = record.section_type.filter(|_| record.is_section_divider);
-        if section == Some(3) {
+        if section == Some(SECTION_TYPE_BOUNDING_DIVIDER) {
             open_group_starts.push(index);
             continue;
         }
-        if matches!(section, Some(1) | Some(2)) {
+        if matches!(
+            section,
+            Some(SECTION_TYPE_OPEN_FOLDER)
+                | Some(SECTION_TYPE_CLOSED_FOLDER)
+                | Some(SECTION_TYPE_LAYER_GROUP)
+        ) {
             let Some(start) = open_group_starts.pop() else {
                 continue;
             };
-            if open_group_starts.is_empty() {
-                let members: Vec<usize> = (start..=index).collect();
-                push_candidate(records, index, members, &mut ranked);
+            // Still inside a nested group — not a top-level close yet.
+            if !open_group_starts.is_empty() {
+                continue;
             }
+            let members: Vec<usize> = (start..=index).collect();
+            push_candidate(records, index, members, &mut ranked);
             continue;
         }
         if open_group_starts.is_empty() {
@@ -239,13 +248,27 @@ fn is_drawable_leaf(record: &LayerRecord) -> bool {
         && dimensions_within_limit(record.width(), record.height())
 }
 
+/// Suppress `p25_reveal_err` on `NoDrawableVisibleLayers` (the caller already
+/// tracks that flag separately and should prefer the more specific OSD stage).
+/// Shared by SDR and HDR main state machines.
+pub(crate) fn remember_p25_reveal_err(
+    slot: &mut Option<crate::loader::DecodeError>,
+    err: crate::loader::DecodeError,
+) {
+    if !err.is_no_drawable_visible_layers() {
+        *slot = Some(err);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         P25B_MAX_CANDIDATES, rank_max_bbox_top_level, select_max_bbox_top_level,
         visibility_force_open_all, visibility_force_open_subtree, visibility_respect_subtree,
     };
-    use crate::psb_layer_composite::LayerRecord;
+    use crate::psb_layer_composite::{
+        LayerRecord, SECTION_TYPE_BOUNDING_DIVIDER, SECTION_TYPE_OPEN_FOLDER,
+    };
 
     fn test_record(
         name: &str,
@@ -271,6 +294,9 @@ mod tests {
             mask_size: 0,
             mask: None,
             real_mask: None,
+            vector_mask: None,
+            vector_mask_density: 255,
+            vector_mask_feather: 0.0,
             is_section_divider: section_type.is_some(),
             section_type,
         }
@@ -281,11 +307,16 @@ mod tests {
     }
 
     fn folder(name: &str, hidden: bool) -> LayerRecord {
-        test_record(name, None, hidden, Some(1))
+        test_record(name, None, hidden, Some(SECTION_TYPE_OPEN_FOLDER))
     }
 
     fn divider() -> LayerRecord {
-        test_record("</Layer group>", None, false, Some(3))
+        test_record(
+            "</Layer group>",
+            None,
+            false,
+            Some(SECTION_TYPE_BOUNDING_DIVIDER),
+        )
     }
 
     #[test]

@@ -78,6 +78,31 @@ pub struct LayerChannel {
     pub data_len: u32,
 }
 
+/// Raw path records from a `vmsk`/`vsms` vector mask tagged block.
+///
+/// Each entry is one 26-byte path record (selector i16 + three 8-byte
+/// fixed-point sub-points). The decode step rasterises these into a mask
+/// bitmap (see `psb_layer_decode::rasterize_vector_mask`).
+pub(crate) const VMSK_RECORD_LEN: usize = 26;
+
+/// Vector mask origin clipping/relative flags, parsed from the vmsk Flags u32.
+///
+/// Bit 0: invert     — the opaque interior becomes transparent and vice versa.
+/// Bit 1: not-linked  — mask moves/scales independently of layer pixels.
+/// Bit 2: disable     — mask is present on disk but should not be applied.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VectorMaskFlags {
+    pub invert: bool,
+    pub not_linked: bool,
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct VectorMaskData {
+    pub records: Vec<[u8; VMSK_RECORD_LEN]>,
+    pub flags: VectorMaskFlags,
+}
+
 /// Parsed rectangle + flags from a layer's mask data block (channel id -2).
 /// The mask's own rect can differ from the layer's rect (smaller, larger, or
 /// offset), so it is decoded and blitted separately -- see `build_layer_sized_mask`.
@@ -95,6 +120,13 @@ pub struct LayerMaskInfo {
     /// set, extra parameter bytes sit between the user-mask header and any
     /// real-user-mask rect in the mask data block.
     pub has_parameters_applied: bool,
+    /// Mask density (0-255): 255 = full opacity (no change), 0 = fully
+    /// transparent (mask becomes all zeros).  Parsed from the density/feather
+    /// parameter prefix when `has_parameters_applied` is true.
+    pub density: u8,
+    /// Mask feather radius in pixels (0.0 = no feather).  Parsed from the
+    /// density/feather parameter prefix when `has_parameters_applied` is true.
+    pub feather: f64,
 }
 
 impl LayerMaskInfo {
@@ -115,6 +147,582 @@ impl LayerMaskInfo {
             0
         } else {
             self.bottom.saturating_sub(self.top) as u32
+        }
+    }
+
+    /// Returns `true` when the mask needs density scaling or feather blur.
+    pub fn needs_post_process(&self) -> bool {
+        self.density < 255 || self.feather > 0.0
+    }
+}
+
+/// Apply density scaling (0-255) to a layer-sized mask buffer.
+/// Density 255 = no change, density 0 = all zero (fully transparent).
+pub(crate) fn apply_mask_density(mask: &mut [u8], density: u8) {
+    if density >= 255 {
+        return;
+    }
+    if density == 0 {
+        mask.fill(0);
+        return;
+    }
+    // Scale each byte: mask[i] = mask[i] * density / 255
+    let d = u16::from(density);
+    for b in mask.iter_mut() {
+        *b = ((u16::from(*b) * d + 127) / 255) as u8;
+    }
+}
+
+/// Apply a separable Gaussian blur as a Photoshop-compatible mask feather.
+/// `feather` is the pixel radius; values ≤ 0.5 produce a no-op.
+///
+/// Sigma is derived as `feather / 2.0`; the kernel spans ±2.5σ (capturing
+/// >99 % of the Gaussian mass), clamped to the image edge.
+pub(crate) fn apply_mask_feather(mask: &mut [u8], w: u32, h: u32, feather: f64) {
+    if feather <= 0.5 || w < 2 || h < 2 {
+        return;
+    }
+    let sigma = feather / 2.0;
+    let radius = (sigma * 2.5).ceil() as u32;
+    if radius == 0 {
+        return;
+    }
+    let kernel_len = (radius * 2 + 1) as usize;
+
+    // Precompute Gaussian kernel weights and normalize.
+    let mut kernel_f64 = Vec::with_capacity(kernel_len);
+    let s2 = -(2.0 * sigma * sigma);
+    let mut total = 0.0f64;
+    for i in 0..kernel_len {
+        let x = (i as f64) - radius as f64;
+        let w = (x * x / s2).exp();
+        kernel_f64.push(w);
+        total += w;
+    }
+    let inv_total = 1.0 / total;
+    for w in &mut kernel_f64 {
+        *w *= inv_total;
+    }
+    let kernel_f32: Vec<f32> = kernel_f64.iter().map(|&v| v as f32).collect();
+
+    let wp = w as usize;
+    let hp = h as usize;
+    let mut tmp = vec![0.0f32; wp * hp];
+
+    feather_horizontal_pass(mask, &mut tmp, wp, hp, radius as usize, &kernel_f32);
+    feather_vertical_pass(&tmp, mask, wp, hp, radius as usize, &kernel_f32);
+}
+
+// ── SIMD-accelerated horizontal / vertical passes ────────────────────────
+
+#[cfg(target_arch = "x86_64")]
+fn feather_horizontal_pass(
+    mask: &[u8],
+    tmp: &mut [f32],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
+    #[target_feature(enable = "avx2")]
+    unsafe fn run_avx2(
+        mask: &[u8],
+        tmp: &mut [f32],
+        wp: usize,
+        hp: usize,
+        radius: usize,
+        kernel: &[f32],
+    ) {
+        unsafe {
+            feather_horizontal_avx2(mask, tmp, wp, hp, radius, kernel);
+        }
+    }
+    #[target_feature(enable = "sse4.1")]
+    unsafe fn run_sse41(
+        mask: &[u8],
+        tmp: &mut [f32],
+        wp: usize,
+        hp: usize,
+        radius: usize,
+        kernel: &[f32],
+    ) {
+        unsafe {
+            feather_horizontal_sse41(mask, tmp, wp, hp, radius, kernel);
+        }
+    }
+    if is_x86_feature_detected!("avx2") {
+        unsafe {
+            run_avx2(mask, tmp, wp, hp, radius, kernel);
+        }
+    } else if is_x86_feature_detected!("sse4.1") {
+        unsafe {
+            run_sse41(mask, tmp, wp, hp, radius, kernel);
+        }
+    } else {
+        feather_horizontal_scalar(mask, tmp, wp, hp, radius, kernel);
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn feather_horizontal_pass(
+    mask: &[u8],
+    tmp: &mut [f32],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                feather_horizontal_neon(mask, tmp, wp, hp, radius, kernel);
+            }
+            return;
+        }
+    }
+    feather_horizontal_scalar(mask, tmp, wp, hp, radius, kernel);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn feather_vertical_pass(
+    tmp: &[f32],
+    mask: &mut [u8],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
+    #[target_feature(enable = "avx2")]
+    unsafe fn run_avx2(
+        tmp: &[f32],
+        mask: &mut [u8],
+        wp: usize,
+        hp: usize,
+        radius: usize,
+        kernel: &[f32],
+    ) {
+        unsafe {
+            feather_vertical_avx2(tmp, mask, wp, hp, radius, kernel);
+        }
+    }
+    #[target_feature(enable = "sse4.1")]
+    unsafe fn run_sse41(
+        tmp: &[f32],
+        mask: &mut [u8],
+        wp: usize,
+        hp: usize,
+        radius: usize,
+        kernel: &[f32],
+    ) {
+        unsafe {
+            feather_vertical_sse41(tmp, mask, wp, hp, radius, kernel);
+        }
+    }
+    if is_x86_feature_detected!("avx2") {
+        unsafe {
+            run_avx2(tmp, mask, wp, hp, radius, kernel);
+        }
+    } else if is_x86_feature_detected!("sse4.1") {
+        unsafe {
+            run_sse41(tmp, mask, wp, hp, radius, kernel);
+        }
+    } else {
+        feather_vertical_scalar(tmp, mask, wp, hp, radius, kernel);
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn feather_vertical_pass(
+    tmp: &[f32],
+    mask: &mut [u8],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                feather_vertical_neon(tmp, mask, wp, hp, radius, kernel);
+            }
+            return;
+        }
+    }
+    feather_vertical_scalar(tmp, mask, wp, hp, radius, kernel);
+}
+
+// ── Scalar reference ────────────────────────────────────────────────────
+
+fn feather_horizontal_scalar(
+    mask: &[u8],
+    tmp: &mut [f32],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
+    for row in 0..hp {
+        let row_off = row * wp;
+        for col in 0..wp {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sx = (col as i64 + k as i64 - radius as i64).clamp(0, wp as i64 - 1) as usize;
+                accum += f32::from(mask[row_off + sx]) * kw;
+            }
+            tmp[row_off + col] = accum;
+        }
+    }
+}
+
+fn feather_vertical_scalar(
+    tmp: &[f32],
+    mask: &mut [u8],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
+    for col in 0..wp {
+        for row in 0..hp {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sy = (row as i64 + k as i64 - radius as i64).clamp(0, hp as i64 - 1) as usize;
+                accum += tmp[sy * wp + col] * kw;
+            }
+            let v = (accum + 0.5) as u32;
+            mask[row * wp + col] = v.min(255) as u8;
+        }
+    }
+}
+
+// ── SSE4.1 (4-wide) ────────────────────────────────────────────────────
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn feather_horizontal_sse41(
+    mask: &[u8],
+    tmp: &mut [f32],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
+    use core::arch::x86_64::*;
+    for row in 0..hp {
+        let row_off = row * wp;
+        // Scalar left edge (col < radius).
+        for col in 0..radius.min(wp) {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sx = (col as i64 + k as i64 - radius as i64).clamp(0, wp as i64 - 1) as usize;
+                accum += f32::from(mask[row_off + sx]) * kw;
+            }
+            tmp[row_off + col] = accum;
+        }
+        // SIMD interior: all 4 output pixels and all source taps are in-bounds.
+        let interior_end = wp.saturating_sub(radius + 3);
+        let mut col = radius;
+        while col + 4 <= interior_end {
+            let mut acc = _mm_setzero_ps();
+            for (k, &kw) in kernel.iter().enumerate() {
+                let src_base = row_off + col + k - radius;
+                let u32bits = u32::from_le_bytes([
+                    mask[src_base],
+                    mask[src_base + 1],
+                    mask[src_base + 2],
+                    mask[src_base + 3],
+                ]);
+                let u8vec = _mm_cvtsi32_si128(u32bits as i32);
+                let f32vals = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(u8vec));
+                let kw4 = _mm_set1_ps(kw);
+                acc = _mm_add_ps(acc, _mm_mul_ps(f32vals, kw4));
+            }
+            _mm_storeu_ps(tmp.as_mut_ptr().add(row_off + col), acc);
+            col += 4;
+        }
+        // Scalar right edge (col >= interior_end).
+        for col in col..wp {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sx = (col as i64 + k as i64 - radius as i64).clamp(0, wp as i64 - 1) as usize;
+                accum += f32::from(mask[row_off + sx]) * kw;
+            }
+            tmp[row_off + col] = accum;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn feather_vertical_sse41(
+    tmp: &[f32],
+    mask: &mut [u8],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
+    use core::arch::x86_64::*;
+    for row in 0..hp {
+        let use_simd = row >= radius && row + radius + 3 < hp;
+        let interior_end = if use_simd { wp.saturating_sub(3) } else { 0 };
+        let mut col = 0usize;
+        while col + 4 <= interior_end {
+            let mut acc = _mm_setzero_ps();
+            for (k, &kw) in kernel.iter().enumerate() {
+                let src_row = row + k - radius;
+                let f32vals = _mm_loadu_ps(tmp.as_ptr().add(src_row * wp + col));
+                let kw4 = _mm_set1_ps(kw);
+                acc = _mm_add_ps(acc, _mm_mul_ps(f32vals, kw4));
+            }
+            let rounded = _mm_add_ps(acc, _mm_set1_ps(0.5));
+            let i32vals = _mm_cvttps_epi32(rounded);
+            let clamped = _mm_min_epi32(i32vals, _mm_set1_epi32(255));
+            let u8vals = _mm_packus_epi16(
+                _mm_packs_epi32(clamped, _mm_setzero_si128()),
+                _mm_setzero_si128(),
+            );
+            let u32bits = _mm_cvtsi128_si32(u8vals) as u32;
+            let bytes = u32bits.to_le_bytes();
+            mask[row * wp + col] = bytes[0];
+            mask[row * wp + col + 1] = bytes[1];
+            mask[row * wp + col + 2] = bytes[2];
+            mask[row * wp + col + 3] = bytes[3];
+            col += 4;
+        }
+        for col in col..wp {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sy = (row as i64 + k as i64 - radius as i64).clamp(0, hp as i64 - 1) as usize;
+                accum += tmp[sy * wp + col] * kw;
+            }
+            let v = (accum + 0.5) as u32;
+            mask[row * wp + col] = v.min(255) as u8;
+        }
+    }
+}
+
+// ── AVX2 (8-wide) ──────────────────────────────────────────────────────
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn feather_horizontal_avx2(
+    mask: &[u8],
+    tmp: &mut [f32],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
+    use core::arch::x86_64::*;
+    for row in 0..hp {
+        let row_off = row * wp;
+        // Scalar left edge.
+        for col in 0..radius.min(wp) {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sx = (col as i64 + k as i64 - radius as i64).clamp(0, wp as i64 - 1) as usize;
+                accum += f32::from(mask[row_off + sx]) * kw;
+            }
+            tmp[row_off + col] = accum;
+        }
+        // SIMD interior: 8-wide.
+        let interior_end = wp.saturating_sub(radius + 7);
+        let mut col = radius;
+        while col + 8 <= interior_end {
+            let mut acc = _mm256_setzero_ps();
+            for (k, &kw) in kernel.iter().enumerate() {
+                let src_base = row_off + col + k - radius;
+                // Load 8 u8 values and convert to f32.
+                let u64bits = u64::from_le_bytes([
+                    mask[src_base],
+                    mask[src_base + 1],
+                    mask[src_base + 2],
+                    mask[src_base + 3],
+                    mask[src_base + 4],
+                    mask[src_base + 5],
+                    mask[src_base + 6],
+                    mask[src_base + 7],
+                ]);
+                // Zero-extend u8 to u16, then u16 to u32 via shuffle, then cvtdq2ps.
+                let u8vec = _mm_cvtsi64x_si128(u64bits as i64);
+                let u16vec = _mm_cvtepu8_epi16(u8vec);
+                let u32lo = _mm_cvtepu16_epi32(u16vec);
+                let u32hi = _mm_cvtepu16_epi32(_mm_srli_si128(u16vec, 8));
+                let f32lo = _mm_cvtepi32_ps(u32lo);
+                let f32hi = _mm_cvtepi32_ps(u32hi);
+                let f32vals = _mm256_set_m128(f32hi, f32lo);
+                let kw8 = _mm256_set1_ps(kw);
+                acc = _mm256_add_ps(acc, _mm256_mul_ps(f32vals, kw8));
+            }
+            _mm256_storeu_ps(tmp.as_mut_ptr().add(row_off + col), acc);
+            col += 8;
+        }
+        // Scalar remainder.
+        for col in col..wp {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sx = (col as i64 + k as i64 - radius as i64).clamp(0, wp as i64 - 1) as usize;
+                accum += f32::from(mask[row_off + sx]) * kw;
+            }
+            tmp[row_off + col] = accum;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn feather_vertical_avx2(
+    tmp: &[f32],
+    mask: &mut [u8],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
+    use core::arch::x86_64::*;
+    for row in 0..hp {
+        let use_simd = row >= radius && row + radius + 7 < hp;
+        let interior_end = if use_simd { wp.saturating_sub(7) } else { 0 };
+        let mut col = 0usize;
+        while col + 8 <= interior_end {
+            let mut acc = _mm256_setzero_ps();
+            for (k, &kw) in kernel.iter().enumerate() {
+                let src_row = row + k - radius;
+                let f32vals = _mm256_loadu_ps(tmp.as_ptr().add(src_row * wp + col));
+                let kw8 = _mm256_set1_ps(kw);
+                acc = _mm256_add_ps(acc, _mm256_mul_ps(f32vals, kw8));
+            }
+            let rounded = _mm256_add_ps(acc, _mm256_set1_ps(0.5));
+            let i32vals = _mm256_cvttps_epi32(rounded);
+            let clamped = _mm256_min_epi32(i32vals, _mm256_set1_epi32(255));
+            let lo16 = _mm_packs_epi32(
+                _mm256_castsi256_si128(clamped),
+                _mm256_extracti128_si256(clamped, 1),
+            );
+            let u8vals = _mm_packus_epi16(lo16, _mm_setzero_si128());
+            let u64bits = _mm_cvtsi128_si64(u8vals) as u64;
+            let bytes = u64bits.to_le_bytes();
+            for j in 0..8 {
+                mask[row * wp + col + j] = bytes[j];
+            }
+            col += 8;
+        }
+        for col in col..wp {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sy = (row as i64 + k as i64 - radius as i64).clamp(0, hp as i64 - 1) as usize;
+                accum += tmp[sy * wp + col] * kw;
+            }
+            let v = (accum + 0.5) as u32;
+            mask[row * wp + col] = v.min(255) as u8;
+        }
+    }
+}
+
+// ── NEON (4-wide) ──────────────────────────────────────────────────────
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn feather_horizontal_neon(
+    mask: &[u8],
+    tmp: &mut [f32],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
+    use core::arch::aarch64::*;
+    for row in 0..hp {
+        let row_off = row * wp;
+        // Scalar left edge.
+        for col in 0..radius.min(wp) {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sx = (col as i64 + k as i64 - radius as i64).clamp(0, wp as i64 - 1) as usize;
+                accum += f32::from(mask[row_off + sx]) * kw;
+            }
+            tmp[row_off + col] = accum;
+        }
+        // NEON interior: 4-wide.
+        let interior_end = wp.saturating_sub(radius + 3);
+        let mut col = radius;
+        while col + 4 <= interior_end {
+            let mut acc = vdupq_n_f32(0.0);
+            for (k, &kw) in kernel.iter().enumerate() {
+                let src_base = row_off + col + k - radius;
+                let u8vals = vld1_u8(mask.as_ptr().add(src_base));
+                // 4 u8 → u16 → u32 → f32 via single widening chain
+                let f32vals = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(u8vals))));
+                let kw4 = vdupq_n_f32(kw);
+                acc = vmlaq_f32(acc, f32vals, kw4);
+            }
+            vst1q_f32(tmp.as_mut_ptr().add(row_off + col), acc);
+            col += 4;
+        }
+        // Scalar right edge.
+        for col in col..wp {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sx = (col as i64 + k as i64 - radius as i64).clamp(0, wp as i64 - 1) as usize;
+                accum += f32::from(mask[row_off + sx]) * kw;
+            }
+            tmp[row_off + col] = accum;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn feather_vertical_neon(
+    tmp: &[f32],
+    mask: &mut [u8],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
+    use core::arch::aarch64::*;
+    for row in 0..hp {
+        let use_simd = row >= radius && row + radius + 3 < hp;
+        let interior_end = if use_simd { wp.saturating_sub(3) } else { 0 };
+        let mut col = 0usize;
+        while col + 4 <= interior_end {
+            let mut acc = vdupq_n_f32(0.0);
+            for (k, &kw) in kernel.iter().enumerate() {
+                let src_row = row + k - radius;
+                let f32vals = vld1q_f32(tmp.as_ptr().add(src_row * wp + col));
+                let kw4 = vdupq_n_f32(kw);
+                acc = vmlaq_f32(acc, f32vals, kw4);
+            }
+            let rounded = vaddq_f32(acc, vdupq_n_f32(0.5));
+            let i32vals = vcvtq_s32_f32(rounded);
+            let clamped = vminq_s32(i32vals, vdupq_n_s32(255));
+            let u8vals = vqmovun_s16(vcombine_s16(vmovn_s32(clamped), vdup_n_s16(0)));
+            let u32bits = vget_lane_u32(vreinterpret_u32_u8(u8vals), 0);
+            let bytes = u32bits.to_le_bytes();
+            mask[row * wp + col] = bytes[0];
+            mask[row * wp + col + 1] = bytes[1];
+            mask[row * wp + col + 2] = bytes[2];
+            mask[row * wp + col + 3] = bytes[3];
+            col += 4;
+        }
+        for col in col..wp {
+            let mut accum = 0.0f32;
+            for (k, &kw) in kernel.iter().enumerate() {
+                let sy = (row as i64 + k as i64 - radius as i64).clamp(0, hp as i64 - 1) as usize;
+                accum += tmp[sy * wp + col] * kw;
+            }
+            let v = (accum + 0.5) as u32;
+            mask[row * wp + col] = v.min(255) as u8;
         }
     }
 }
@@ -149,9 +757,23 @@ pub struct LayerRecord {
     /// Real user mask rect (channel id -3), when the mask data block includes
     /// a second rect after the user-mask header (typically `mask_size >= 36`).
     pub real_mask: Option<LayerMaskInfo>,
+    /// Vector mask path data from a `vmsk`/`vsms` tagged block.
+    pub vector_mask: Option<VectorMaskData>,
+    /// Vector mask density (0-255) from the Layer Mask Data parameters block.
+    pub vector_mask_density: u8,
+    /// Vector mask feather radius (pixels) from the Layer Mask Data parameters.
+    pub vector_mask_feather: f64,
     pub is_section_divider: bool,
     pub section_type: Option<u32>,
 }
+
+/// `lsct` section type constants for [`LayerRecord::section_type`].
+///
+/// See Adobe Photoshop PSD specification § `Layer section divider`.
+pub(crate) const SECTION_TYPE_OPEN_FOLDER: u32 = 1;
+pub(crate) const SECTION_TYPE_CLOSED_FOLDER: u32 = 2;
+pub(crate) const SECTION_TYPE_BOUNDING_DIVIDER: u32 = 3;
+pub(crate) const SECTION_TYPE_LAYER_GROUP: u32 = 4;
 
 impl LayerRecord {
     pub fn is_hidden(&self) -> bool {
@@ -450,6 +1072,9 @@ fn parse_layer_record(
         mask_size,
         mask,
         real_mask,
+        vector_mask,
+        vector_mask_density,
+        vector_mask_feather,
         is_section_divider,
         section_type,
         name,
@@ -477,6 +1102,9 @@ fn parse_layer_record(
         mask_size,
         mask,
         real_mask,
+        vector_mask,
+        vector_mask_density,
+        vector_mask_feather,
         is_section_divider,
         section_type,
     })
@@ -486,12 +1114,15 @@ struct ParsedLayerExtra {
     mask_size: u32,
     mask: Option<LayerMaskInfo>,
     real_mask: Option<LayerMaskInfo>,
+    vector_mask: Option<VectorMaskData>,
     is_section_divider: bool,
     section_type: Option<u32>,
     name: String,
     layer_id: Option<u32>,
     cmls_payload: Option<Vec<u8>>,
     fill_opacity: Option<u8>,
+    vector_mask_density: u8,
+    vector_mask_feather: f64,
 }
 
 fn parse_layer_extra(
@@ -504,6 +1135,9 @@ fn parse_layer_extra(
             mask_size: 0,
             mask: None,
             real_mask: None,
+            vector_mask: None,
+            vector_mask_density: 255,
+            vector_mask_feather: 0.0,
             is_section_divider: false,
             section_type: None,
             name: String::new(),
@@ -520,11 +1154,13 @@ fn parse_layer_extra(
     // color + flags (+ 2-byte pad). When >= 36 bytes, a real user mask rect
     // follows (after optional density/feather parameters when flags bit 4 is
     // set). Shorter blocks leave both masks as `None`.
-    let (mask, real_mask) = if mask_size >= LAYER_MASK_USER_HEADER_LEN {
-        parse_layer_mask_data(r, mask_end)?
-    } else {
-        (None, None)
-    };
+    // parse_layer_mask_data now returns vector density/feather too.
+    let (mask, real_mask, vector_mask_density, vector_mask_feather) =
+        if mask_size >= LAYER_MASK_USER_HEADER_LEN {
+            parse_layer_mask_data(r, mask_end)?
+        } else {
+            (None, None, 255, 0.0)
+        };
     r.set_position(mask_end);
 
     let blending_ranges_len = read_extra_u32(r, extra_end, "layer blending ranges length")?;
@@ -543,18 +1179,22 @@ fn parse_layer_extra(
         unicode_name,
         cmls_payload,
         fill_opacity,
+        vector_mask,
     } = scan_extra_tagged_blocks(r, extra_end, is_psb)?;
     let name = unicode_name.unwrap_or(pascal_name);
     Ok(ParsedLayerExtra {
         mask_size,
         mask,
         real_mask,
+        vector_mask,
         is_section_divider,
         section_type,
         name,
         layer_id,
         cmls_payload,
         fill_opacity,
+        vector_mask_density,
+        vector_mask_feather,
     })
 }
 
@@ -570,10 +1210,25 @@ const LAYER_MASK_FLAGS_HAS_PARAMETERS: u8 = 0x10;
 fn parse_layer_mask_data(
     r: &mut std::io::Cursor<&[u8]>,
     mask_end: u64,
-) -> Result<(Option<LayerMaskInfo>, Option<LayerMaskInfo>), String> {
-    let Some(mask) = parse_layer_mask_rect(r, mask_end)? else {
-        return Ok((None, None));
+) -> Result<(Option<LayerMaskInfo>, Option<LayerMaskInfo>, u8, f64), String> {
+    let Some(mut mask) = parse_layer_mask_rect(r, mask_end)? else {
+        return Ok((None, None, 255, 0.0));
     };
+
+    // Read density/feather parameters when present.
+    let mut vector_density = 255u8;
+    let mut vector_feather = 0.0f64;
+    if mask.has_parameters_applied {
+        let (ud, uf, vd, vf, ok) = read_mask_parameters_prefix(r, mask_end)?;
+        mask.density = ud;
+        mask.feather = uf;
+        vector_density = vd;
+        vector_feather = vf;
+        if !ok {
+            return Ok((Some(mask), None, vector_density, vector_feather));
+        }
+    }
+
     // Spec pads the user-mask header to 20 bytes (2 bytes after flags).
     const USER_MASK_PAD: u64 = 2;
     if checked_end(r.position(), USER_MASK_PAD, mask_end, "layer mask pad").is_ok() {
@@ -581,13 +1236,14 @@ fn parse_layer_mask_data(
     }
 
     let real_mask = parse_real_user_mask_rect(r, mask_end, &mask)?;
-    Ok((Some(mask), real_mask))
+    Ok((Some(mask), real_mask, vector_density, vector_feather))
 }
 
 /// When the mask data block is long enough, parse the real user mask rect
-/// used by channel id -3. Density/feather parameter bytes (flags bit 4) are
-/// skipped when present; if their layout cannot be trusted, real mask is
-/// left as `None` and channel -3 falls back to the user-mask rect.
+/// used by channel id -3. Density/feather parameters (flags bit 4) have
+/// already been consumed by `parse_layer_mask_data` before calling this
+/// function; if their layout was untrustworthy, the real mask is left as
+/// `None` and channel -3 falls back to the user-mask rect.
 ///
 /// Common on-disk sizes after the 20-byte user-mask header:
 /// - +16 bytes: real-mask rect only (total 36)
@@ -599,12 +1255,16 @@ fn parse_real_user_mask_rect(
 ) -> Result<Option<LayerMaskInfo>, String> {
     const REAL_MASK_RECT_LEN: u64 = 4 * 4;
     const REAL_MASK_FULL_LEN: u64 = REAL_MASK_RECT_LEN + 1 + 1;
-    if user_mask.has_parameters_applied && !skip_mask_parameters_prefix(r, mask_end)? {
-        return Ok(None);
-    }
+    // Density/feather parameters were already consumed by
+    // `parse_layer_mask_data` if `has_parameters_applied` was set.
     let remaining = mask_end.saturating_sub(r.position());
     if remaining >= REAL_MASK_FULL_LEN {
-        return parse_layer_mask_rect(r, mask_end);
+        let mut real = parse_layer_mask_rect(r, mask_end)?;
+        if let Some(ref mut r) = real {
+            r.density = user_mask.density;
+            r.feather = user_mask.feather;
+        }
+        return Ok(real);
     }
     if remaining < REAL_MASK_RECT_LEN {
         return Ok(None);
@@ -621,45 +1281,60 @@ fn parse_real_user_mask_rect(
         default_color: 0,
         disabled: false,
         has_parameters_applied: false,
+        density: user_mask.density,
+        feather: user_mask.feather,
     }))
 }
 
-/// Skip the density/feather parameter prefix that follows the user-mask
-/// header when flags bit 4 is set. Returns `true` when the cursor is left
-/// at a plausible real-mask header (or section end with nothing left).
-fn skip_mask_parameters_prefix(
+/// Read the density/feather parameter prefix that follows the user-mask
+/// header when flags bit 4 is set, and return the parsed values.
+/// Returns `(user_density, user_feather, vector_density, vector_feather, plausible)`.
+/// When a flag bit is absent, density defaults to 255 and feather to 0.0.
+fn read_mask_parameters_prefix(
     r: &mut std::io::Cursor<&[u8]>,
     mask_end: u64,
-) -> Result<bool, String> {
+) -> Result<(u8, f64, u8, f64, bool), String> {
     let remaining_before = mask_end.saturating_sub(r.position());
     if remaining_before < 1 {
-        return Ok(false);
+        return Ok((255, 0.0, 255, 0.0, false));
     }
     let mut present = [0u8; 1];
     r.read_exact(&mut present)
         .map_err(|e| format!("Read layer mask parameters flags: {e}"))?;
-    // Bit 0: user density, bit 1: user feather, bit 2: vector density,
-    // bit 3: vector feather.
-    let mut need = 0u64;
+    // Bit 0: user density (1 byte), bit 1: user feather (8 bytes),
+    // bit 2: vector density (1 byte), bit 3: vector feather (8 bytes).
+    let mut density: u8 = 255;
+    let mut feather: f64 = 0.0;
+    let mut vector_density: u8 = 255;
+    let mut vector_feather: f64 = 0.0;
+
     if present[0] & 0x01 != 0 {
-        need = need.saturating_add(1);
+        let mut buf = [0u8; 1];
+        r.read_exact(&mut buf)
+            .map_err(|e| format!("Read layer mask density: {e}"))?;
+        density = buf[0];
     }
     if present[0] & 0x02 != 0 {
-        need = need.saturating_add(8);
+        let mut buf = [0u8; 8];
+        r.read_exact(&mut buf)
+            .map_err(|e| format!("Read layer mask feather: {e}"))?;
+        feather = f64::from_be_bytes(buf).max(0.0);
     }
     if present[0] & 0x04 != 0 {
-        need = need.saturating_add(1);
+        let mut buf = [0u8; 1];
+        r.read_exact(&mut buf)
+            .map_err(|e| format!("Read vector mask density: {e}"))?;
+        vector_density = buf[0];
     }
     if present[0] & 0x08 != 0 {
-        need = need.saturating_add(8);
+        let mut buf = [0u8; 8];
+        r.read_exact(&mut buf)
+            .map_err(|e| format!("Read vector mask feather: {e}"))?;
+        vector_feather = f64::from_be_bytes(buf).max(0.0);
     }
-    if checked_end(r.position(), need, mask_end, "layer mask parameters").is_err() {
-        return Ok(false);
-    }
-    crate::psb_reader::seek_forward(r, need)?;
     let remaining = mask_end.saturating_sub(r.position());
-    // Real mask may be rect-only (16) or rect+color+flags (18).
-    Ok(remaining == 0 || remaining >= 4 * 4)
+    let ok = remaining == 0 || remaining >= 4 * 4;
+    Ok((density, feather, vector_density, vector_feather, ok))
 }
 
 /// Parse the rect + default color + flags fields at the start of a layer's
@@ -703,6 +1378,8 @@ fn parse_layer_mask_rect(
         default_color: default_color[0],
         disabled,
         has_parameters_applied,
+        density: 255,
+        feather: 0.0,
     }))
 }
 
@@ -717,6 +1394,7 @@ fn scan_extra_tagged_blocks(
     let mut unicode_name = None;
     let mut cmls_payload = None;
     let mut fill_opacity = None;
+    let mut vector_mask: Option<VectorMaskData> = None;
     let mut resyncs = 0u32;
     let extra_end_usize = usize::try_from(extra_end)
         .unwrap_or(usize::MAX)
@@ -808,9 +1486,48 @@ fn scan_extra_tagged_blocks(
         } else if &key == b"iOpa" && !payload.is_empty() {
             // Photoshop Fill Opacity (single byte). Present even when 255.
             fill_opacity = Some(payload[0]);
+        } else if (&key == b"vmsk" || &key == b"vsms") && payload.len() >= 30 {
+            let version_bytes: [u8; 4] = payload
+                .get(..4)
+                .and_then(|b| b.try_into().ok())
+                .unwrap_or([0u8; 4]);
+            let version = i32::from_be_bytes(version_bytes);
+            if version == 3 {
+                // Structure: Version(4) + Flags(4) + path records.
+                let flags_raw = u32::from_be_bytes(
+                    payload
+                        .get(4..8)
+                        .and_then(|b| b.try_into().ok())
+                        .unwrap_or([0u8; 4]),
+                );
+                let flags = VectorMaskFlags {
+                    invert: flags_raw & 0x01 != 0,
+                    not_linked: flags_raw & 0x02 != 0,
+                    disabled: flags_raw & 0x04 != 0,
+                };
+                let path_bytes = &payload[8..];
+                let mut records: Vec<[u8; VMSK_RECORD_LEN]> = Vec::new();
+                for chunk in path_bytes.chunks_exact(VMSK_RECORD_LEN) {
+                    let mut rec = [0u8; VMSK_RECORD_LEN];
+                    rec.copy_from_slice(chunk);
+                    let selector = i16::from_be_bytes([rec[0], rec[1]]);
+                    // 0xFFFF = end of path; stop collecting.
+                    if selector == -1 {
+                        break;
+                    }
+                    records.push(rec);
+                }
+                if !records.is_empty() {
+                    vector_mask = Some(VectorMaskData { records, flags });
+                }
+            } else {
+                // Adobe only writes version 3 (PS 6.0+); v2 or unknown
+                // versions from legacy files should not appear in practice.
+                log::warn!(
+                    "vmsk/vsms unexpected version {version} (expected 3), skipping vector mask"
+                );
+            }
         }
-        // Vector masks (`vmsk` / `vsms`) are intentionally not parsed yet;
-        // see docs/psd-psb-known-limits.md.
 
         let padded_end = data_end.saturating_add(data_len % 2);
         r.set_position(padded_end.min(extra_end));
@@ -823,6 +1540,7 @@ fn scan_extra_tagged_blocks(
         unicode_name,
         cmls_payload,
         fill_opacity,
+        vector_mask,
     })
 }
 
@@ -833,6 +1551,7 @@ struct TaggedBlockScan {
     unicode_name: Option<String>,
     cmls_payload: Option<Vec<u8>>,
     fill_opacity: Option<u8>,
+    vector_mask: Option<VectorMaskData>,
 }
 
 fn parse_luni_name(payload: &[u8]) -> Option<String> {
@@ -872,11 +1591,16 @@ fn parse_shmd_cmls_payload(payload: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
+/// Scan for the next `8BIM` / `8B64` block signature using memchr.
+///
+/// O(n) single-byte-find scan with quadratic-match rejection; replaces a
+/// prior O(n²) `bytes.windows(4).position()` that re-scanned rejected
+/// candidates from scratch on every false match.
 fn find_next_tagged_block_signature(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
-    let mut cursor = start.min(limit);
-    while cursor.saturating_add(4) <= limit {
-        let offset = memchr::memchr(PSD_BLEND_SIGNATURE[0], &bytes[cursor..limit])?;
-        let candidate = cursor + offset;
+    let start = start.min(limit);
+    let haystack = &bytes[start..limit];
+    for offset in memchr::Memchr::new(PSD_BLEND_SIGNATURE[0], haystack) {
+        let candidate = start + offset;
         if candidate.saturating_add(4) > limit {
             return None;
         }
@@ -884,7 +1608,6 @@ fn find_next_tagged_block_signature(bytes: &[u8], start: usize, limit: usize) ->
         if signature == PSD_BLEND_SIGNATURE || signature == PSB_BLOCK_SIGNATURE {
             return Some(candidate);
         }
-        cursor = candidate.saturating_add(1);
     }
     None
 }
@@ -1047,8 +1770,10 @@ pub(crate) fn compute_effective_visibility_with_flags(
 
         if layer.is_section_divider {
             match layer.section_type {
-                Some(1) | Some(2) => stack.push(current),
-                Some(3) if stack.len() > 1 => {
+                Some(SECTION_TYPE_OPEN_FOLDER)
+                | Some(SECTION_TYPE_CLOSED_FOLDER)
+                | Some(SECTION_TYPE_LAYER_GROUP) => stack.push(current),
+                Some(SECTION_TYPE_BOUNDING_DIVIDER) if stack.len() > 1 => {
                     stack.pop();
                 }
                 _ => {}
@@ -1343,6 +2068,7 @@ fn run_composite_pass(
 mod tests {
     use super::{
         CompositeTiming, LAYER_PREFETCH_WINDOW, LayerChannel, LayerInfo, LayerRecord,
+        SECTION_TYPE_BOUNDING_DIVIDER, SECTION_TYPE_CLOSED_FOLDER, SECTION_TYPE_OPEN_FOLDER,
         STRICT_LAYER_COMPOSITE_BLANK, StreamingPeakTracker, checked_layer_pixel_count,
         composite_layers_from_bytes_with_cancel, composite_layers_with_visibility_from_info,
         compute_effective_visibility, dimensions_within_limit, gpu_batch_eligible_decoded_bytes,
@@ -1408,6 +2134,9 @@ mod tests {
                 mask_size: 0,
                 mask: None,
                 real_mask: None,
+                vector_mask: None,
+                vector_mask_density: 255,
+                vector_mask_feather: 0.0,
                 is_section_divider: false,
                 section_type: None,
             });
@@ -1574,6 +2303,9 @@ mod tests {
             mask_size: 0,
             mask: None,
             real_mask: None,
+            vector_mask: None,
+            vector_mask_density: 255,
+            vector_mask_feather: 0.0,
             is_section_divider,
             section_type,
         }
@@ -1655,12 +2387,12 @@ mod tests {
         //   4: leaf, visible, inside outer group but outside inner group
         //   5: outer folder header (type 2), visible
         let records = vec![
-            mk_layer(false, true, Some(3)),
-            mk_layer(false, true, Some(3)),
+            mk_layer(false, true, Some(SECTION_TYPE_BOUNDING_DIVIDER)),
+            mk_layer(false, true, Some(SECTION_TYPE_BOUNDING_DIVIDER)),
             mk_layer(true, false, None),
-            mk_layer(false, true, Some(1)),
+            mk_layer(false, true, Some(SECTION_TYPE_OPEN_FOLDER)),
             mk_layer(false, false, None),
-            mk_layer(false, true, Some(2)),
+            mk_layer(false, true, Some(SECTION_TYPE_CLOSED_FOLDER)),
         ];
 
         let visible = compute_effective_visibility(&records);
@@ -1679,12 +2411,12 @@ mod tests {
         // Same nesting as above, but the *outer* group is hidden while every
         // leaf/inner-group flag is visible.
         let records = vec![
-            mk_layer(false, true, Some(3)),
-            mk_layer(false, true, Some(3)),
+            mk_layer(false, true, Some(SECTION_TYPE_BOUNDING_DIVIDER)),
+            mk_layer(false, true, Some(SECTION_TYPE_BOUNDING_DIVIDER)),
             mk_layer(false, false, None),
-            mk_layer(false, true, Some(1)),
+            mk_layer(false, true, Some(SECTION_TYPE_OPEN_FOLDER)),
             mk_layer(false, false, None),
-            mk_layer(true, true, Some(2)),
+            mk_layer(true, true, Some(SECTION_TYPE_CLOSED_FOLDER)),
         ];
 
         let strict = compute_effective_visibility(&records);
@@ -1740,7 +2472,10 @@ mod tests {
     fn compute_effective_visibility_unpaired_divider_does_not_panic() {
         // A lone bounding divider (type 3) with no matching folder header
         // above it must not underflow the visibility stack.
-        let records = vec![mk_layer(false, true, Some(3)), mk_layer(false, false, None)];
+        let records = vec![
+            mk_layer(false, true, Some(SECTION_TYPE_BOUNDING_DIVIDER)),
+            mk_layer(false, false, None),
+        ];
 
         let visible = compute_effective_visibility(&records);
 
@@ -1865,7 +2600,7 @@ mod tests {
         let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, true).unwrap();
 
         assert!(scan.is_section_divider);
-        assert_eq!(scan.section_type, Some(2));
+        assert_eq!(scan.section_type, Some(SECTION_TYPE_CLOSED_FOLDER));
     }
 
     #[test]
@@ -1895,6 +2630,8 @@ mod tests {
             default_color: 255,
             disabled: false,
             has_parameters_applied: false,
+            density: 255,
+            feather: 0.0,
         });
         assert!(strict_visibility_has_drawable_output(
             4,
@@ -1940,7 +2677,7 @@ mod tests {
         let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
 
         assert!(scan.is_section_divider);
-        assert_eq!(scan.section_type, Some(3));
+        assert_eq!(scan.section_type, Some(SECTION_TYPE_BOUNDING_DIVIDER));
     }
 
     #[test]
@@ -1996,7 +2733,7 @@ mod tests {
         let scan = scan_extra_tagged_blocks(&mut cursor, block.len() as u64, false).unwrap();
 
         assert!(scan.is_section_divider);
-        assert_eq!(scan.section_type, Some(1));
+        assert_eq!(scan.section_type, Some(SECTION_TYPE_OPEN_FOLDER));
     }
 
     #[test]
@@ -2332,12 +3069,144 @@ mod tests {
         zero_opacity.opacity = 0;
         assert!(!layer_will_decode(&zero_opacity, true));
 
-        let divider = mk_layer(false, true, Some(1));
+        let divider = mk_layer(false, true, Some(SECTION_TYPE_OPEN_FOLDER));
         assert!(!layer_will_decode(&divider, true));
 
         let mut oversized = mk_layer(false, false, None);
         oversized.right = crate::psb_reader::PSD_MAX_DIMENSION as i32 + 1;
         oversized.bottom = 1;
         assert!(!layer_will_decode(&oversized, true));
+    }
+
+    // ── apply_mask_density / apply_mask_feather ───────────────────────
+
+    #[test]
+    fn mask_density_255_is_noop() {
+        let mut m = vec![0u8, 128, 200, 255];
+        super::apply_mask_density(&mut m, 255);
+        assert_eq!(m, vec![0u8, 128, 200, 255]);
+    }
+
+    #[test]
+    fn mask_density_0_clears_all() {
+        let mut m = vec![0u8, 128, 200, 255];
+        super::apply_mask_density(&mut m, 0);
+        assert_eq!(m, vec![0u8, 0, 0, 0]);
+    }
+
+    #[test]
+    fn mask_density_half_scales() {
+        let mut m = vec![0u8, 128, 200, 255];
+        super::apply_mask_density(&mut m, 128);
+        assert_eq!(m, vec![0, 64, 100, 128]);
+    }
+
+    #[test]
+    fn mask_feather_noop_when_radius_small() {
+        let mut m = vec![0u8, 0, 255, 255].repeat(4);
+        super::apply_mask_feather(&mut m, 2, 2, 0.3);
+        assert_eq!(m, vec![0u8, 0, 255, 255].repeat(4));
+    }
+
+    #[test]
+    fn mask_feather_single_row() {
+        // 2 rows × 8 cols: feather blurs horizontally. Top row is the gradient.
+        let mut m = vec![
+            0u8, 0, 0, 255, 255, 255, 255, 255, // row 0: hard step
+            0, 0, 0, 255, 255, 255, 255, 255, // row 1: same
+        ];
+        let orig = m.clone();
+        super::apply_mask_feather(&mut m, 8, 2, 4.0);
+        assert_ne!(m, orig, "feather should change a 8×2 gradient");
+        assert!(m[0] > 0, "left edge should blur inward: got {}", m[0]);
+    }
+
+    #[test]
+    fn mask_feather_single_column() {
+        // 2 cols × 8 rows: feather blurs vertically.
+        let mut m = vec![
+            0u8, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        ];
+        let orig = m.clone();
+        super::apply_mask_feather(&mut m, 2, 8, 4.0);
+        assert_ne!(m, orig);
+        assert!(m[0] > 0, "top edge should blur downward: got {}", m[0]);
+    }
+
+    #[test]
+    fn mask_density_and_feather_compose() {
+        let mut m = vec![0u8, 128, 200, 255].repeat(8);
+        super::apply_mask_density(&mut m, 128);
+        assert_eq!(m[1], 64);
+        super::apply_mask_feather(&mut m, 4, 2, 2.0);
+        assert!(
+            m[0] != 0 || m[2] != 100,
+            "feather should change density-scaled values after density"
+        );
+    }
+
+    // ── Large-mask tests that exercise SIMD interior paths ────────────
+
+    #[test]
+    fn mask_feather_large_horizontal_hits_simd() {
+        // 32x8 mask with feather=8 => radius=ceil(2.5*4)=10.
+        // wp=32 >= 2*10+4=24 => SSE41/AVX2 interior is reachable.
+        let mut m = vec![0u8; 8 * 32];
+        for col in 16..32 {
+            m[col] = 255;
+        }
+        // Second row same
+        for col in 16..32 {
+            m[32 + col] = 255;
+        }
+        for row in 2..8 {
+            let off = row * 32;
+            for col in 16..32 {
+                m[off + col] = 255;
+            }
+        }
+        super::apply_mask_feather(&mut m, 32, 8, 8.0);
+        // Leftmost pixel should have blurred inward from the hard edge at col 16.
+        assert!(m[0] == 0, "far left should stay 0: got {}", m[0]);
+        // Pixels near the edge should be between 0 and 255.
+        assert!(
+            m[14] > 0 && m[14] < 255,
+            "edge pixel should be partial: got {}",
+            m[14]
+        );
+        assert!(
+            m[16] > 0 && m[16] < 255,
+            "edge pixel should be partial: got {}",
+            m[16]
+        );
+        // Center of the white area should be 255.
+        assert!(m[24] >= 250, "far right should be near 255: got {}", m[24]);
+    }
+
+    #[test]
+    fn mask_feather_large_vertical_hits_simd() {
+        // 8x32 mask: vertical test for SIMD path (row-major).
+        let mut m = vec![0u8; 32 * 8];
+        for row in 16..32 {
+            let off = row * 8;
+            for col in 0..8 {
+                m[off + col] = 255;
+            }
+        }
+        super::apply_mask_feather(&mut m, 8, 32, 8.0);
+        // Top rows should be 0, bottom rows 255, edge rows partial.
+        assert!(m[0] == 0, "top should stay 0: got {}", m[0]);
+        let edge_idx = 14 * 8;
+        assert!(
+            m[edge_idx] > 0 && m[edge_idx] < 255,
+            "vertical edge pixel should be partial: got {}",
+            m[edge_idx]
+        );
+        let far_idx = 28 * 8;
+        assert!(
+            m[far_idx] == 255,
+            "bottom should be 255: got {}",
+            m[far_idx]
+        );
     }
 }

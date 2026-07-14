@@ -1014,7 +1014,8 @@ fn install_image_error_persists_and_surfaces_when_not_current() {
     app.image_files = vec![PathBuf::from("a.psd"), PathBuf::from("b.psd")];
     app.current_index = 0;
     app.record_installed_display_mode(1, crate::loader::RenderShape::Tiled);
-    app.directory_tree_strip_tiled_attempted.insert(1);
+    app.directory_tree_strip_tiled_attempted
+        .insert(PathBuf::from("b.psd"));
 
     app.install_image_error(1, "hidden by the designer");
 
@@ -1028,7 +1029,10 @@ fn install_image_error_persists_and_surfaces_when_not_current() {
         "non-current fail must not clobber current UI"
     );
     assert_eq!(app.installed_display_mode(1), None);
-    assert!(!app.directory_tree_strip_tiled_attempted.contains(&1));
+    assert!(
+        !app.directory_tree_strip_tiled_attempted
+            .contains(&PathBuf::from("b.psd"))
+    );
 
     app.current_index = 1;
     app.surface_main_loader_failure_for_current();
@@ -4161,8 +4165,30 @@ fn picked_directory_with_tree_nav_replaces_transient_double_click_directory() {
     assert!(app.settings.transient_image_dir.is_none());
 }
 
+fn upsert_strip_cache_for_path(
+    app: &mut crate::app::ImageViewerApp,
+    ctx: &egui::Context,
+    path: &std::path::Path,
+    fill: u8,
+) {
+    let decoded = crate::loader::DecodedImage::new(8, 8, vec![fill; 8 * 8 * 4]);
+    app.directory_tree_strip_cache.upsert_from_decoded(
+        &decoded,
+        crate::app::directory_tree_strip_cache::StripDecodedUpsert {
+            stage: crate::loader::PreviewStage::Refined,
+            buffer_tag:
+                crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
+            logical_size: None,
+            path,
+            ctx,
+            strip_max_side: 128,
+            strip_max_side_used: Some(128),
+        },
+    );
+}
+
 #[test]
-fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
+fn reorder_directory_tree_strip_after_image_list_change_keeps_entries_by_path() {
     let ctx = egui::Context::default();
     let mut app = make_test_app();
     let paths: Vec<PathBuf> = (0..3)
@@ -4171,64 +4197,62 @@ fn reorder_directory_tree_strip_after_image_list_change_permutes_by_path() {
     let old_files = paths.clone();
     let new_files = vec![paths[2].clone(), paths[0].clone(), paths[1].clone()];
 
-    for (index, _) in paths.iter().enumerate() {
+    for (index, path) in paths.iter().enumerate() {
         let fill = ((index + 1) * 40) as u8;
-        let decoded = crate::loader::DecodedImage::new(8, 8, vec![fill; 8 * 8 * 4]);
-        app.directory_tree_strip_cache.upsert_from_decoded(
-            index,
-            &decoded,
-            crate::app::directory_tree_strip_cache::StripDecodedUpsert {
-                stage: crate::loader::PreviewStage::Refined,
-                buffer_tag:
-                    crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
-                logical_size: None,
-                path: &paths[index],
-                ctx: &ctx,
-                strip_max_side: 128,
-                strip_max_side_used: Some(128),
-            },
-        );
+        upsert_strip_cache_for_path(&mut app, &ctx, path, fill);
     }
 
+    // The reorder swaps positions but keeps every path present in the list.
+    app.image_files = new_files.clone();
     app.reorder_directory_tree_strip_after_image_list_change(&old_files, &new_files);
 
-    assert!(app.directory_tree_strip_cache.contains(0));
-    assert!(app.directory_tree_strip_cache.contains(1));
-    assert!(app.directory_tree_strip_cache.contains(2));
+    assert!(app.directory_tree_strip_cache.contains(&paths[0]));
+    assert!(app.directory_tree_strip_cache.contains(&paths[1]));
+    assert!(app.directory_tree_strip_cache.contains(&paths[2]));
 }
 
 #[test]
-fn reorder_directory_tree_strip_after_image_list_change_invalidates_on_count_change() {
+fn reorder_directory_tree_strip_after_image_list_change_drops_removed_paths() {
     let ctx = egui::Context::default();
     let mut app = make_test_app();
     let old_files: Vec<PathBuf> = (0..2)
         .map(|i| PathBuf::from(format!(r"C:\photos\img{i}.jpg")))
         .collect();
-    let new_files = vec![
-        old_files[0].clone(),
-        old_files[1].clone(),
-        PathBuf::from(r"C:\photos\img2.jpg"),
-    ];
+    // img0 leaves the list; img1 stays and a new img2 appears.
+    let new_files = vec![old_files[1].clone(), PathBuf::from(r"C:\photos\img2.jpg")];
 
-    let decoded = crate::loader::DecodedImage::new(8, 8, vec![128; 8 * 8 * 4]);
-    app.directory_tree_strip_cache.upsert_from_decoded(
-        0,
-        &decoded,
-        crate::app::directory_tree_strip_cache::StripDecodedUpsert {
-            stage: crate::loader::PreviewStage::Refined,
-            buffer_tag:
-                crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
-            logical_size: None,
-            path: &old_files[0],
-            ctx: &ctx,
-            strip_max_side: 128,
-            strip_max_side_used: Some(128),
-        },
-    );
+    upsert_strip_cache_for_path(&mut app, &ctx, &old_files[0], 128);
+    upsert_strip_cache_for_path(&mut app, &ctx, &old_files[1], 200);
 
+    app.image_files = new_files.clone();
     app.reorder_directory_tree_strip_after_image_list_change(&old_files, &new_files);
 
-    assert!(!app.directory_tree_strip_cache.contains(0));
+    // The removed path is pruned; the surviving path stays cached at its new index.
+    assert!(!app.directory_tree_strip_cache.contains(&old_files[0]));
+    assert!(app.directory_tree_strip_cache.contains(&old_files[1]));
+}
+
+#[test]
+fn strip_cold_attempted_follows_path_not_index_after_reorder() {
+    let mut app = make_test_app();
+    let path_a = PathBuf::from(r"C:\photos\a.jpg");
+    let path_b = PathBuf::from(r"C:\photos\b.jpg");
+
+    // Path A sits at index 0 and has already been cold-attempted.
+    app.image_files = vec![path_a.clone()];
+    app.directory_tree_strip_cold_attempted
+        .insert(path_a.clone());
+    assert!(app.strip_cold_attempted_contains_index(0));
+
+    // A reorder inserts a brand-new path B at index 0 and pushes A to index 1.
+    app.image_files = vec![path_b.clone(), path_a.clone()];
+
+    // The attempt still tracks path A, now at index 1; the fresh path B at the old index 0
+    // must still be eligible for a cold decode (never attempted).
+    assert!(app.directory_tree_strip_cold_attempted.contains(&path_a));
+    assert!(!app.directory_tree_strip_cold_attempted.contains(&path_b));
+    assert!(!app.strip_cold_attempted_contains_index(0));
+    assert!(app.strip_cold_attempted_contains_index(1));
 }
 
 fn write_strip_test_png(name: &str) -> PathBuf {
@@ -4289,16 +4313,20 @@ fn strip_static_full_decode_inflight_blocks_main_preload_in_ring() {
     app.set_current_index(0);
     app.settings.preload = true;
     app.prefetch_window_max_distance = 1;
-    app.directory_tree_strip_generate_inflight.insert(1);
-    app.directory_tree_strip_generate_inflight.insert(2);
-    assert!(app.strip_path_provides_reusable_static_full_decode(&app.image_files[1]));
-    if app.strip_path_provides_reusable_static_full_decode(&app.image_files[1]) {
+    let path1 = app.image_files[1].clone();
+    let path2 = app.image_files[2].clone();
+    app.directory_tree_strip_generate_inflight
+        .insert(path1.clone());
+    app.directory_tree_strip_generate_inflight
+        .insert(path2.clone());
+    assert!(app.strip_path_provides_reusable_static_full_decode(&path1));
+    if app.strip_path_provides_reusable_static_full_decode(&path1) {
         app.directory_tree_strip_static_full_decode_inflight
-            .insert(1);
+            .insert(path1.clone());
     }
-    if app.strip_path_provides_reusable_static_full_decode(&app.image_files[2]) {
+    if app.strip_path_provides_reusable_static_full_decode(&path2) {
         app.directory_tree_strip_static_full_decode_inflight
-            .insert(2);
+            .insert(path2.clone());
     }
 
     assert!(app.strip_full_decode_inflight_should_block_main_load(1));
@@ -4316,9 +4344,11 @@ fn strip_animated_png_inflight_does_not_block_main_preload() {
     app.set_current_index(0);
     app.settings.preload = true;
     app.prefetch_window_max_distance = 1;
-    app.directory_tree_strip_generate_inflight.insert(1);
+    let path1 = app.image_files[1].clone();
+    app.directory_tree_strip_generate_inflight
+        .insert(path1.clone());
 
-    assert!(!app.strip_path_provides_reusable_static_full_decode(&app.image_files[1]));
+    assert!(!app.strip_path_provides_reusable_static_full_decode(&path1));
     assert!(!app.strip_full_decode_inflight_should_block_main_load(1));
     let _ = std::fs::remove_file(animated);
 }
@@ -4337,8 +4367,11 @@ fn install_sdr_animated_image_queues_strip_preview_when_main_texture_oversized()
         crate::settings::DirectoryTreeListPreviewSize::Large;
     set_test_image_files(&mut app, &["input.jxl", "ref.apng"]);
     app.current_index = 0;
-    app.directory_tree_strip_cold_awaiting_main_loader.insert(0);
-    app.directory_tree_strip_cold_attempted.insert(0);
+    let path0 = app.image_files[0].clone();
+    app.directory_tree_strip_cold_awaiting_main_loader
+        .insert(path0.clone());
+    app.directory_tree_strip_cold_attempted
+        .insert(path0.clone());
 
     let w = 320u32;
     let h = 320u32;
@@ -4354,11 +4387,11 @@ fn install_sdr_animated_image_queues_strip_preview_when_main_texture_oversized()
         app.texture_cache.contains(0),
         "main-window SDR texture should be installed for current animated frame"
     );
-    let strip_work_queued = app.directory_tree_strip_cache.contains(0)
-        || app.directory_tree_strip_generate_inflight.contains(&0)
+    let strip_work_queued = app.directory_tree_strip_cache.contains(&path0)
+        || app.directory_tree_strip_generate_inflight.contains(&path0)
         || app
             .directory_tree_strip_pending_main_handoff
-            .contains_key(&0)
+            .contains_key(&path0)
         || app
             .directory_tree_strip_pending_gpu_initial
             .iter()
@@ -4417,32 +4450,36 @@ fn strip_cold_does_not_defer_static_full_decode_after_lru_when_main_texture_pres
         },
     );
     // Successful strip then GPU clear keeps logical_sizes (same as LRU eviction).
+    let target_path = app.image_files[1].clone();
     let strip_px = DecodedImage::new(144, 256, vec![90; 144 * 256 * 4]);
     app.directory_tree_strip_cache.upsert_from_decoded(
-        1,
         &strip_px,
         crate::app::directory_tree_strip_cache::StripDecodedUpsert {
             stage: crate::loader::PreviewStage::Refined,
             buffer_tag:
                 crate::app::directory_tree_strip_cache::StripPreviewBufferTag::StripDecodedPixels,
             logical_size: Some((w, h)),
-            path: &app.image_files[1],
+            path: &target_path,
             ctx: &ctx,
             strip_max_side: 256,
             strip_max_side_used: Some(256),
         },
     );
     app.directory_tree_strip_cache.clear_gpu_textures();
-    assert!(!app.directory_tree_strip_cache.contains(1));
+    assert!(!app.directory_tree_strip_cache.contains(&target_path));
     assert_eq!(
-        app.directory_tree_strip_cache.logical_sizes().get(&1),
+        app.directory_tree_strip_cache
+            .logical_sizes()
+            .get(&target_path),
         Some(&(w, h))
     );
-    app.directory_tree_strip_cold_attempted.insert(1);
-    app.directory_tree_strip_cold_awaiting_main_loader.insert(1);
+    app.directory_tree_strip_cold_attempted
+        .insert(target_path.clone());
+    app.directory_tree_strip_cold_awaiting_main_loader
+        .insert(target_path.clone());
 
     assert!(
-        app.strip_cold_static_full_decode_can_share_with_main(1, &app.image_files[1]),
+        app.strip_cold_static_full_decode_can_share_with_main(1, &target_path),
         "PNG shares static full decode with main loader"
     );
     assert!(
@@ -4453,7 +4490,7 @@ fn strip_cold_does_not_defer_static_full_decode_after_lru_when_main_texture_pres
     app.release_strip_cold_awaiting_main_loader_if_resolved(1);
     assert!(
         !app.directory_tree_strip_cold_awaiting_main_loader
-            .contains(&1),
+            .contains(&target_path),
         "awaiting_main_loader must clear when main SDR is ready but strip handoff is gone"
     );
     assert!(
@@ -4471,7 +4508,8 @@ fn strip_jpeg_fast_path_inflight_does_not_block_main_preload() {
     app.set_current_index(0);
     app.settings.preload = true;
     app.prefetch_window_max_distance = 1;
-    app.directory_tree_strip_generate_inflight.insert(1);
+    app.directory_tree_strip_generate_inflight
+        .insert(PathBuf::from("neighbor.jpg"));
 
     assert!(!app.strip_full_decode_inflight_should_block_main_load(1));
 }
@@ -4487,11 +4525,15 @@ fn strip_hdr_fallback_inflight_does_not_block_main_preload() {
     app.set_current_index(0);
     app.settings.preload = true;
     app.prefetch_window_max_distance = 2;
-    app.directory_tree_strip_generate_inflight.insert(1);
-    app.directory_tree_strip_generate_inflight.insert(2);
+    let path1 = app.image_files[1].clone();
+    let path2 = app.image_files[2].clone();
+    app.directory_tree_strip_generate_inflight
+        .insert(path1.clone());
+    app.directory_tree_strip_generate_inflight
+        .insert(path2.clone());
 
-    assert!(!app.strip_path_provides_reusable_static_full_decode(&app.image_files[1]));
-    assert!(!app.strip_path_provides_reusable_static_full_decode(&app.image_files[2]));
+    assert!(!app.strip_path_provides_reusable_static_full_decode(&path1));
+    assert!(!app.strip_path_provides_reusable_static_full_decode(&path2));
     assert!(!app.strip_full_decode_inflight_should_block_main_load(1));
     assert!(!app.strip_full_decode_inflight_should_block_main_load(2));
 }

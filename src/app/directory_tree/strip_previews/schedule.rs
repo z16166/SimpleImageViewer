@@ -307,7 +307,7 @@ impl ImageViewerApp {
         if !self
             .directory_tree_strip_cache
             .strip_texture_handle_would_replace(
-                index,
+                &self.image_files[index],
                 crate::loader::PreviewStage::Refined,
                 StripPreviewBufferTag::MainWindowTiledPreview,
                 Some(logical),
@@ -318,7 +318,6 @@ impl ImageViewerApp {
             return;
         }
         let _ = self.directory_tree_strip_cache.insert_from_texture_handle(
-            index,
             texture,
             crate::loader::PreviewStage::Refined,
             StripPreviewBufferTag::MainWindowTiledPreview,
@@ -378,7 +377,7 @@ impl ImageViewerApp {
         if !self
             .directory_tree_strip_cache
             .strip_texture_handle_would_replace(
-                index,
+                &self.image_files[index],
                 crate::loader::PreviewStage::Refined,
                 StripPreviewBufferTag::MainWindowTextureCacheSdr,
                 Some(logical),
@@ -389,7 +388,6 @@ impl ImageViewerApp {
             return;
         }
         if self.directory_tree_strip_cache.insert_from_texture_handle(
-            index,
             texture,
             crate::loader::PreviewStage::Refined,
             StripPreviewBufferTag::MainWindowTextureCacheSdr,
@@ -453,7 +451,10 @@ impl ImageViewerApp {
         let current = self.current_index.min(total.saturating_sub(1));
 
         if bootstrap_visible {
-            if let Some((start, end)) = visible_row_range {
+            // While a scan is still scrolling to the current image, the reported visible range is
+            // stale (it belongs to the previous list), so ignore it and force the top-of-list
+            // window. Otherwise prefer the fresh visible range before falling back to the cap.
+            if !scroll_to_current_pending && let Some((start, end)) = visible_row_range {
                 for index in start..end.min(total) {
                     if self.try_push_cold_strip_candidate(
                         index,
@@ -562,14 +563,15 @@ impl ImageViewerApp {
         };
         let defer_iso_baseline = self.strip_embedded_sdr_master_mode_active()
             && slow_primary_skip_reason == DirectoryTreeThumbSlowPrimarySkipReason::EmbeddedSdr;
-        self.directory_tree_strip_cold_attempted.insert(index);
+        self.directory_tree_strip_cold_attempted
+            .insert(path.clone());
         let Some((job_key, cancel)) = self.begin_directory_tree_strip_job(index) else {
-            self.directory_tree_strip_cold_attempted.remove(&index);
+            self.directory_tree_strip_cold_attempted.remove(&path);
             return;
         };
         if shares_main_static_full_decode {
             self.directory_tree_strip_static_full_decode_inflight
-                .insert(index);
+                .insert(path.clone());
         }
         let tx = self.directory_tree_strip_preview_tx.clone();
         let release_tx = self.directory_tree_strip_inflight_release_tx.clone();
@@ -736,8 +738,11 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn try_generate_directory_tree_strip_from_tiled_source(&mut self, index: usize) {
-        if self.directory_tree_strip_tiled_attempted.contains(&index)
-            || self.directory_tree_strip_generate_inflight.contains(&index)
+        let Some(path) = self.image_files.get(index).cloned() else {
+            return;
+        };
+        if self.directory_tree_strip_tiled_attempted.contains(&path)
+            || self.directory_tree_strip_generate_inflight.contains(&path)
         {
             return;
         }
@@ -745,18 +750,14 @@ impl ImageViewerApp {
             return;
         };
         let logical = (source.width(), source.height());
-        if self
-            .directory_tree_strip_cache
-            .is_valid_for_logical(index, logical)
-        {
+        if self.strip_cache_is_valid_for_logical_index(index, logical) {
             return;
         }
 
-        #[cfg(feature = "preload-debug")]
-        let path = self.image_files.get(index).cloned().unwrap_or_default();
-        self.directory_tree_strip_tiled_attempted.insert(index);
+        self.directory_tree_strip_tiled_attempted
+            .insert(path.clone());
         let Some((job_key, cancel)) = self.begin_directory_tree_strip_job(index) else {
-            self.directory_tree_strip_tiled_attempted.remove(&index);
+            self.directory_tree_strip_tiled_attempted.remove(&path);
             return;
         };
         let source = Arc::clone(&source);
@@ -917,7 +918,7 @@ impl ImageViewerApp {
             self.clear_strip_preview_attempt_state_for_key(key);
             return false;
         }
-        if self.directory_tree_strip_generate_inflight.contains(&index) {
+        if self.strip_generate_inflight_contains_index(index) {
             return false;
         }
         let Some((job_key, cancel)) = self.begin_directory_tree_strip_job(index) else {
@@ -1008,6 +1009,9 @@ impl ImageViewerApp {
         buffer_tag: StripPreviewBufferTag,
         source_job_key: Option<DirectoryTreeStripJobKey>,
     ) {
+        let Some(path) = self.image_files.get(index).cloned() else {
+            return;
+        };
         if self.schedule_strip_pending_gpu_resample(
             index,
             decoded.clone(),
@@ -1016,15 +1020,14 @@ impl ImageViewerApp {
             buffer_tag,
             source_job_key,
         ) {
-            self.directory_tree_strip_pending_main_handoff
-                .remove(&index);
+            self.directory_tree_strip_pending_main_handoff.remove(&path);
             return;
         }
-        if self.directory_tree_strip_cache.contains(index) {
+        if self.directory_tree_strip_cache.contains(&path) {
             return;
         }
         self.directory_tree_strip_pending_main_handoff.insert(
-            index,
+            path,
             super::DirectoryTreeStripPendingMainHandoff {
                 decoded,
                 stage,
@@ -1038,21 +1041,20 @@ impl ImageViewerApp {
         if self.directory_tree_strip_pending_main_handoff.is_empty() {
             return;
         }
-        let indices: Vec<usize> = self
+        let paths: Vec<std::path::PathBuf> = self
             .directory_tree_strip_pending_main_handoff
             .keys()
-            .copied()
+            .cloned()
             .collect();
-        for index in indices {
-            if self.directory_tree_strip_cache.contains(index) {
-                self.directory_tree_strip_pending_main_handoff
-                    .remove(&index);
+        for path in paths {
+            if self.directory_tree_strip_cache.contains(&path) {
+                self.directory_tree_strip_pending_main_handoff.remove(&path);
                 continue;
             }
-            let Some(handoff) = self
-                .directory_tree_strip_pending_main_handoff
-                .remove(&index)
-            else {
+            let Some(handoff) = self.directory_tree_strip_pending_main_handoff.remove(&path) else {
+                continue;
+            };
+            let Some(index) = self.strip_path_current_index(&path) else {
                 continue;
             };
             self.schedule_or_queue_strip_pending_gpu_resample(
@@ -1066,16 +1068,15 @@ impl ImageViewerApp {
         }
     }
 
-    pub(super) fn flush_strip_pending_main_handoff_for_index(&mut self, index: usize) {
-        if self.directory_tree_strip_cache.contains(index) {
-            self.directory_tree_strip_pending_main_handoff
-                .remove(&index);
+    pub(super) fn flush_strip_pending_main_handoff_for_path(&mut self, path: &std::path::Path) {
+        if self.directory_tree_strip_cache.contains(path) {
+            self.directory_tree_strip_pending_main_handoff.remove(path);
             return;
         }
-        let Some(handoff) = self
-            .directory_tree_strip_pending_main_handoff
-            .remove(&index)
-        else {
+        let Some(handoff) = self.directory_tree_strip_pending_main_handoff.remove(path) else {
+            return;
+        };
+        let Some(index) = self.strip_path_current_index(path) else {
             return;
         };
         self.schedule_or_queue_strip_pending_gpu_resample(

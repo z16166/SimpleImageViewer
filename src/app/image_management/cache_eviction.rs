@@ -70,9 +70,8 @@ impl ImageViewerApp {
 
     /// Relocate index-keyed caches when the image list order changes.
     ///
-    /// When `relocate_strip_cache` is `false`, strip thumbnails keep pre-refresh indices until
-    /// scan Done remaps by path (`reorder_directory_tree_strip_after_image_list_change`).
-    /// Pass `true` for ordinary index relocations outside F5 refresh.
+    /// The directory-tree strip cache is path-keyed and is never relocated here.
+    /// `relocate_strip_cache` is retained only for call-site compatibility.
     pub(super) fn relocate_index_keyed_cache(
         &mut self,
         from: usize,
@@ -84,9 +83,7 @@ impl ImageViewerApp {
         }
         // 1. Texture cache
         self.texture_cache.relocate(from, to);
-        if relocate_strip_cache {
-            self.directory_tree_strip_cache.relocate(from, to);
-        }
+        let _ = relocate_strip_cache;
 
         // 2. HDR caches
         if let Some(hdr) = self.hdr_image_cache.remove(&from) {
@@ -485,7 +482,8 @@ impl ImageViewerApp {
         self.loader.cancel_all();
 
         self.texture_cache.permute(old_to_new);
-        self.directory_tree_strip_cache.permute(old_to_new);
+        // The directory-tree strip cache and its attempt/inflight state are path-keyed, so a
+        // list reorder needs no index remap here; entries stay valid at their new positions.
         permute_usize_hashmap(&mut self.hdr_image_cache, old_to_new);
         permute_usize_hashmap(&mut self.hdr_tiled_source_cache, old_to_new);
         permute_usize_hashmap(&mut self.hdr_tiled_preview_cache, old_to_new);
@@ -571,23 +569,6 @@ impl ImageViewerApp {
             .write()
             .permute_images(old_to_new);
 
-        permute_usize_set(&mut self.directory_tree_strip_tiled_attempted, old_to_new);
-        permute_usize_set(&mut self.directory_tree_strip_cold_attempted, old_to_new);
-        permute_usize_set(
-            &mut self.directory_tree_strip_cold_awaiting_main_loader,
-            old_to_new,
-        );
-        permute_usize_set(&mut self.directory_tree_strip_generate_inflight, old_to_new);
-        permute_usize_hashmap(&mut self.directory_tree_strip_inflight_tokens, old_to_new);
-        permute_usize_hashmap(&mut self.directory_tree_strip_inflight_cancel, old_to_new);
-        permute_usize_hashmap(
-            &mut self.directory_tree_strip_pending_main_handoff,
-            old_to_new,
-        );
-        permute_usize_set(
-            &mut self.directory_tree_strip_static_full_decode_inflight,
-            old_to_new,
-        );
         self.invalidate_random_slideshow_order();
     }
 }

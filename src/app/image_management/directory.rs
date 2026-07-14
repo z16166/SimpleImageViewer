@@ -575,10 +575,13 @@ impl ImageViewerApp {
                                 self.reorder_directory_tree_strip_after_image_list_change(
                                     &old_files, &new_files,
                                 );
-                            } else if let Some(old_to_new) = sort_perm {
-                                self.permute_directory_tree_strip_after_image_list_reorder(
-                                    &old_to_new,
-                                );
+                            } else if sort_perm.is_some() {
+                                // Path-keyed strip state survives the reorder (no index remap).
+                                // `reconcile_*` also cancels workers for paths that left the list,
+                                // retains path-keyed attempt/inflight/pending-gpu state to the
+                                // live set, bumps `image_list_generation`, and clears the preview
+                                // snapshot for republish.
+                                self.reconcile_directory_tree_strip_state_for_current_list();
                             }
                         }
 
@@ -639,6 +642,12 @@ impl ImageViewerApp {
                             self.pending_preload_after_scan_last_attempt = None;
                             self.directory_tree_strip_bootstrap_after_scan = true;
                             self.directory_tree_strip_bootstrap_frames = 0;
+                            // Invalidate the stale path-index cache: on a non-refresh startup
+                            // scan `image_list_generation` was bumped before `image_files` was
+                            // populated, so the cache holds 0 entries while `image_files` is
+                            // fully populated. Clear it unconditionally so the next access
+                            // rebuilds from the current file list.
+                            self.cached_image_strip_path_index = None;
                         } else {
                             self.schedule_preloads(true);
                         }

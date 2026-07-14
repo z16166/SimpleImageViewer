@@ -189,7 +189,7 @@ impl ImageViewerApp {
         self.animation_cache.clear();
         self.prefetched_tiles.clear();
         self.clear_prefetch_resource_indices();
-        self.permute_directory_tree_strip_after_single_removal(original_index);
+        self.reconcile_directory_tree_strip_after_single_removal();
 
         if self.image_files.is_empty() {
             self.set_current_index(0);
@@ -373,7 +373,7 @@ impl ImageViewerApp {
         self.animation_cache.clear();
         self.prefetched_tiles.clear();
         self.clear_prefetch_resource_indices();
-        self.permute_directory_tree_strip_after_single_removal(original_index);
+        self.reconcile_directory_tree_strip_after_single_removal();
 
         if self.image_files.is_empty() {
             self.set_current_index(0);

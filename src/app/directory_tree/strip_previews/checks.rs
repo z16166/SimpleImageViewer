@@ -37,6 +37,136 @@ fn path_extension_matches_any(path: &std::path::Path, candidates: &[&str]) -> bo
 }
 
 impl ImageViewerApp {
+    // Transitional index -> path wrappers for the path-keyed strip cache and attempt state.
+    // Call sites still schedule by row index; these resolve the current path and forward to
+    // the authoritative path-keyed collections. A missing path (index out of range) reads as
+    // "not present", matching the previous out-of-range index behavior.
+    /// Build a fresh `path -> current row index` map (uncached). Prefer
+    /// [`Self::image_strip_path_index`] on hot paths so the generation-gated cache is reused.
+    pub(crate) fn strip_path_to_index_map(&self) -> HashMap<std::path::PathBuf, usize> {
+        self.image_files
+            .iter()
+            .enumerate()
+            .map(|(index, path)| (path.clone(), index))
+            .collect()
+    }
+
+    /// Generation-cached `path -> current row index` map. Rebuilds only when
+    /// `image_list_generation` changes (or the cache was cleared).
+    pub(crate) fn image_strip_path_index(&mut self) -> &HashMap<std::path::PathBuf, usize> {
+        #[cfg(feature = "preload-debug")]
+        let cached_gen = self.cached_image_strip_path_index.as_ref().map(|(g, _)| *g);
+        let generation = self.directory_tree.list.lock().image_list_generation;
+        let stale = self
+            .cached_image_strip_path_index
+            .as_ref()
+            .is_none_or(|(g, _)| *g != generation);
+        if stale {
+            let map = self.strip_path_to_index_map();
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug_throttled!(
+                &format!("strip:rebuild_idx:{}", generation),
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
+                "[PreloadDebug][StripIdx] rebuild cache: gen={} image_files_len={} map_len={} cached_gen={:?} stale={}",
+                generation,
+                self.image_files.len(),
+                map.len(),
+                cached_gen,
+                stale,
+            );
+            self.cached_image_strip_path_index = Some((generation, map));
+        }
+        &self
+            .cached_image_strip_path_index
+            .as_ref()
+            .expect("just inserted")
+            .1
+    }
+
+    /// Resolve `path` to its current row via [`Self::image_strip_path_index`].
+    #[inline]
+    pub(crate) fn strip_path_current_index(&mut self, path: &std::path::Path) -> Option<usize> {
+        self.image_strip_path_index().get(path).copied()
+    }
+
+    #[inline]
+    pub(crate) fn strip_cache_contains_index(&self, index: usize) -> bool {
+        self.image_files
+            .get(index)
+            .is_some_and(|path| self.directory_tree_strip_cache.contains(path))
+    }
+
+    #[inline]
+    pub(super) fn strip_cache_is_valid_for_logical_index(
+        &self,
+        index: usize,
+        logical: (u32, u32),
+    ) -> bool {
+        self.image_files.get(index).is_some_and(|path| {
+            self.directory_tree_strip_cache
+                .is_valid_for_logical(path, logical)
+        })
+    }
+
+    #[inline]
+    pub(super) fn strip_cache_cached_buffer_tag_index(
+        &self,
+        index: usize,
+    ) -> Option<StripPreviewBufferTag> {
+        self.image_files
+            .get(index)
+            .and_then(|path| self.directory_tree_strip_cache.cached_buffer_tag(path))
+    }
+
+    #[inline]
+    pub(super) fn strip_cache_cached_preview_stage_index(
+        &self,
+        index: usize,
+    ) -> Option<PreviewStage> {
+        self.image_files
+            .get(index)
+            .and_then(|path| self.directory_tree_strip_cache.cached_preview_stage(path))
+    }
+
+    #[inline]
+    pub(super) fn strip_cache_logical_sizes_contains_index(&self, index: usize) -> bool {
+        self.image_files.get(index).is_some_and(|path| {
+            self.directory_tree_strip_cache
+                .logical_sizes()
+                .contains_key(path)
+        })
+    }
+
+    #[inline]
+    pub(super) fn strip_generate_inflight_contains_index(&self, index: usize) -> bool {
+        self.image_files
+            .get(index)
+            .is_some_and(|path| self.directory_tree_strip_generate_inflight.contains(path))
+    }
+
+    #[inline]
+    pub(super) fn strip_static_full_decode_inflight_contains_index(&self, index: usize) -> bool {
+        self.image_files.get(index).is_some_and(|path| {
+            self.directory_tree_strip_static_full_decode_inflight
+                .contains(path)
+        })
+    }
+
+    #[inline]
+    pub(crate) fn strip_cold_attempted_contains_index(&self, index: usize) -> bool {
+        self.image_files
+            .get(index)
+            .is_some_and(|path| self.directory_tree_strip_cold_attempted.contains(path))
+    }
+
+    #[inline]
+    pub(super) fn strip_cold_awaiting_contains_index(&self, index: usize) -> bool {
+        self.image_files.get(index).is_some_and(|path| {
+            self.directory_tree_strip_cold_awaiting_main_loader
+                .contains(path)
+        })
+    }
+
     #[cfg(feature = "avif-native")]
     fn avif_strip_probe_cache_generation(&self) -> u64 {
         self.directory_tree.list.lock().image_list_generation
@@ -133,7 +263,7 @@ impl ImageViewerApp {
         }
         // Bootstrap first frame matches the main-window SDR fallback; once both strip cache and
         // texture cache are populated, allow texture_cache sync instead of blocking for remainder.
-        if self.directory_tree_strip_cache.contains(index) && self.texture_cache.contains(index) {
+        if self.strip_cache_contains_index(index) && self.texture_cache.contains(index) {
             return false;
         }
         true
@@ -190,7 +320,7 @@ impl ImageViewerApp {
         if index >= self.image_files.len() {
             return false;
         }
-        if self.directory_tree_strip_generate_inflight.contains(&index) {
+        if self.strip_generate_inflight_contains_index(index) {
             return false;
         }
         if !has_baseline {
@@ -200,10 +330,9 @@ impl ImageViewerApp {
             StripPreviewBufferTag::IsoGainMapBaseline,
             PreviewStage::Initial,
         );
-        if let Some(cached_tag) = self.directory_tree_strip_cache.cached_buffer_tag(index) {
+        if let Some(cached_tag) = self.strip_cache_cached_buffer_tag_index(index) {
             let cached_stage = self
-                .directory_tree_strip_cache
-                .cached_preview_stage(index)
+                .strip_cache_cached_preview_stage_index(index)
                 .unwrap_or(PreviewStage::Initial);
             let cached_rank = crate::app::directory_tree_strip_cache::strip_preview_quality_rank(
                 cached_tag,
@@ -211,9 +340,7 @@ impl ImageViewerApp {
             );
             if cached_rank >= target_rank {
                 if let Some(logical) = self.directory_tree_strip_logical_size(index) {
-                    return !self
-                        .directory_tree_strip_cache
-                        .is_valid_for_logical(index, logical);
+                    return !self.strip_cache_is_valid_for_logical_index(index, logical);
                 }
                 return false;
             }
@@ -253,7 +380,7 @@ impl ImageViewerApp {
         if index >= self.image_files.len() {
             return false;
         }
-        if self.directory_tree_strip_generate_inflight.contains(&index) {
+        if self.strip_generate_inflight_contains_index(index) {
             return false;
         }
         if !crate::loader::hdr_directory_tree_strip_cache_sync_viable(hdr) {
@@ -262,10 +389,10 @@ impl ImageViewerApp {
         if crate::loader::hdr_has_iso_deferred_gain_map(hdr) && hdr.rgba_f32.is_empty() {
             return false;
         }
-        let Some(cached_tag) = self.directory_tree_strip_cache.cached_buffer_tag(index) else {
+        let Some(cached_tag) = self.strip_cache_cached_buffer_tag_index(index) else {
             return true;
         };
-        let cached_stage = self.directory_tree_strip_cache.cached_preview_stage(index);
+        let cached_stage = self.strip_cache_cached_preview_stage_index(index);
         // ISO-deferred empty-float entries use the baseline sync path (early return above).
         let target_tag = crate::app::directory_tree_strip_cache::strip_buffer_tag_for_hdr_preview(
             !hdr.rgba_f32.is_empty(),
@@ -288,10 +415,7 @@ impl ImageViewerApp {
         let Some(logical) = self.directory_tree_strip_logical_size(index) else {
             return false;
         };
-        if self
-            .directory_tree_strip_cache
-            .is_valid_for_logical(index, logical)
-        {
+        if self.strip_cache_is_valid_for_logical_index(index, logical) {
             return false;
         }
         true
@@ -301,7 +425,9 @@ impl ImageViewerApp {
         if let Some((width, height)) = self.texture_cache.get_original_res(index) {
             return Some((width, height));
         }
-        if let Some(&(width, height)) = self.directory_tree_strip_cache.logical_sizes().get(&index)
+        if let Some(path) = self.image_files.get(index)
+            && let Some(&(width, height)) =
+                self.directory_tree_strip_cache.logical_sizes().get(path)
         {
             return Some((width, height));
         }
@@ -386,10 +512,8 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn strip_full_decode_inflight_should_block_main_load(&self, index: usize) -> bool {
-        self.directory_tree_strip_generate_inflight.contains(&index)
-            && self
-                .directory_tree_strip_static_full_decode_inflight
-                .contains(&index)
+        self.strip_generate_inflight_contains_index(index)
+            && self.strip_static_full_decode_inflight_contains_index(index)
             && self.strip_full_decode_share_window_contains(index)
     }
 
@@ -490,19 +614,20 @@ impl ImageViewerApp {
             {
                 return true;
             }
-            if self.directory_tree_strip_cache.contains(index)
-                || self
-                    .directory_tree_strip_pending_main_handoff
-                    .contains_key(&index)
-                || self.directory_tree_strip_generate_inflight.contains(&index)
-                || self
-                    .directory_tree_strip_pending_gpu_initial
-                    .iter()
-                    .any(|u| u.key.index == index)
-                || self
-                    .directory_tree_strip_pending_gpu_refined
-                    .iter()
-                    .any(|u| u.key.index == index)
+            if let Some(path) = self.image_files.get(index)
+                && (self.directory_tree_strip_cache.contains(path)
+                    || self
+                        .directory_tree_strip_pending_main_handoff
+                        .contains_key(path)
+                    || self.directory_tree_strip_generate_inflight.contains(path)
+                    || self
+                        .directory_tree_strip_pending_gpu_initial
+                        .iter()
+                        .any(|u| u.key.path == *path)
+                    || self
+                        .directory_tree_strip_pending_gpu_refined
+                        .iter()
+                        .any(|u| u.key.path == *path))
             {
                 return true;
             }
@@ -544,11 +669,9 @@ impl ImageViewerApp {
             return false;
         }
         if let Some(logical) = self.directory_tree_strip_logical_size(index) {
-            return !self
-                .directory_tree_strip_cache
-                .is_valid_for_logical(index, logical);
+            return !self.strip_cache_is_valid_for_logical_index(index, logical);
         }
-        !self.directory_tree_strip_cache.contains(index)
+        !self.strip_cache_contains_index(index)
     }
 
     /// True when `texture_cache` can be cloned into the strip cache without paint-thread
@@ -603,34 +726,25 @@ impl ImageViewerApp {
         {
             return false;
         }
-        if self
-            .directory_tree_strip_cold_awaiting_main_loader
-            .contains(&index)
-        {
+        if self.strip_cold_awaiting_contains_index(index) {
             return false;
         }
-        if self.directory_tree_strip_generate_inflight.contains(&index) {
+        if self.strip_generate_inflight_contains_index(index) {
             return false;
         }
-        if self.directory_tree_strip_cold_attempted.contains(&index) {
+        if self.strip_cold_attempted_contains_index(index) {
             // Successful decodes that were LRU-evicted keep logical_sizes; allow visible retry.
-            let evicted_after_success = !self.directory_tree_strip_cache.contains(index)
-                && self
-                    .directory_tree_strip_cache
-                    .logical_sizes()
-                    .contains_key(&index);
+            let evicted_after_success = !self.strip_cache_contains_index(index)
+                && self.strip_cache_logical_sizes_contains_index(index);
             if !evicted_after_success {
                 return false;
             }
         }
         if let Some(logical) = self.directory_tree_strip_logical_size(index) {
-            if self
-                .directory_tree_strip_cache
-                .is_valid_for_logical(index, logical)
-            {
+            if self.strip_cache_is_valid_for_logical_index(index, logical) {
                 return false;
             }
-        } else if self.directory_tree_strip_cache.contains(index) {
+        } else if self.strip_cache_contains_index(index) {
             return false;
         }
         true
@@ -651,7 +765,7 @@ impl ImageViewerApp {
             return Vec::new();
         }
         if bootstrap_visible {
-            if let Some((start, end)) = visible_row_range {
+            if !scroll_to_current_pending && let Some((start, end)) = visible_row_range {
                 return (start..end.min(total)).collect();
             }
             return (0..total.min(BOOTSTRAP_STRIP_VISIBLE_ROW_CAP)).collect();
