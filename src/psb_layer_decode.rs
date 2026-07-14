@@ -26,9 +26,8 @@
 //! lines.
 
 use crate::psb_layer_composite::{
-    CompositeTiming, LayerInfo, LayerMaskInfo, LayerRecord, VectorMaskData,
-    accumulate_decoded_layer_bytes, checked_layer_pixel_count, dimensions_within_limit,
-    layer_will_decode,
+    CompositeTiming, LayerInfo, LayerMaskInfo, LayerRecord, accumulate_decoded_layer_bytes,
+    checked_layer_pixel_count, dimensions_within_limit, layer_will_decode,
 };
 use crate::psb_reader::{
     PSD_CHANNEL_ID_ALPHA, PSD_CHANNEL_ID_COLOR_MAX, PSD_CHANNEL_ID_REAL_USER_MASK,
