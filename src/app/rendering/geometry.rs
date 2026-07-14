@@ -195,6 +195,46 @@ impl ImageViewerApp {
         PlaneLayout::from_dest(img_size, rotation, dest)
     }
 
+    /// Maximum zoom factor for FitToWindow mode: caps at the zoom where one
+    /// image pixel maps to one physical screen pixel (i.e. 100%). This prevents
+    /// the OSD from showing values above 100% when zoomed to maximum, which would
+    /// be counterintuitive — going beyond 1:1 pixel mapping offers no useful detail.
+    ///
+    /// The hard cap of [`ZOOM_FACTOR_MAX`](crate::constants::ZOOM_FACTOR_MAX) is
+    /// preserved as an absolute upper bound. For OriginalSize mode the full
+    /// range is always available.
+    pub(crate) fn max_zoom_factor_for_fit_mode(&self, ctx: &Context) -> f32 {
+        match self.settings.scale_mode {
+            ScaleMode::FitToWindow => {
+                if let Some(res) = self.current_image_res {
+                    let img_size = Vec2::new(res.0 as f32, res.1 as f32);
+                    let rotated_size =
+                        rotated_image_size_for_display(img_size, self.current_rotation);
+                    let screen_rect = self.canvas_rect_for_layout(ctx);
+                    if screen_rect.width() > 0.0 && screen_rect.height() > 0.0 {
+                        let fit_scale = (screen_rect.width() / rotated_size.x)
+                            .min(screen_rect.height() / rotated_size.y);
+                        if fit_scale > 0.0 && self.cached_pixels_per_point > 0.0 {
+                            let max_by_physical = 1.0 / (fit_scale * self.cached_pixels_per_point);
+                            // Never go below 1.0 (don't prevent zoom-in for small images)
+                            // Never exceed the established absolute cap
+                            max_by_physical
+                                .max(1.0)
+                                .min(crate::constants::ZOOM_FACTOR_MAX)
+                        } else {
+                            crate::constants::ZOOM_FACTOR_MAX
+                        }
+                    } else {
+                        crate::constants::ZOOM_FACTOR_MAX
+                    }
+                } else {
+                    crate::constants::ZOOM_FACTOR_MAX
+                }
+            }
+            ScaleMode::OriginalSize => crate::constants::ZOOM_FACTOR_MAX,
+        }
+    }
+
     /// Embedded side-panel bounds used to inset the main image canvas, if any.
     ///
     /// Returns `None` when navigation is hidden, detached, or auto-hidden so the canvas spans

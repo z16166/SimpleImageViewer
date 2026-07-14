@@ -123,11 +123,14 @@ impl ImageViewerApp {
             AppAction::First => self.navigate_first(ctx),
             AppAction::Last => self.navigate_last(ctx),
             AppAction::ZoomIn => {
-                self.set_zoom_factor((self.zoom_factor * 1.1).min(20.0));
+                let max_zf = self.max_zoom_factor_for_fit_mode(ctx);
+                self.set_zoom_factor((self.zoom_factor * 1.1).min(max_zf));
                 self.invalidate_tile_requests_for_view_change();
             }
             AppAction::ZoomOut => {
-                self.set_zoom_factor((self.zoom_factor / 1.1).max(0.05));
+                self.set_zoom_factor(
+                    (self.zoom_factor / 1.1).max(crate::constants::ZOOM_FACTOR_MIN),
+                );
                 self.invalidate_tile_requests_for_view_change();
             }
             AppAction::ZoomReset => {
