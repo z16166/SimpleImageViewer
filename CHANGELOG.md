@@ -9,14 +9,23 @@ All notable changes to this project will be documented in this file.
 - **More layer blend modes**: PSD/PSB files using Darken, Lighten, Color Burn, Linear Burn, Color Dodge, Vivid Light, Linear Light, Pin Light, Hard Mix, Difference, Exclusion, Subtract, Divide blend modes now composite correctly — no more black or missing areas in layered files that rely on these effects.
 - **Vector mask support**: Layer vector masks (vmsk/vsms) are now rasterised and applied, so layers with a path-based mask display their intended shape.
 - **Non-separable blend modes**: PSD layers using Hue, Saturation, Color, and Luminosity blend modes now composite properly.
+- **Lab colour accuracy**: Lab-mode PSD/PSB documents are converted to sRGB through the standard Lab→XYZ D50→linear sRGB (Bradford-adapted) pipeline, delivering accurate, predictable colours.
 
 ### Improved
-- **SDR 16/32-bit tone mapping**: High-bit-depth PSD/PSB documents render with more accurate colour and contrast, especially when the embedded ICC profile is sRGB or Display P3.
+- **SDR 16/32-bit tone mapping**: High-bit-depth PSD/PSB documents render with more accurate colour and contrast. Display-referred 16-bit content now passes directly through sRGB encoding without unnecessary Reinhard darkening, while scene-linear content (32-bit float) still uses proper tone mapping.
 - **HDR composite robustness**: When a layer's alpha or mask channel is corrupted, the layer is safely skipped instead of producing wrong pixels. This prevents colour shifts in damaged HDR files. (Colour-critical users should still verify important images against the original.)
 - **GPU cache rebuild on upgrade**: The GPU shader cache is automatically rebuilt after this update, preventing display glitches caused by stale cached shaders.
+- **Descriptor parsing robustness**: PSD files with complex resource data (Layer Comps, vector masks, object effects) now parse more reliably, with support for additional descriptor value types and stricter depth limits to prevent issues from malformed files.
+- **Tagged block scanning performance**: Scanning for layer and image-resource blocks uses a faster search algorithm, improving load times for PSDs with many tagged blocks.
 
 ### Fixed
 - **Path-based opener visibility**: The `open_*_source` functions that accept file paths are now restricted to test builds, removing dead code from release binaries.
+- **Damaged layer handling**: When a layer's alpha or mask channel is corrupted, the layer is safely skipped instead of producing wrong pixels in the composite.
+- **Channel data integrity**: Stricter validation catches PSD files where declared channel sizes do not match the actual layer data, preventing garbled composites from malformed files.
+
+## [3.0.1] - 2026-07-13
+
+### Fixed
 - **Navigation after double-click open**: With “keep gallery directory on double-click” enabled, opening the navigation panel and pressing F5 now stay on the folder you just opened, instead of jumping back to the previously saved gallery folder. Manually choosing another folder in the tree still saves that gallery location as before.
 
 ## [3.0.0] - 2026-07-13
