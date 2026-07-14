@@ -54,6 +54,8 @@ impl ImageViewerApp {
     /// Generation-cached `path -> current row index` map. Rebuilds only when
     /// `image_list_generation` changes (or the cache was cleared).
     pub(crate) fn image_strip_path_index(&mut self) -> &HashMap<std::path::PathBuf, usize> {
+        #[cfg(feature = "preload-debug")]
+        let cached_gen = self.cached_image_strip_path_index.as_ref().map(|(g, _)| *g);
         let generation = self.directory_tree.list.lock().image_list_generation;
         let stale = self
             .cached_image_strip_path_index
@@ -61,6 +63,17 @@ impl ImageViewerApp {
             .is_none_or(|(g, _)| *g != generation);
         if stale {
             let map = self.strip_path_to_index_map();
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug_throttled!(
+                &format!("strip:rebuild_idx:{}", generation),
+                crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
+                "[PreloadDebug][StripIdx] rebuild cache: gen={} image_files_len={} map_len={} cached_gen={:?} stale={}",
+                generation,
+                self.image_files.len(),
+                map.len(),
+                cached_gen,
+                stale,
+            );
             self.cached_image_strip_path_index = Some((generation, map));
         }
         &self

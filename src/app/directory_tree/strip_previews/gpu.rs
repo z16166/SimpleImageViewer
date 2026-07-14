@@ -305,6 +305,17 @@ impl ImageViewerApp {
             strip_max_side_used,
             job_key,
         } = request;
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug!(
+            "[PreloadDebug][StripGpu] queue_enter idx={} decoded={}x{} strip_max_side_used={:?} stage={:?} tag={:?} cache_count={}",
+            index,
+            decoded.width,
+            decoded.height,
+            strip_max_side_used,
+            stage,
+            buffer_tag,
+            self.directory_tree_strip_cache.textures().len(),
+        );
         if !self.directory_tree_list_previews_active() {
             return;
         }
@@ -479,6 +490,12 @@ impl ImageViewerApp {
     pub(crate) fn flush_directory_tree_strip_pending_gpu_uploads(&mut self, ctx: &egui::Context) {
         let pending_len = self.directory_tree_strip_pending_gpu_initial.len()
             + self.directory_tree_strip_pending_gpu_refined.len();
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug!(
+            "[PreloadDebug][StripGpu] flush enter pending_len={} cache_count={}",
+            pending_len,
+            self.directory_tree_strip_cache.textures().len(),
+        );
         if pending_len == 0 {
             return;
         }

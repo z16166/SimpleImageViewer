@@ -642,6 +642,12 @@ impl ImageViewerApp {
                             self.pending_preload_after_scan_last_attempt = None;
                             self.directory_tree_strip_bootstrap_after_scan = true;
                             self.directory_tree_strip_bootstrap_frames = 0;
+                            // Invalidate the stale path-index cache: on a non-refresh startup
+                            // scan `image_list_generation` was bumped before `image_files` was
+                            // populated, so the cache holds 0 entries while `image_files` is
+                            // fully populated. Clear it unconditionally so the next access
+                            // rebuilds from the current file list.
+                            self.cached_image_strip_path_index = None;
                         } else {
                             self.schedule_preloads(true);
                         }

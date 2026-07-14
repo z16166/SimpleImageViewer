@@ -218,12 +218,50 @@ impl ImageViewerApp {
         // Authoritative identity is the path; index is only a hint. Resolve the path's current
         // row so relocation after a reorder is transparent. If the path left the list, drop.
         let path = result.key.path.clone();
+        #[cfg(feature = "preload-debug")]
+        crate::preload_debug_throttled!(
+            &format!("strip:poll_success:{}:{:?}:{:?}", result.key.index, result.stage, result.buffer_tag),
+            crate::preload_debug::PRELOAD_DEBUG_THROTTLE_INTERVAL,
+            "[PreloadDebug][StripPoll] poll_successful idx={} path={} decoded={}x{} logical={}x{} stage={:?} tag={:?}",
+            result.key.index,
+            path.display(),
+            result.decoded.width,
+            result.decoded.height,
+            result.logical.0,
+            result.logical.1,
+            result.stage,
+            result.buffer_tag,
+        );
         let Some(&current_index) = self.image_strip_path_index().get(&path) else {
+            #[cfg(feature = "preload-debug")]
+            {
+                let at_same_idx = self.image_files.get(result.key.index).map(|p| p.display().to_string());
+                let list_gen = self.directory_tree.list.lock().image_list_generation;
+                crate::preload_debug!(
+                    "[PreloadDebug][StripPoll] poll_successful idx={} path={} early_return=path_not_found \
+                     list_gen={} image_files_len={} file_at_idx={:?}",
+                    result.key.index,
+                    path.display(),
+                    list_gen,
+                    self.image_files.len(),
+                    at_same_idx,
+                );
+            }
             self.finish_strip_preview_job_for_key(&result.key);
             return;
         };
         result.key.index = current_index;
         if Self::strip_preview_success_is_permanent_failure(&result) {
+            #[cfg(feature = "preload-debug")]
+            crate::preload_debug!(
+                "[PreloadDebug][StripPoll] poll_successful idx={} path={} early_return=permanent_failure decoded={}x{} logical={}x{}",
+                result.key.index,
+                path.display(),
+                result.decoded.width,
+                result.decoded.height,
+                result.logical.0,
+                result.logical.1,
+            );
             if result.decoded.width == 0 || result.decoded.height == 0 {
                 log::debug!(
                     "[DirectoryTree] Strip preview unavailable for index {} ({})",
@@ -314,10 +352,31 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn poll_directory_tree_strip_preview_results(&mut self, ctx: &egui::Context) {
+        #[cfg(feature = "preload-debug")]
+        let poll_start = std::time::Instant::now();
         while let Ok(release) = self.directory_tree_strip_inflight_release_rx.try_recv() {
             self.handle_strip_inflight_release(release);
         }
+        #[cfg(feature = "preload-debug")]
+        let mut poll_count = 0usize;
         while let Ok(result) = self.directory_tree_strip_preview_rx.try_recv() {
+            #[cfg(feature = "preload-debug")]
+            {
+                poll_count += 1;
+                let key = match &result {
+                    DirectoryTreeStripPreviewJobResult::Success(r) => &r.key,
+                    DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(f) => &f.key,
+                };
+                crate::preload_debug!(
+                    "[PreloadDebug][StripPoll] poll_recv idx={} path={} kind={}",
+                    key.index,
+                    key.path.display(),
+                    match &result {
+                        DirectoryTreeStripPreviewJobResult::Success(_) => "Success",
+                        DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(_) => "Deferred",
+                    },
+                );
+            }
             let key = match &result {
                 DirectoryTreeStripPreviewJobResult::Success(result) => &result.key,
                 DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(failure) => &failure.key,
@@ -352,6 +411,17 @@ impl ImageViewerApp {
                 DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(failure) => {
                     self.poll_deferred_strip_result(failure);
                 }
+            }
+        }
+        #[cfg(feature = "preload-debug")]
+        {
+            let elapsed = poll_start.elapsed();
+            if poll_count > 0 || elapsed.as_micros() > 100 {
+                crate::preload_debug!(
+                    "[PreloadDebug][StripPoll] poll done count={} elapsed={:?}",
+                    poll_count,
+                    elapsed,
+                );
             }
         }
     }
