@@ -26,9 +26,7 @@
 //!   6 = fill rule record, 8 = initial fill rule, -1 = end of path.
 //!
 
-use crate::psb_layer_composite::{
-    VMSK_RECORD_LEN, VectorMaskData, checked_layer_pixel_count,
-};
+use crate::psb_layer_composite::{VMSK_RECORD_LEN, VectorMaskData, checked_layer_pixel_count};
 
 // ---------------------------------------------------------------------------
 // Path record coordinate helpers
@@ -285,11 +283,7 @@ pub(crate) fn rasterize_vector_mask(
     let subpaths: Vec<Vec<(f64, f64)>> = parsed
         .subpaths
         .into_iter()
-        .map(|poly| {
-            poly.into_iter()
-                .map(|(x, y)| (x * iw, y * ih))
-                .collect()
-        })
+        .map(|poly| poly.into_iter().map(|(x, y)| (x * iw, y * ih)).collect())
         .collect();
 
     let keep_transparent = parsed.keep_transparent;
@@ -450,7 +444,10 @@ mod tests {
     }
 
     fn default_vm(records: Vec<[u8; VMSK_RECORD_LEN]>) -> VectorMaskData {
-        VectorMaskData { records, flags: VectorMaskFlags::default() }
+        VectorMaskData {
+            records,
+            flags: VectorMaskFlags::default(),
+        }
     }
 
     fn end_rec() -> [u8; VMSK_RECORD_LEN] {
@@ -480,7 +477,11 @@ mod tests {
         ]);
         let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150, 150, 150)
             .expect("closed triangle should produce a mask");
-        assert_eq!(mask[33 * 150 + 50], 255, "triangle interior should be opaque");
+        assert_eq!(
+            mask[33 * 150 + 50],
+            255,
+            "triangle interior should be opaque"
+        );
         assert_eq!(mask[149 * 150 + 149], 0, "bottom-right should be outside");
     }
 
@@ -556,7 +557,13 @@ mod tests {
             len_rec(PATH_SELECTOR_CLOSED_LEN, 3),
             pixel_knot(PATH_SELECTOR_CLOSED_KNOT_UNLINKED, 0.0, 0.0, doc_w, doc_h),
             pixel_knot(PATH_SELECTOR_CLOSED_KNOT_UNLINKED, 100.0, 0.0, doc_w, doc_h),
-            pixel_knot(PATH_SELECTOR_CLOSED_KNOT_UNLINKED, 50.0, 100.0, doc_w, doc_h),
+            pixel_knot(
+                PATH_SELECTOR_CLOSED_KNOT_UNLINKED,
+                50.0,
+                100.0,
+                doc_w,
+                doc_h,
+            ),
             end_rec(),
         ]);
         let mask = rasterize_vector_mask(&vm, 0, 0, 150, 150, 150, 150)
@@ -626,7 +633,10 @@ mod tests {
                 corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.25, 0.5),
                 end_rec(),
             ],
-            flags: VectorMaskFlags { disabled: true, ..Default::default() },
+            flags: VectorMaskFlags {
+                disabled: true,
+                ..Default::default()
+            },
         };
         assert!(rasterize_vector_mask(&vm, 0, 0, 100, 100, 100, 100).is_none());
     }
@@ -641,12 +651,21 @@ mod tests {
                 corner_knot(PATH_SELECTOR_CLOSED_KNOT_LINKED, 0.0, 0.1),
                 end_rec(),
             ],
-            flags: VectorMaskFlags { invert: true, ..Default::default() },
+            flags: VectorMaskFlags {
+                invert: true,
+                ..Default::default()
+            },
         };
         let mask = rasterize_vector_mask(&vm, 0, 0, 100, 100, 100, 100)
             .expect("invert flag mask should produce output");
-        assert_eq!(mask[0], 0, "inverted: triangle interior becomes transparent");
+        assert_eq!(
+            mask[0], 0,
+            "inverted: triangle interior becomes transparent"
+        );
         let br = 99 * 100 + 99;
-        assert_eq!(mask[br], 255, "inverted: area outside triangle becomes opaque");
+        assert_eq!(
+            mask[br], 255,
+            "inverted: area outside triangle becomes opaque"
+        );
     }
 }

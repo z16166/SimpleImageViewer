@@ -20,7 +20,6 @@
 //! review limit while allowing all separable PSD/PSB blend modes to execute
 //! on GPU when the canvas is large enough.
 
-
 /// WGSL `mode` uniform values (must match shader entry points).
 pub(crate) const BLEND_MODE_NORMAL: u32 = 0;
 pub(crate) const BLEND_MODE_SCREEN: u32 = 1;

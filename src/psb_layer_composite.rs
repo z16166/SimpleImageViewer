@@ -216,30 +216,68 @@ pub(crate) fn apply_mask_feather(mask: &mut [u8], w: u32, h: u32, feather: f64) 
 // ── SIMD-accelerated horizontal / vertical passes ────────────────────────
 
 #[cfg(target_arch = "x86_64")]
-fn feather_horizontal_pass(mask: &[u8], tmp: &mut [f32], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
+fn feather_horizontal_pass(
+    mask: &[u8],
+    tmp: &mut [f32],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
     #[target_feature(enable = "avx2")]
-    unsafe fn run_avx2(mask: &[u8], tmp: &mut [f32], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
-        unsafe { feather_horizontal_avx2(mask, tmp, wp, hp, radius, kernel); }
+    unsafe fn run_avx2(
+        mask: &[u8],
+        tmp: &mut [f32],
+        wp: usize,
+        hp: usize,
+        radius: usize,
+        kernel: &[f32],
+    ) {
+        unsafe {
+            feather_horizontal_avx2(mask, tmp, wp, hp, radius, kernel);
+        }
     }
     #[target_feature(enable = "sse4.1")]
-    unsafe fn run_sse41(mask: &[u8], tmp: &mut [f32], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
-        unsafe { feather_horizontal_sse41(mask, tmp, wp, hp, radius, kernel); }
+    unsafe fn run_sse41(
+        mask: &[u8],
+        tmp: &mut [f32],
+        wp: usize,
+        hp: usize,
+        radius: usize,
+        kernel: &[f32],
+    ) {
+        unsafe {
+            feather_horizontal_sse41(mask, tmp, wp, hp, radius, kernel);
+        }
     }
     if is_x86_feature_detected!("avx2") {
-        unsafe { run_avx2(mask, tmp, wp, hp, radius, kernel); }
+        unsafe {
+            run_avx2(mask, tmp, wp, hp, radius, kernel);
+        }
     } else if is_x86_feature_detected!("sse4.1") {
-        unsafe { run_sse41(mask, tmp, wp, hp, radius, kernel); }
+        unsafe {
+            run_sse41(mask, tmp, wp, hp, radius, kernel);
+        }
     } else {
         feather_horizontal_scalar(mask, tmp, wp, hp, radius, kernel);
     }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn feather_horizontal_pass(mask: &[u8], tmp: &mut [f32], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
+fn feather_horizontal_pass(
+    mask: &[u8],
+    tmp: &mut [f32],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
-            unsafe { feather_horizontal_neon(mask, tmp, wp, hp, radius, kernel); }
+            unsafe {
+                feather_horizontal_neon(mask, tmp, wp, hp, radius, kernel);
+            }
             return;
         }
     }
@@ -247,30 +285,68 @@ fn feather_horizontal_pass(mask: &[u8], tmp: &mut [f32], wp: usize, hp: usize, r
 }
 
 #[cfg(target_arch = "x86_64")]
-fn feather_vertical_pass(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
+fn feather_vertical_pass(
+    tmp: &[f32],
+    mask: &mut [u8],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
     #[target_feature(enable = "avx2")]
-    unsafe fn run_avx2(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
-        unsafe { feather_vertical_avx2(tmp, mask, wp, hp, radius, kernel); }
+    unsafe fn run_avx2(
+        tmp: &[f32],
+        mask: &mut [u8],
+        wp: usize,
+        hp: usize,
+        radius: usize,
+        kernel: &[f32],
+    ) {
+        unsafe {
+            feather_vertical_avx2(tmp, mask, wp, hp, radius, kernel);
+        }
     }
     #[target_feature(enable = "sse4.1")]
-    unsafe fn run_sse41(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
-        unsafe { feather_vertical_sse41(tmp, mask, wp, hp, radius, kernel); }
+    unsafe fn run_sse41(
+        tmp: &[f32],
+        mask: &mut [u8],
+        wp: usize,
+        hp: usize,
+        radius: usize,
+        kernel: &[f32],
+    ) {
+        unsafe {
+            feather_vertical_sse41(tmp, mask, wp, hp, radius, kernel);
+        }
     }
     if is_x86_feature_detected!("avx2") {
-        unsafe { run_avx2(tmp, mask, wp, hp, radius, kernel); }
+        unsafe {
+            run_avx2(tmp, mask, wp, hp, radius, kernel);
+        }
     } else if is_x86_feature_detected!("sse4.1") {
-        unsafe { run_sse41(tmp, mask, wp, hp, radius, kernel); }
+        unsafe {
+            run_sse41(tmp, mask, wp, hp, radius, kernel);
+        }
     } else {
         feather_vertical_scalar(tmp, mask, wp, hp, radius, kernel);
     }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn feather_vertical_pass(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
+fn feather_vertical_pass(
+    tmp: &[f32],
+    mask: &mut [u8],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
-            unsafe { feather_vertical_neon(tmp, mask, wp, hp, radius, kernel); }
+            unsafe {
+                feather_vertical_neon(tmp, mask, wp, hp, radius, kernel);
+            }
             return;
         }
     }
@@ -279,7 +355,14 @@ fn feather_vertical_pass(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, rad
 
 // ── Scalar reference ────────────────────────────────────────────────────
 
-fn feather_horizontal_scalar(mask: &[u8], tmp: &mut [f32], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
+fn feather_horizontal_scalar(
+    mask: &[u8],
+    tmp: &mut [f32],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
     for row in 0..hp {
         let row_off = row * wp;
         for col in 0..wp {
@@ -293,7 +376,14 @@ fn feather_horizontal_scalar(mask: &[u8], tmp: &mut [f32], wp: usize, hp: usize,
     }
 }
 
-fn feather_vertical_scalar(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
+fn feather_vertical_scalar(
+    tmp: &[f32],
+    mask: &mut [u8],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
     for col in 0..wp {
         for row in 0..hp {
             let mut accum = 0.0f32;
@@ -312,7 +402,14 @@ fn feather_vertical_scalar(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, r
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn feather_horizontal_sse41(mask: &[u8], tmp: &mut [f32], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
+unsafe fn feather_horizontal_sse41(
+    mask: &[u8],
+    tmp: &mut [f32],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
     use core::arch::x86_64::*;
     for row in 0..hp {
         let row_off = row * wp;
@@ -361,7 +458,14 @@ unsafe fn feather_horizontal_sse41(mask: &[u8], tmp: &mut [f32], wp: usize, hp: 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn feather_vertical_sse41(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
+unsafe fn feather_vertical_sse41(
+    tmp: &[f32],
+    mask: &mut [u8],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
     use core::arch::x86_64::*;
     for row in 0..hp {
         let use_simd = row >= radius && row + radius + 3 < hp;
@@ -378,7 +482,10 @@ unsafe fn feather_vertical_sse41(tmp: &[f32], mask: &mut [u8], wp: usize, hp: us
             let rounded = _mm_add_ps(acc, _mm_set1_ps(0.5));
             let i32vals = _mm_cvttps_epi32(rounded);
             let clamped = _mm_min_epi32(i32vals, _mm_set1_epi32(255));
-            let u8vals = _mm_packus_epi16(_mm_packs_epi32(clamped, _mm_setzero_si128()), _mm_setzero_si128());
+            let u8vals = _mm_packus_epi16(
+                _mm_packs_epi32(clamped, _mm_setzero_si128()),
+                _mm_setzero_si128(),
+            );
             let u32bits = _mm_cvtsi128_si32(u8vals) as u32;
             let bytes = u32bits.to_le_bytes();
             mask[row * wp + col] = bytes[0];
@@ -404,7 +511,14 @@ unsafe fn feather_vertical_sse41(tmp: &[f32], mask: &mut [u8], wp: usize, hp: us
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn feather_horizontal_avx2(mask: &[u8], tmp: &mut [f32], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
+unsafe fn feather_horizontal_avx2(
+    mask: &[u8],
+    tmp: &mut [f32],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
     use core::arch::x86_64::*;
     for row in 0..hp {
         let row_off = row * wp;
@@ -426,8 +540,14 @@ unsafe fn feather_horizontal_avx2(mask: &[u8], tmp: &mut [f32], wp: usize, hp: u
                 let src_base = row_off + col + k - radius;
                 // Load 8 u8 values and convert to f32.
                 let u64bits = u64::from_le_bytes([
-                    mask[src_base], mask[src_base + 1], mask[src_base + 2], mask[src_base + 3],
-                    mask[src_base + 4], mask[src_base + 5], mask[src_base + 6], mask[src_base + 7],
+                    mask[src_base],
+                    mask[src_base + 1],
+                    mask[src_base + 2],
+                    mask[src_base + 3],
+                    mask[src_base + 4],
+                    mask[src_base + 5],
+                    mask[src_base + 6],
+                    mask[src_base + 7],
                 ]);
                 // Zero-extend u8 to u16, then u16 to u32 via shuffle, then cvtdq2ps.
                 let u8vec = _mm_cvtsi64x_si128(u64bits as i64);
@@ -458,7 +578,14 @@ unsafe fn feather_horizontal_avx2(mask: &[u8], tmp: &mut [f32], wp: usize, hp: u
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn feather_vertical_avx2(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
+unsafe fn feather_vertical_avx2(
+    tmp: &[f32],
+    mask: &mut [u8],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
     use core::arch::x86_64::*;
     for row in 0..hp {
         let use_simd = row >= radius && row + radius + 7 < hp;
@@ -504,7 +631,14 @@ unsafe fn feather_vertical_avx2(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usi
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn feather_horizontal_neon(mask: &[u8], tmp: &mut [f32], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
+unsafe fn feather_horizontal_neon(
+    mask: &[u8],
+    tmp: &mut [f32],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
     use core::arch::aarch64::*;
     for row in 0..hp {
         let row_off = row * wp;
@@ -548,7 +682,14 @@ unsafe fn feather_horizontal_neon(mask: &[u8], tmp: &mut [f32], wp: usize, hp: u
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn feather_vertical_neon(tmp: &[f32], mask: &mut [u8], wp: usize, hp: usize, radius: usize, kernel: &[f32]) {
+unsafe fn feather_vertical_neon(
+    tmp: &[f32],
+    mask: &mut [u8],
+    wp: usize,
+    hp: usize,
+    radius: usize,
+    kernel: &[f32],
+) {
     use core::arch::aarch64::*;
     for row in 0..hp {
         let use_simd = row >= radius && row + radius + 3 < hp;
@@ -1014,11 +1155,12 @@ fn parse_layer_extra(
     // follows (after optional density/feather parameters when flags bit 4 is
     // set). Shorter blocks leave both masks as `None`.
     // parse_layer_mask_data now returns vector density/feather too.
-    let (mask, real_mask, vector_mask_density, vector_mask_feather) = if mask_size >= LAYER_MASK_USER_HEADER_LEN {
-        parse_layer_mask_data(r, mask_end)?
-    } else {
-        (None, None, 255, 0.0)
-    };
+    let (mask, real_mask, vector_mask_density, vector_mask_feather) =
+        if mask_size >= LAYER_MASK_USER_HEADER_LEN {
+            parse_layer_mask_data(r, mask_end)?
+        } else {
+            (None, None, 255, 0.0)
+        };
     r.set_position(mask_end);
 
     let blending_ranges_len = read_extra_u32(r, extra_end, "layer blending ranges length")?;
@@ -1353,7 +1495,10 @@ fn scan_extra_tagged_blocks(
             if version == 3 {
                 // Structure: Version(4) + Flags(4) + path records.
                 let flags_raw = u32::from_be_bytes(
-                    payload.get(4..8).and_then(|b| b.try_into().ok()).unwrap_or([0u8; 4]),
+                    payload
+                        .get(4..8)
+                        .and_then(|b| b.try_into().ok())
+                        .unwrap_or([0u8; 4]),
                 );
                 let flags = VectorMaskFlags {
                     invert: flags_raw & 0x01 != 0,
@@ -1990,8 +2135,8 @@ mod tests {
                 mask: None,
                 real_mask: None,
                 vector_mask: None,
-            vector_mask_density: 255,
-            vector_mask_feather: 0.0,
+                vector_mask_density: 255,
+                vector_mask_feather: 0.0,
                 is_section_divider: false,
                 section_type: None,
             });
@@ -2968,7 +3113,7 @@ mod tests {
         // 2 rows × 8 cols: feather blurs horizontally. Top row is the gradient.
         let mut m = vec![
             0u8, 0, 0, 255, 255, 255, 255, 255, // row 0: hard step
-            0, 0, 0, 255, 255, 255, 255, 255,    // row 1: same
+            0, 0, 0, 255, 255, 255, 255, 255, // row 1: same
         ];
         let orig = m.clone();
         super::apply_mask_feather(&mut m, 8, 2, 4.0);
@@ -2980,14 +3125,7 @@ mod tests {
     fn mask_feather_single_column() {
         // 2 cols × 8 rows: feather blurs vertically.
         let mut m = vec![
-            0u8, 0,
-            0, 0,
-            0, 0,
-            255, 255,
-            255, 255,
-            255, 255,
-            255, 255,
-            255, 255,
+            0u8, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
         ];
         let orig = m.clone();
         super::apply_mask_feather(&mut m, 2, 8, 4.0);
@@ -3014,19 +3152,33 @@ mod tests {
         // 32x8 mask with feather=8 => radius=ceil(2.5*4)=10.
         // wp=32 >= 2*10+4=24 => SSE41/AVX2 interior is reachable.
         let mut m = vec![0u8; 8 * 32];
-        for col in 16..32 { m[col] = 255; }
+        for col in 16..32 {
+            m[col] = 255;
+        }
         // Second row same
-        for col in 16..32 { m[32 + col] = 255; }
+        for col in 16..32 {
+            m[32 + col] = 255;
+        }
         for row in 2..8 {
             let off = row * 32;
-            for col in 16..32 { m[off + col] = 255; }
+            for col in 16..32 {
+                m[off + col] = 255;
+            }
         }
         super::apply_mask_feather(&mut m, 32, 8, 8.0);
         // Leftmost pixel should have blurred inward from the hard edge at col 16.
         assert!(m[0] == 0, "far left should stay 0: got {}", m[0]);
         // Pixels near the edge should be between 0 and 255.
-        assert!(m[14] > 0 && m[14] < 255, "edge pixel should be partial: got {}", m[14]);
-        assert!(m[16] > 0 && m[16] < 255, "edge pixel should be partial: got {}", m[16]);
+        assert!(
+            m[14] > 0 && m[14] < 255,
+            "edge pixel should be partial: got {}",
+            m[14]
+        );
+        assert!(
+            m[16] > 0 && m[16] < 255,
+            "edge pixel should be partial: got {}",
+            m[16]
+        );
         // Center of the white area should be 255.
         assert!(m[24] >= 250, "far right should be near 255: got {}", m[24]);
     }
@@ -3037,16 +3189,24 @@ mod tests {
         let mut m = vec![0u8; 32 * 8];
         for row in 16..32 {
             let off = row * 8;
-            for col in 0..8 { m[off + col] = 255; }
+            for col in 0..8 {
+                m[off + col] = 255;
+            }
         }
         super::apply_mask_feather(&mut m, 8, 32, 8.0);
         // Top rows should be 0, bottom rows 255, edge rows partial.
         assert!(m[0] == 0, "top should stay 0: got {}", m[0]);
         let edge_idx = 14 * 8;
-        assert!(m[edge_idx] > 0 && m[edge_idx] < 255,
-            "vertical edge pixel should be partial: got {}", m[edge_idx]);
+        assert!(
+            m[edge_idx] > 0 && m[edge_idx] < 255,
+            "vertical edge pixel should be partial: got {}",
+            m[edge_idx]
+        );
         let far_idx = 28 * 8;
-        assert!(m[far_idx] == 255, "bottom should be 255: got {}", m[far_idx]);
+        assert!(
+            m[far_idx] == 255,
+            "bottom should be 255: got {}",
+            m[far_idx]
+        );
     }
-
 }
