@@ -244,8 +244,8 @@ fn blend_b(kind: SeparableBlendKind, cb: f32, cs: f32) -> f32 {
 
 /// Straight-alpha separable blend of `src` onto `dst` (same length, RGBA8).
 pub fn blend_separable_span(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind) {
-    debug_assert_eq!(dst.len(), src.len());
-    debug_assert!(dst.len().is_multiple_of(4));
+    assert_eq!(dst.len(), src.len());
+    assert!(dst.len().is_multiple_of(4));
     if dst.is_empty() {
         return;
     }
@@ -511,7 +511,10 @@ unsafe fn blend_plane_sse2(
     let co = _mm_add_ps(_mm_add_ps(term1, term2), term3);
     // rcp + one Newton-Raphson step: inv = rcp * (2 - a * rcp).
     // out_a is almost never near 0 when sa > 0; u8 round absorbs residual error.
-    let oa_safe = _mm_max_ps(out_a, _mm_set1_ps(1e-20));
+    let oa_safe = _mm_max_ps(
+        out_a,
+        _mm_set1_ps(crate::psb_blend_separable::HDR_BLEND_EPSILON),
+    );
     let rcp = _mm_rcp_ps(oa_safe);
     let inv = _mm_mul_ps(rcp, _mm_sub_ps(_mm_set1_ps(2.0), _mm_mul_ps(oa_safe, rcp)));
     let mut out = _mm_mul_ps(co, inv);
@@ -623,7 +626,10 @@ unsafe fn blend_plane_avx2(
     let co = _mm256_add_ps(_mm256_add_ps(term1, term2), term3);
     // rcp + one Newton-Raphson step: inv = rcp * (2 - a * rcp).
     // out_a is almost never near 0 when sa > 0; u8 round absorbs residual error.
-    let oa_safe = _mm256_max_ps(out_a, _mm256_set1_ps(1e-20));
+    let oa_safe = _mm256_max_ps(
+        out_a,
+        _mm256_set1_ps(crate::psb_blend_separable::HDR_BLEND_EPSILON),
+    );
     let rcp = _mm256_rcp_ps(oa_safe);
     let inv = _mm256_mul_ps(
         rcp,
@@ -733,7 +739,10 @@ unsafe fn blend_plane_neon(
     let term2 = vmulq_f32(vmulq_f32(sa, da), v_b);
     let term3 = vmulq_f32(vmulq_f32(da, vsubq_f32(one, sa)), dc);
     let co = vaddq_f32(vaddq_f32(term1, term2), term3);
-    let oa_safe = vmaxq_f32(out_a, vdupq_n_f32(1e-20));
+    let oa_safe = vmaxq_f32(
+        out_a,
+        vdupq_n_f32(crate::psb_blend_separable::HDR_BLEND_EPSILON),
+    );
     let mut out = vdivq_f32(co, oa_safe);
     // sa==0 -> keep dc; out_a<=0 -> zero
     let sa_zero = vceqq_f32(sa, zero);

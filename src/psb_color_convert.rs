@@ -78,8 +78,10 @@ pub fn bitmap_packed_byte_count(pixel_count: usize) -> usize {
 
 /// Extract the 768-byte palette from Color Mode Data section (Indexed mode only).
 ///
-/// Returns 768 bytes = 256 × RGB (3 bytes per entry, R,G,B order).
+/// Returns [`INDEXED_PALETTE_BYTES`] bytes = 256 × RGB (3 bytes per entry, R,G,B order).
 /// Returns `None` when the section is truncated or not present.
+pub(crate) const INDEXED_PALETTE_BYTES: usize = 768;
+
 pub fn extract_indexed_palette(bytes: &[u8]) -> Option<Vec<u8>> {
     // Header is 26 bytes, followed by 4-byte cm_len, then cm_data.
     const CM_LEN_OFFSET: usize = 26;
@@ -92,8 +94,8 @@ pub fn extract_indexed_palette(bytes: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let cm_start = CM_LEN_OFFSET + 4; // = 30
-    if cm_len >= 768 && bytes.len() >= cm_start + 768 {
-        Some(bytes[cm_start..cm_start + 768].to_vec())
+    if cm_len >= INDEXED_PALETTE_BYTES && bytes.len() >= cm_start + INDEXED_PALETTE_BYTES {
+        Some(bytes[cm_start..cm_start + INDEXED_PALETTE_BYTES].to_vec())
     } else {
         None
     }
@@ -373,14 +375,14 @@ mod tests {
         bytes.extend_from_slice(&1u32.to_be_bytes()); // width
         bytes.extend_from_slice(&8u16.to_be_bytes()); // depth
         bytes.extend_from_slice(&2u16.to_be_bytes()); // color_mode = Indexed
-        bytes.extend_from_slice(&768u32.to_be_bytes()); // cm_len
+        bytes.extend_from_slice(&(INDEXED_PALETTE_BYTES as u32).to_be_bytes()); // cm_len
         for i in 0usize..256 {
             bytes.push(i as u8); // R
             bytes.push(0xFFu8.wrapping_sub(i as u8)); // G
             bytes.push((i as u8).wrapping_mul(2)); // B
         }
         let palette = extract_indexed_palette(&bytes).expect("should have palette");
-        assert_eq!(palette.len(), 768);
+        assert_eq!(palette.len(), INDEXED_PALETTE_BYTES);
         assert_eq!(palette[0], 0);
         assert_eq!(palette[1], 0xFF);
         assert_eq!(palette[2], 0);

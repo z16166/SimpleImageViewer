@@ -20,6 +20,7 @@
 //! clamped to 1.0 so HDR headroom above SDR white is preserved through
 //! LinearDodge and Normal. Alpha is still clamped to [0, 1].
 
+use crate::psb_blend_separable::HDR_BLEND_EPSILON;
 use crate::psb_layer_blend_simd::SeparableBlendKind;
 
 /// Blend-function B(Cb, Cs) per separable mode (operates in linear-light f32).
@@ -368,15 +369,17 @@ unsafe fn blend_plane_f32_sse41(
         SeparableBlendKind::ColorBurn => {
             // cs > 0 ? 1 - min(1, (1-cb)/cs) : 0
             let cs_gt_zero = _mm_cmpgt_ps(sc, zero);
-            let safe_cs = _mm_max_ps(sc, _mm_set1_ps(1e-20));
-            let when_cs_gt_zero =
-                _mm_sub_ps(one, _mm_min_ps(one, _mm_div_ps(_mm_sub_ps(one, dc), safe_cs)));
+            let safe_cs = _mm_max_ps(sc, _mm_set1_ps(HDR_BLEND_EPSILON));
+            let when_cs_gt_zero = _mm_sub_ps(
+                one,
+                _mm_min_ps(one, _mm_div_ps(_mm_sub_ps(one, dc), safe_cs)),
+            );
             _mm_blendv_ps(zero, when_cs_gt_zero, cs_gt_zero)
         }
         SeparableBlendKind::ColorDodge => {
             // cs >= 1 ? 1 : min(1, cb/(1-cs))
             let cs_ge_one = _mm_cmpge_ps(sc, one);
-            let safe_denom = _mm_max_ps(_mm_sub_ps(one, sc), _mm_set1_ps(1e-20));
+            let safe_denom = _mm_max_ps(_mm_sub_ps(one, sc), _mm_set1_ps(HDR_BLEND_EPSILON));
             let when_cs_lt_one = _mm_min_ps(one, _mm_div_ps(dc, safe_denom));
             _mm_blendv_ps(when_cs_lt_one, one, cs_ge_one)
         }
@@ -387,13 +390,15 @@ unsafe fn blend_plane_f32_sse41(
             // burn branch: cs <= 0.5 -> color_burn(cb, 2*cs)
             let two_cs = _mm_mul_ps(two, sc);
             let cs_le_zero = _mm_cmple_ps(sc, zero);
-            let safe_two_cs = _mm_max_ps(two_cs, _mm_set1_ps(1e-20));
-            let burn =
-                _mm_sub_ps(one, _mm_min_ps(one, _mm_div_ps(_mm_sub_ps(one, dc), safe_two_cs)));
+            let safe_two_cs = _mm_max_ps(two_cs, _mm_set1_ps(HDR_BLEND_EPSILON));
+            let burn = _mm_sub_ps(
+                one,
+                _mm_min_ps(one, _mm_div_ps(_mm_sub_ps(one, dc), safe_two_cs)),
+            );
             let burn = _mm_blendv_ps(burn, zero, cs_le_zero);
             // dodge branch: cs > 0.5 -> color_dodge(cb, 2*cs-1)
             let cs_ge_one = _mm_cmpge_ps(sc, one);
-            let safe_denom = _mm_max_ps(_mm_sub_ps(two, two_cs), _mm_set1_ps(1e-20));
+            let safe_denom = _mm_max_ps(_mm_sub_ps(two, two_cs), _mm_set1_ps(HDR_BLEND_EPSILON));
             let dodge = _mm_min_ps(one, _mm_div_ps(dc, safe_denom));
             let dodge = _mm_blendv_ps(dodge, one, cs_ge_one);
             _mm_blendv_ps(dodge, burn, cs_le_half)
@@ -414,7 +419,7 @@ unsafe fn blend_plane_f32_sse41(
         SeparableBlendKind::Divide => {
             // cs > 0 ? min(1, cb/cs) : 1
             let cs_gt_zero = _mm_cmpgt_ps(sc, zero);
-            let safe_cs = _mm_max_ps(sc, _mm_set1_ps(1e-20));
+            let safe_cs = _mm_max_ps(sc, _mm_set1_ps(HDR_BLEND_EPSILON));
             let div_result = _mm_min_ps(one, _mm_div_ps(dc, safe_cs));
             _mm_blendv_ps(one, div_result, cs_gt_zero)
         }
@@ -428,7 +433,7 @@ unsafe fn blend_plane_f32_sse41(
     let term2 = _mm_mul_ps(_mm_mul_ps(sa, da), v_b);
     let term3 = _mm_mul_ps(_mm_mul_ps(da, _mm_sub_ps(one, sa)), dc);
     let co = _mm_add_ps(_mm_add_ps(term1, term2), term3);
-    let oa_safe = _mm_max_ps(out_a, _mm_set1_ps(1e-20));
+    let oa_safe = _mm_max_ps(out_a, _mm_set1_ps(HDR_BLEND_EPSILON));
     let rcp = _mm_rcp_ps(oa_safe);
     let inv = _mm_mul_ps(rcp, _mm_sub_ps(_mm_set1_ps(2.0), _mm_mul_ps(oa_safe, rcp)));
     let mut out = _mm_mul_ps(co, inv);
@@ -622,29 +627,26 @@ unsafe fn blend_plane_f32_avx2(
         // ── New separable modes (13) ────────────────────────────────────
         SeparableBlendKind::Darken => _mm256_min_ps(dc, sc),
         SeparableBlendKind::Lighten => _mm256_max_ps(dc, sc),
-        SeparableBlendKind::LinearBurn => {
-            _mm256_max_ps(
-                _mm256_add_ps(_mm256_add_ps(dc, sc), _mm256_set1_ps(-1.0)),
-                zero,
-            )
-        }
-        SeparableBlendKind::LinearLight => {
-            _mm256_add_ps(dc, _mm256_sub_ps(_mm256_mul_ps(_mm256_set1_ps(2.0), sc), one))
-        }
+        SeparableBlendKind::LinearBurn => _mm256_max_ps(
+            _mm256_add_ps(_mm256_add_ps(dc, sc), _mm256_set1_ps(-1.0)),
+            zero,
+        ),
+        SeparableBlendKind::LinearLight => _mm256_add_ps(
+            dc,
+            _mm256_sub_ps(_mm256_mul_ps(_mm256_set1_ps(2.0), sc), one),
+        ),
         SeparableBlendKind::Difference => {
             let diff = _mm256_sub_ps(dc, sc);
             _mm256_max_ps(diff, _mm256_sub_ps(zero, diff))
         }
-        SeparableBlendKind::Exclusion => {
-            _mm256_sub_ps(
-                _mm256_add_ps(dc, sc),
-                _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(2.0), dc), sc),
-            )
-        }
+        SeparableBlendKind::Exclusion => _mm256_sub_ps(
+            _mm256_add_ps(dc, sc),
+            _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(2.0), dc), sc),
+        ),
         SeparableBlendKind::Subtract => _mm256_max_ps(_mm256_sub_ps(dc, sc), zero),
         SeparableBlendKind::ColorBurn => {
             let cs_gt_zero = _mm256_cmp_ps(sc, zero, _CMP_GT_OQ);
-            let safe_cs = _mm256_max_ps(sc, _mm256_set1_ps(1e-20));
+            let safe_cs = _mm256_max_ps(sc, _mm256_set1_ps(HDR_BLEND_EPSILON));
             let when_cs_gt_zero = _mm256_sub_ps(
                 one,
                 _mm256_min_ps(one, _mm256_div_ps(_mm256_sub_ps(one, dc), safe_cs)),
@@ -653,7 +655,8 @@ unsafe fn blend_plane_f32_avx2(
         }
         SeparableBlendKind::ColorDodge => {
             let cs_ge_one = _mm256_cmp_ps(sc, one, _CMP_GE_OQ);
-            let safe_denom = _mm256_max_ps(_mm256_sub_ps(one, sc), _mm256_set1_ps(1e-20));
+            let safe_denom =
+                _mm256_max_ps(_mm256_sub_ps(one, sc), _mm256_set1_ps(HDR_BLEND_EPSILON));
             let when_cs_lt_one = _mm256_min_ps(one, _mm256_div_ps(dc, safe_denom));
             _mm256_blendv_ps(when_cs_lt_one, one, cs_ge_one)
         }
@@ -663,11 +666,14 @@ unsafe fn blend_plane_f32_avx2(
             let cs_le_half = _mm256_cmp_ps(sc, half, _CMP_LE_OQ);
             let two_cs = _mm256_mul_ps(two, sc);
             let cs_le_zero = _mm256_cmp_ps(sc, zero, _CMP_LE_OQ);
-            let safe_two_cs = _mm256_max_ps(two_cs, _mm256_set1_ps(1e-20));
+            let safe_two_cs = _mm256_max_ps(two_cs, _mm256_set1_ps(HDR_BLEND_EPSILON));
             let burn = _mm256_sub_ps(one, _mm256_div_ps(_mm256_sub_ps(one, dc), safe_two_cs));
             let burn = _mm256_blendv_ps(burn, zero, cs_le_zero);
             let cs_ge_one = _mm256_cmp_ps(sc, one, _CMP_GE_OQ);
-            let safe_denom = _mm256_max_ps(_mm256_sub_ps(two, two_cs), _mm256_set1_ps(1e-20));
+            let safe_denom = _mm256_max_ps(
+                _mm256_sub_ps(two, two_cs),
+                _mm256_set1_ps(HDR_BLEND_EPSILON),
+            );
             let dodge = _mm256_div_ps(dc, safe_denom);
             let dodge = _mm256_blendv_ps(dodge, one, cs_ge_one);
             _mm256_blendv_ps(dodge, burn, cs_le_half)
@@ -687,7 +693,7 @@ unsafe fn blend_plane_f32_avx2(
         }
         SeparableBlendKind::Divide => {
             let cs_gt_zero = _mm256_cmp_ps(sc, zero, _CMP_GT_OQ);
-            let safe_cs = _mm256_max_ps(sc, _mm256_set1_ps(1e-20));
+            let safe_cs = _mm256_max_ps(sc, _mm256_set1_ps(HDR_BLEND_EPSILON));
             let div_result = _mm256_min_ps(one, _mm256_div_ps(dc, safe_cs));
             _mm256_blendv_ps(one, div_result, cs_gt_zero)
         }
@@ -701,7 +707,7 @@ unsafe fn blend_plane_f32_avx2(
     let term2 = _mm256_mul_ps(_mm256_mul_ps(sa, da), v_b);
     let term3 = _mm256_mul_ps(_mm256_mul_ps(da, _mm256_sub_ps(one, sa)), dc);
     let co = _mm256_add_ps(_mm256_add_ps(term1, term2), term3);
-    let oa_safe = _mm256_max_ps(out_a, _mm256_set1_ps(1e-20));
+    let oa_safe = _mm256_max_ps(out_a, _mm256_set1_ps(HDR_BLEND_EPSILON));
     let rcp = _mm256_rcp_ps(oa_safe);
     let inv = _mm256_mul_ps(
         rcp,
@@ -884,7 +890,7 @@ unsafe fn blend_plane_f32_neon(
         SeparableBlendKind::ColorBurn => {
             // cs > 0 ? 1 - min(1, (1-cb)/cs) : 0
             let cs_gt_zero = vcgtq_f32(sc, zero);
-            let safe_cs = vmaxq_f32(sc, vdupq_n_f32(1e-20));
+            let safe_cs = vmaxq_f32(sc, vdupq_n_f32(HDR_BLEND_EPSILON));
             let when_cs_gt_zero =
                 vsubq_f32(one, vminq_f32(one, vdivq_f32(vsubq_f32(one, dc), safe_cs)));
             vbslq_f32(cs_gt_zero, when_cs_gt_zero, zero)
@@ -892,7 +898,7 @@ unsafe fn blend_plane_f32_neon(
         SeparableBlendKind::ColorDodge => {
             // cs >= 1 ? 1 : min(1, cb/(1-cs))
             let cs_ge_one = vcgeq_f32(sc, one);
-            let safe_denom = vmaxq_f32(vsubq_f32(one, sc), vdupq_n_f32(1e-20));
+            let safe_denom = vmaxq_f32(vsubq_f32(one, sc), vdupq_n_f32(HDR_BLEND_EPSILON));
             let when_cs_lt_one = vminq_f32(one, vdivq_f32(dc, safe_denom));
             vbslq_f32(cs_ge_one, one, when_cs_lt_one)
         }
@@ -902,11 +908,11 @@ unsafe fn blend_plane_f32_neon(
             let cs_le_half = vcleq_f32(sc, half);
             let two_cs = vmulq_f32(two, sc);
             let cs_le_zero = vcleq_f32(sc, zero);
-            let safe_two_cs = vmaxq_f32(two_cs, vdupq_n_f32(1e-20));
+            let safe_two_cs = vmaxq_f32(two_cs, vdupq_n_f32(HDR_BLEND_EPSILON));
             let burn = vsubq_f32(one, vdivq_f32(vsubq_f32(one, dc), safe_two_cs));
             let burn = vbslq_f32(cs_le_zero, zero, burn);
             let cs_ge_one = vcgeq_f32(sc, one);
-            let safe_denom = vmaxq_f32(vsubq_f32(two, two_cs), vdupq_n_f32(1e-20));
+            let safe_denom = vmaxq_f32(vsubq_f32(two, two_cs), vdupq_n_f32(HDR_BLEND_EPSILON));
             let dodge = vdivq_f32(dc, safe_denom);
             let dodge = vbslq_f32(cs_ge_one, one, dodge);
             vbslq_f32(cs_le_half, burn, dodge)
@@ -927,7 +933,7 @@ unsafe fn blend_plane_f32_neon(
         SeparableBlendKind::Divide => {
             // cs > 0 ? min(1, cb/cs) : 1
             let cs_gt_zero = vcgtq_f32(sc, zero);
-            let safe_cs = vmaxq_f32(sc, vdupq_n_f32(1e-20));
+            let safe_cs = vmaxq_f32(sc, vdupq_n_f32(HDR_BLEND_EPSILON));
             let div_result = vminq_f32(one, vdivq_f32(dc, safe_cs));
             vbslq_f32(cs_gt_zero, div_result, one)
         }
@@ -941,7 +947,7 @@ unsafe fn blend_plane_f32_neon(
     let term2 = vmulq_f32(vmulq_f32(sa, da), v_b);
     let term3 = vmulq_f32(vmulq_f32(da, vsubq_f32(one, sa)), dc);
     let co = vaddq_f32(vaddq_f32(term1, term2), term3);
-    let oa_safe = vmaxq_f32(out_a, vdupq_n_f32(1e-20));
+    let oa_safe = vmaxq_f32(out_a, vdupq_n_f32(HDR_BLEND_EPSILON));
     let mut out = vdivq_f32(co, oa_safe);
     let sa_zero = vceqq_f32(sa, zero);
     out = vbslq_f32(sa_zero, dc, out);

@@ -77,9 +77,7 @@ where
                 );
                 Ok(None)
             } else {
-                crate::preload_debug!(
-                    "[PreloadDebug][{stage}] stage=P25a_layer_comp",
-                );
+                crate::preload_debug!("[PreloadDebug][{stage}] stage=P25a_layer_comp",);
                 Ok(Some((
                     result,
                     crate::loader::PsdOsdInfo::p25a_layer_comp(comp_name),
@@ -248,13 +246,8 @@ where
     match composite_fn(&visible) {
         Ok(result) => {
             if !is_blank_or_zero_info(&result, cancel)? {
-                crate::preload_debug!(
-                    "[PreloadDebug][{stage}] stage=P25b_force_open_all"
-                );
-                return Ok(Some((
-                    result,
-                    crate::loader::PsdOsdInfo::p25b_show_all(),
-                )));
+                crate::preload_debug!("[PreloadDebug][{stage}] stage=P25b_force_open_all");
+                return Ok(Some((result, crate::loader::PsdOsdInfo::p25b_show_all())));
             }
             crate::preload_debug!(
                 "[PreloadDebug][{stage}] stage=P25b_force_open_all_zero_information"
@@ -263,9 +256,7 @@ where
         }
         Err(e) if e.is_cancelled() => Err(e),
         Err(e) => {
-            crate::preload_debug!(
-                "[PreloadDebug][{stage}] stage=P25b_force_open_all_fail err={e}"
-            );
+            crate::preload_debug!("[PreloadDebug][{stage}] stage=P25b_force_open_all_fail err={e}");
             log::debug!("{stage} P2.5b force-open-all unavailable: {e}");
             crate::psb_p25_reveal::remember_p25_reveal_err(reveal_err, e);
             Ok(None)

@@ -2,7 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
-## [3.0.1] - 2026-07-13
+## [3.1.0] - 2026-07-14
+
+### Added
+- **Additional PSD/PSB colour-mode support**: Photoshop documents in Bitmap, Indexed, Duotone, Multichannel, and Lab colour modes now display properly.
+- **More layer blend modes**: PSD/PSB files using Darken, Lighten, Color Burn, Linear Burn, Color Dodge, Vivid Light, Linear Light, Pin Light, Hard Mix, Difference, Exclusion, Subtract, Divide blend modes now composite correctly — no more black or missing areas in layered files that rely on these effects.
+- **Vector mask support**: Layer vector masks (vmsk/vsms) are now rasterised and applied, so layers with a path-based mask display their intended shape.
+- **Non-separable blend modes**: PSD layers using Hue, Saturation, Color, and Luminosity blend modes now composite properly.
+
+### Improved
+- **SDR 16/32-bit tone mapping**: High-bit-depth PSD/PSB documents render with more accurate colour and contrast, especially when the embedded ICC profile is sRGB or Display P3.
+- **HDR composite robustness**: When a layer's alpha or mask channel is corrupted, the layer is safely skipped instead of producing wrong pixels. This prevents colour shifts in damaged HDR files. (Colour-critical users should still verify important images against the original.)
+- **Pipeline cache version bump**: GPU shader caches are rebuilt to match the new blend-mode WGSL shaders, preventing potential runtime mismatches on macOS.
+
+### Fixed
+- **Path-based opener visibility**: The `open_*_source` functions that accept file paths are now restricted to test builds, removing dead code from release binaries.
 
 ### Fixed
 - **Navigation after double-click open**: With “keep gallery directory on double-click” enabled, opening the navigation panel and pressing F5 now stay on the folder you just opened, instead of jumping back to the previously saved gallery folder. Manually choosing another folder in the tree still saves that gallery location as before.

@@ -83,8 +83,10 @@ pub struct LayerChannel {
 /// Each entry is one 26-byte path record (selector i16 + three 8-byte
 /// fixed-point sub-points). The decode step rasterises these into a mask
 /// bitmap (see `psb_layer_decode::rasterize_vector_mask`).
+pub(crate) const VMSK_RECORD_LEN: usize = 26;
+
 #[derive(Debug, Clone)]
-pub struct VectorMaskData(pub Vec<[u8; 26]>);
+pub struct VectorMaskData(pub Vec<[u8; VMSK_RECORD_LEN]>);
 
 /// Parsed rectangle + flags from a layer's mask data block (channel id -2).
 /// The mask's own rect can differ from the layer's rect (smaller, larger, or
@@ -840,11 +842,11 @@ fn scan_extra_tagged_blocks(
                 .unwrap_or([0u8; 4]);
             let version = i32::from_be_bytes(version_bytes);
             if version == 3 {
-                // After version, the rest is 26-byte path records.
+                // After version, the rest is VMSK_RECORD_LEN-byte path records.
                 let path_bytes = &payload[4..];
-                let mut records: Vec<[u8; 26]> = Vec::new();
-                for chunk in path_bytes.chunks_exact(26) {
-                    let mut rec = [0u8; 26];
+                let mut records: Vec<[u8; VMSK_RECORD_LEN]> = Vec::new();
+                for chunk in path_bytes.chunks_exact(VMSK_RECORD_LEN) {
+                    let mut rec = [0u8; VMSK_RECORD_LEN];
                     rec.copy_from_slice(chunk);
                     let selector = i16::from_be_bytes([rec[0], rec[1]]);
                     // 0xFFFF = end of path; stop collecting.
@@ -856,6 +858,12 @@ fn scan_extra_tagged_blocks(
                 if !records.is_empty() {
                     vector_mask = Some(VectorMaskData(records));
                 }
+            } else {
+                // Adobe only writes version 3 (PS 6.0+); v2 or unknown
+                // versions from legacy files should not appear in practice.
+                log::warn!(
+                    "vmsk/vsms unexpected version {version} (expected 3), skipping vector mask"
+                );
             }
         }
 

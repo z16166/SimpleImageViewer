@@ -24,6 +24,14 @@
 //! modes (Hue, Saturation, Color, Luminosity) and per-pixel modes (Darker
 //! Color, Lighter Color) live in [`crate::psb_blend_nonseparable_full`].
 
+/// Epsilon for division-by-zero protection in HDR blend SIMD paths.
+///
+/// Used as `max(denominator, HDR_BLEND_EPSILON)` in both u8 and f32 blend
+/// kernels to guard `ColorDodge`, `ColorBurn`, `LinearBurn`, `Divide` and
+/// the `co / out_a` un-premultiply step.  The value `1e-20` is small enough
+/// that no practical colour value is clipped.
+pub(crate) const HDR_BLEND_EPSILON: f32 = 1e-20;
+
 // ── Darken group ──────────────────────────────────────────────────────────
 
 /// `B(cb, cs) = min(cb, cs)`
@@ -67,7 +75,11 @@ pub fn blend_lighten(cb: f32, cs: f32) -> f32 {
 /// spec (also used in the WGSL shader).
 #[inline]
 pub fn blend_color_dodge(cb: f32, cs: f32) -> f32 {
-    if cs >= 1.0 { 1.0 } else { (cb / (1.0 - cs)).min(1.0) }
+    if cs >= 1.0 {
+        1.0
+    } else {
+        (cb / (1.0 - cs)).min(1.0)
+    }
 }
 
 // ── Contrast group ────────────────────────────────────────────────────────
