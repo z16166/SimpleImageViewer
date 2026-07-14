@@ -17,6 +17,46 @@
 //! PSD/PSB color-mode conversion: bitmap (0), indexed (2), multichannel (7),
 //! duotone (8), and Lab (9) → interleaved RGBA8.
 
+// ── sRGB gamma encoding constants (IEC 61966-2-1) ─────────────────────────
+/// Linear segment threshold: values ≤ this use the linear slope.
+const SRGB_GAMMA_THRESHOLD: f32 = 0.0031308;
+/// Linear segment slope for values ≤ [`SRGB_GAMMA_THRESHOLD`].
+const SRGB_LINEAR_SLOPE: f32 = 12.92;
+/// Power segment scale for values > [`SRGB_GAMMA_THRESHOLD`].
+const SRGB_POWER_SCALE: f32 = 1.055;
+/// Power segment exponent (1/2.4).
+const SRGB_POWER_EXP: f32 = 1.0 / 2.4;
+/// Power segment subtract for values > [`SRGB_GAMMA_THRESHOLD`].
+const SRGB_POWER_SUB: f32 = 0.055;
+
+// ── CIE Lab conversion constants (D50 illuminant) ─────────────────────────
+/// Lab L* scale: raw 0..255 → 0..100.
+const LAB_L_SCALE: f32 = 100.0 / 255.0;
+/// Lab a*/b* offset: raw 0..255 → -128..+127.
+const LAB_AB_OFFSET: f32 = 128.0;
+/// Lab L* → fy offset.
+const LAB_FY_OFFSET: f32 = 16.0;
+/// Lab L* → fy scale divisor.
+const LAB_FY_DIV: f32 = 116.0;
+/// Lab a* scale divisor.
+const LAB_FX_DIV: f32 = 500.0;
+/// Lab b* scale divisor.
+const LAB_FZ_DIV: f32 = 200.0;
+/// D50 white point Xn (normalised to Yn=1.0).
+const XYZ_D50_XN: f32 = 0.9642;
+/// D50 white point Zn (normalised to Yn=1.0).
+const XYZ_D50_ZN: f32 = 0.8249;
+/// Bradford-adapted D50→D65 sRGB matrix row 0.
+const BRADFORD_M00: f32 = 3.1338561;
+const BRADFORD_M01: f32 = -1.6168667;
+const BRADFORD_M02: f32 = -0.4906146;
+const BRADFORD_M10: f32 = -0.9787684;
+const BRADFORD_M11: f32 = 1.9161415;
+const BRADFORD_M12: f32 = 0.0334540;
+const BRADFORD_M20: f32 = 0.0719453;
+const BRADFORD_M21: f32 = -0.2289914;
+const BRADFORD_M22: f32 = 1.4052427;
+
 /// Read a big-endian u32 from the byte slice.
 fn read_be_u32(buf: &[u8]) -> Result<u32, ()> {
     if buf.len() < 4 {
@@ -234,22 +274,22 @@ pub fn lab_row_to_rgba8(
 /// Raw values: L* 0..255 → 0..100, a* 0..255 → -128..+127, b* 0..255 → -128..+127.
 pub(crate) fn lab_pixel(l_raw: f32, a_raw: f32, b_raw: f32) -> (u8, u8, u8) {
     // Scale L* to [0, 100], a*/b* to [-128, 127].
-    let l = l_raw * (100.0 / 255.0);
-    let a = a_raw - 128.0;
-    let b = b_raw - 128.0;
+    let l = l_raw * LAB_L_SCALE;
+    let a = a_raw - LAB_AB_OFFSET;
+    let b = b_raw - LAB_AB_OFFSET;
 
     // --- Lab → XYZ (D50) ---
-    let fy = (l + 16.0) / 116.0;
-    let fx = a / 500.0 + fy;
-    let fz = fy - b / 200.0;
+    let fy = (l + LAB_FY_OFFSET) / LAB_FY_DIV;
+    let fx = a / LAB_FX_DIV + fy;
+    let fz = fy - b / LAB_FZ_DIV;
 
     let eps3 = 0.008856_f32; // (216/24389)³⁻¹ ≈ 0.008856
     let kap = 903.3; // 24389/27 ≈ 903.3
 
     let x = if fx.powi(3) > eps3 {
-        fx.powi(3) * 0.9642_f32 // Xn (D50)
+        fx.powi(3) * XYZ_D50_XN
     } else {
-        ((116.0 * fx - 16.0) / kap) * 0.9642_f32
+        ((LAB_FY_DIV * fx - LAB_FY_OFFSET) / kap) * XYZ_D50_XN
     };
     let y = if l > eps3 * kap {
         fy.powi(3) // Yn = 1.0
@@ -257,16 +297,16 @@ pub(crate) fn lab_pixel(l_raw: f32, a_raw: f32, b_raw: f32) -> (u8, u8, u8) {
         l / kap
     };
     let z = if fz.powi(3) > eps3 {
-        fz.powi(3) * 0.8249_f32 // Zn (D50)
+        fz.powi(3) * XYZ_D50_ZN
     } else {
-        ((116.0 * fz - 16.0) / kap) * 0.8249_f32
+        ((LAB_FY_DIV * fz - LAB_FY_OFFSET) / kap) * XYZ_D50_ZN
     };
 
     // --- XYZ D50 → linear sRGB (Bradford-adapted D50→D65+sRGB matrix) ---
     // Source: http://www.brucelindbloom.com/ — "sRGB (D50)"
-    let r_lin = 3.1338561_f32 * x - 1.6168667_f32 * y - 0.4906146_f32 * z;
-    let g_lin = -0.9787684_f32 * x + 1.9161415_f32 * y + 0.0334540_f32 * z;
-    let b_lin = 0.0719453_f32 * x - 0.2289914_f32 * y + 1.4052427_f32 * z;
+    let r_lin = BRADFORD_M00 * x + BRADFORD_M01 * y + BRADFORD_M02 * z;
+    let g_lin = BRADFORD_M10 * x + BRADFORD_M11 * y + BRADFORD_M12 * z;
+    let b_lin = BRADFORD_M20 * x + BRADFORD_M21 * y + BRADFORD_M22 * z;
 
     // --- sRGB gamma encode ---
     let r = srgb_encode(r_lin);
@@ -279,10 +319,10 @@ pub(crate) fn lab_pixel(l_raw: f32, a_raw: f32, b_raw: f32) -> (u8, u8, u8) {
 /// Apply sRGB gamma curve to a linear-channel value (clamped to [0,1]).
 fn srgb_encode(linear: f32) -> u8 {
     let v = linear.clamp(0.0, 1.0);
-    let v = if v <= 0.0031308 {
-        12.92 * v
+    let v = if v <= SRGB_GAMMA_THRESHOLD {
+        SRGB_LINEAR_SLOPE * v
     } else {
-        1.055 * v.powf(1.0 / 2.4) - 0.055
+        SRGB_POWER_SCALE * v.powf(SRGB_POWER_EXP) - SRGB_POWER_SUB
     };
     (v * 255.0).round().clamp(0.0, 255.0) as u8
 }

@@ -61,12 +61,18 @@ fn blend_b_f32(kind: SeparableBlendKind, cb: f32, cs: f32) -> f32 {
                 1.0 - 2.0 * (1.0 - cb) * (1.0 - cs)
             }
         }
+        // Non-separable modes (Color, Hue, Saturation, Luminosity) and
+        // per-pixel modes (Darker Color, Lighter Color) are routed to the
+        // scalar path in `blend_separable_span_f32` before reaching this
+        // per-plane function.  If they somehow arrive here it's a logic bug.
         SeparableBlendKind::Color
         | SeparableBlendKind::Hue
         | SeparableBlendKind::Saturation
         | SeparableBlendKind::Luminosity
         | SeparableBlendKind::DarkerColor
-        | SeparableBlendKind::LighterColor => cs,
+        | SeparableBlendKind::LighterColor => {
+            unreachable!("non-separable blend mode {:?} reached blend_b_f32", kind)
+        }
         // ── New modes delegated to psb_blend_separable ─────────────────
         SeparableBlendKind::Darken => crate::psb_blend_separable::blend_darken(cb, cs),
         SeparableBlendKind::ColorBurn => crate::psb_blend_separable::blend_color_burn(cb, cs),

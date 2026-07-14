@@ -419,7 +419,7 @@ fn cs_blend_vivid_light(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cs = src.rgb;
     // cs <= 0.5: 1 - (1-cb)/(2*cs); cs > 0.5: cb/(2*(1-cs))
     let burn = 1.0 - (1.0 - cb) / max(2.0 * cs, vec3<f32>(1e-20));
-    let dodge = cb / max(2.0 * (1.0 - cs), vec3<f32>(1e-20));
+    let dodge = min(cb / max(2.0 * (1.0 - cs), vec3<f32>(1e-20)), vec3<f32>(1.0));
     let blended = select(dodge, burn, cs <= vec3<f32>(0.5));
     blend_store(dst_coord, src, dst, blended);
 }

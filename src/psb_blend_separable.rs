@@ -96,7 +96,7 @@ pub fn blend_vivid_light(cb: f32, cs: f32) -> f32 {
     } else if cs >= 1.0 {
         1.0
     } else {
-        cb / (2.0 * (1.0 - cs))
+        (cb / (2.0 * (1.0 - cs))).min(1.0)
     }
 }
 
@@ -152,6 +152,12 @@ pub fn blend_subtract(cb: f32, cs: f32) -> f32 {
 }
 
 /// `B(cb, cs)`: Adobe "Divide" — `min(1, cb / cs)` when `cs > 0`, else `1`.
+///
+/// Returns `1.0` when `cs ≤ 0` (source is black or negative). This matches
+/// Adobe Photoshop's behaviour: dividing by zero or a negative value cannot
+/// produce a meaningful colour, so the result is treated as pure white.
+/// Some alternative implementations return `cb` unchanged (no-op for zero
+/// divisor), but Photoshop defaults to white, which this follows.
 #[inline]
 pub fn blend_divide(cb: f32, cs: f32) -> f32 {
     if cs <= 0.0 { 1.0 } else { (cb / cs).min(1.0) }

@@ -42,7 +42,12 @@ fn set_sat(r: f32, g: f32, b: f32, target_sat: f32) -> (f32, f32, f32) {
     let c_max = r.max(g).max(b);
     let current = c_max - c_min;
     if current <= 0.0 || target_sat <= 0.0 {
-        // Achromatic → return all grayscale at the minimum value.
+        // Achromatic: when `current ≤ 0` the input is pure gray (R=G=B), so
+        // its hue is undefined and cannot carry saturation. Per ISO 32000-1
+        // §11.7.6.3 (SetSat): "If C has zero saturation (C is a gray value)
+        // then SetSat(C, s) returns C unchanged" — the result keeps the same
+        // gray level `c_min`. Likewise when `target_sat ≤ 0` the output is
+        // forced to gray at the minimum channel value.
         return (c_min, c_min, c_min);
     }
     let scale = target_sat / current;
