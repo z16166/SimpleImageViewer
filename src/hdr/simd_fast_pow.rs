@@ -694,7 +694,9 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn pow8_avx2_matches_std_powf() {
-        if !std::arch::is_x86_feature_detected!("avx2") {
+        if !std::arch::is_x86_feature_detected!("avx2")
+            || !std::arch::is_x86_feature_detected!("fma")
+        {
             return;
         }
         for exp in EXPONENTS {
@@ -734,7 +736,9 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn exp2_8_avx2_matches_std_exp2() {
-        if !std::arch::is_x86_feature_detected!("avx2") {
+        if !std::arch::is_x86_feature_detected!("avx2")
+            || !std::arch::is_x86_feature_detected!("fma")
+        {
             return;
         }
         let mut x = -4.0_f32;

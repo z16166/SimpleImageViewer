@@ -323,12 +323,6 @@ impl ImageViewerApp {
                 &mut self.tiled_primary_visible_scratch,
             );
             let tile_visits = &self.tiled_tile_visits_scratch;
-            self.tiled_primary_visible_scratch.clear();
-            self.tiled_primary_visible_scratch.extend(
-                self.tiled_primary_visible_tiles_scratch
-                    .iter()
-                    .map(|(coord, _, _)| *coord),
-            );
             self.tiled_visible_coords_scratch.clear();
             self.tiled_visible_coords_scratch
                 .extend(self.tiled_visible_tiles_scratch.iter().map(|(c, _, _)| *c));
