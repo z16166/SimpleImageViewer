@@ -395,8 +395,15 @@ fn load_via_wic_inner(
             )
             .map_err(|e| format!("converter init failed: {:?}", e))?;
 
-        let stride = logical_width * 4;
-        let mut out = vec![0u8; (stride * logical_height) as usize];
+        let stride = logical_width
+            .checked_mul(4)
+            .ok_or_else(|| format!("WIC stride overflow: width={logical_width}"))?;
+        let mut out = {
+            let buf_size = stride
+                .checked_mul(logical_height)
+                .ok_or_else(|| format!("WIC buffer size overflow: stride={stride}"))?;
+            vec![0u8; buf_size as usize]
+        };
         let rect = WICRect {
             X: 0,
             Y: 0,
