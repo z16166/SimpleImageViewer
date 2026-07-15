@@ -802,25 +802,19 @@ unsafe fn apply_display_p3_matrix4_neon(
 ) -> (float32x4_t, float32x4_t, float32x4_t) {
     let m = DISPLAY_P3_TO_LINEAR_SRGB;
     let lr = vfmaq_f32(
-        vfmaq_f32(
-            vmulq_f32(r, vdupq_n_f32(m[0][0])),
-            g, vdupq_n_f32(m[0][1]),
-        ),
-        b, vdupq_n_f32(m[0][2]),
+        vfmaq_f32(vmulq_f32(r, vdupq_n_f32(m[0][0])), g, vdupq_n_f32(m[0][1])),
+        b,
+        vdupq_n_f32(m[0][2]),
     );
     let lg = vfmaq_f32(
-        vfmaq_f32(
-            vmulq_f32(r, vdupq_n_f32(m[1][0])),
-            g, vdupq_n_f32(m[1][1]),
-        ),
-        b, vdupq_n_f32(m[1][2]),
+        vfmaq_f32(vmulq_f32(r, vdupq_n_f32(m[1][0])), g, vdupq_n_f32(m[1][1])),
+        b,
+        vdupq_n_f32(m[1][2]),
     );
     let lb = vfmaq_f32(
-        vfmaq_f32(
-            vmulq_f32(r, vdupq_n_f32(m[2][0])),
-            g, vdupq_n_f32(m[2][1]),
-        ),
-        b, vdupq_n_f32(m[2][2]),
+        vfmaq_f32(vmulq_f32(r, vdupq_n_f32(m[2][0])), g, vdupq_n_f32(m[2][1])),
+        b,
+        vdupq_n_f32(m[2][2]),
     );
     (lr, lg, lb)
 }

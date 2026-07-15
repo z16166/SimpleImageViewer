@@ -307,15 +307,14 @@ pub(crate) fn hdr_tile_cache_key_for_coord(
 
 pub(crate) fn prioritize_tile_visits_into(
     out: &mut Vec<(TileCoord, Rect, Rect)>,
+    primary_coords: &mut HashSet<TileCoord>,
     primary_visible: &[(TileCoord, Rect, Rect)],
     padded_visible: &[(TileCoord, Rect, Rect)],
 ) {
     out.clear();
     out.extend_from_slice(primary_visible);
-    let primary_coords = primary_visible
-        .iter()
-        .map(|(coord, _, _)| *coord)
-        .collect::<HashSet<_>>();
+    primary_coords.clear();
+    primary_coords.extend(primary_visible.iter().map(|(coord, _, _)| *coord));
     out.extend(
         padded_visible
             .iter()
@@ -329,8 +328,9 @@ pub(crate) fn tile_visits_for_backend_into(
     primary_visible: &[(TileCoord, Rect, Rect)],
     padded_visible: &[(TileCoord, Rect, Rect)],
     out: &mut Vec<(TileCoord, Rect, Rect)>,
+    primary_coords: &mut HashSet<TileCoord>,
 ) {
-    prioritize_tile_visits_into(out, primary_visible, padded_visible);
+    prioritize_tile_visits_into(out, primary_coords, primary_visible, padded_visible);
 }
 
 #[cfg(test)]
@@ -340,7 +340,14 @@ pub(crate) fn tile_visits_for_backend(
     padded_visible: &[(TileCoord, Rect, Rect)],
 ) -> Vec<(TileCoord, Rect, Rect)> {
     let mut out = Vec::new();
-    tile_visits_for_backend_into(plane_backend, primary_visible, padded_visible, &mut out);
+    let mut primary_coords = HashSet::new();
+    tile_visits_for_backend_into(
+        plane_backend,
+        primary_visible,
+        padded_visible,
+        &mut out,
+        &mut primary_coords,
+    );
     out
 }
 

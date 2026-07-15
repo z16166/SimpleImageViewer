@@ -163,23 +163,29 @@ unsafe fn apply_display_p3_matrix8_avx2(
 ) -> (__m256, __m256, __m256) {
     let m = DISPLAY_P3_TO_LINEAR_SRGB;
     let lr = _mm256_fmadd_ps(
-        b, _mm256_set1_ps(m[0][2]),
+        b,
+        _mm256_set1_ps(m[0][2]),
         _mm256_fmadd_ps(
-            g, _mm256_set1_ps(m[0][1]),
+            g,
+            _mm256_set1_ps(m[0][1]),
             _mm256_mul_ps(r, _mm256_set1_ps(m[0][0])),
         ),
     );
     let lg = _mm256_fmadd_ps(
-        b, _mm256_set1_ps(m[1][2]),
+        b,
+        _mm256_set1_ps(m[1][2]),
         _mm256_fmadd_ps(
-            g, _mm256_set1_ps(m[1][1]),
+            g,
+            _mm256_set1_ps(m[1][1]),
             _mm256_mul_ps(r, _mm256_set1_ps(m[1][0])),
         ),
     );
     let lb = _mm256_fmadd_ps(
-        b, _mm256_set1_ps(m[2][2]),
+        b,
+        _mm256_set1_ps(m[2][2]),
         _mm256_fmadd_ps(
-            g, _mm256_set1_ps(m[2][1]),
+            g,
+            _mm256_set1_ps(m[2][1]),
             _mm256_mul_ps(r, _mm256_set1_ps(m[2][0])),
         ),
     );

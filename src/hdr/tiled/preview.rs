@@ -250,7 +250,7 @@ pub(crate) fn sdr_preview_from_linear_rgba32f(
                 let row_end = row_start + width as usize * 4;
                 tone_map_linear_rgba_f32_row_to_sdr_u8(
                     width,
-                    rgba_f32[row_start..row_end].to_vec(),
+                    &rgba_f32[row_start..row_end],
                     color_space,
                     &metadata,
                 )
@@ -263,7 +263,7 @@ pub(crate) fn sdr_preview_from_linear_rgba32f(
             let row_end = row_start + width as usize * 4;
             rows.push(tone_map_linear_rgba_f32_row_to_sdr_u8(
                 width,
-                rgba_f32[row_start..row_end].to_vec(),
+                &rgba_f32[row_start..row_end],
                 color_space,
                 &metadata,
             )?);
@@ -301,7 +301,7 @@ pub(crate) fn sdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
             .map(|preview_y| {
                 let row_f32 =
                     sample_tiled_preview_row(source, preview_y, width, height, &source_rows)?;
-                tone_map_linear_rgba_f32_row_to_sdr_u8(width, row_f32, color_space, &metadata)
+                tone_map_linear_rgba_f32_row_to_sdr_u8(width, &row_f32, color_space, &metadata)
             })
             .collect::<Result<Vec<_>, _>>()?
     } else {
@@ -310,7 +310,7 @@ pub(crate) fn sdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
             let row_f32 = sample_tiled_preview_row(source, preview_y, width, height, &source_rows)?;
             rows.push(tone_map_linear_rgba_f32_row_to_sdr_u8(
                 width,
-                row_f32,
+                &row_f32,
                 color_space,
                 &metadata,
             )?);
@@ -345,13 +345,13 @@ fn sample_hdr_image_preview_row_to_sdr_u8(
         let offset = (src_y * source_width as usize + src_x) * 4;
         row_f32.extend_from_slice(&rgba_f32[offset..offset + 4]);
     }
-    tone_map_linear_rgba_f32_row_to_sdr_u8(preview_width, row_f32, color_space, metadata)
+    tone_map_linear_rgba_f32_row_to_sdr_u8(preview_width, &row_f32, color_space, metadata)
 }
 
 /// Tone-map one linear RGBA f32 preview row to 8-bit SDR without a full-image HDR buffer.
 pub(crate) fn tone_map_linear_rgba_f32_row_to_sdr_u8(
     row_width: u32,
-    row_rgba_f32: Vec<f32>,
+    row_rgba_f32: &[f32],
     color_space: HdrColorSpace,
     metadata: &HdrImageMetadata,
 ) -> Result<Vec<u8>, String> {
@@ -361,7 +361,7 @@ pub(crate) fn tone_map_linear_rgba_f32_row_to_sdr_u8(
         format: HdrPixelFormat::Rgba32Float,
         color_space,
         metadata: metadata.clone(),
-        rgba_f32: Arc::new(row_rgba_f32),
+        rgba_f32: Arc::new(row_rgba_f32.to_vec()),
     };
     hdr_to_sdr_rgba8_for_preview(&row, 0.0)
 }

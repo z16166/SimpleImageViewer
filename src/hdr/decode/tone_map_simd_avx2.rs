@@ -168,23 +168,29 @@ unsafe fn apply_matrix8_avx2(
     m: &[[f32; 3]; 3],
 ) -> (__m256, __m256, __m256) {
     let sr = _mm256_fmadd_ps(
-        b, _mm256_set1_ps(m[0][2]),
+        b,
+        _mm256_set1_ps(m[0][2]),
         _mm256_fmadd_ps(
-            g, _mm256_set1_ps(m[0][1]),
+            g,
+            _mm256_set1_ps(m[0][1]),
             _mm256_mul_ps(r, _mm256_set1_ps(m[0][0])),
         ),
     );
     let sg = _mm256_fmadd_ps(
-        b, _mm256_set1_ps(m[1][2]),
+        b,
+        _mm256_set1_ps(m[1][2]),
         _mm256_fmadd_ps(
-            g, _mm256_set1_ps(m[1][1]),
+            g,
+            _mm256_set1_ps(m[1][1]),
             _mm256_mul_ps(r, _mm256_set1_ps(m[1][0])),
         ),
     );
     let sb = _mm256_fmadd_ps(
-        b, _mm256_set1_ps(m[2][2]),
+        b,
+        _mm256_set1_ps(m[2][2]),
         _mm256_fmadd_ps(
-            g, _mm256_set1_ps(m[2][1]),
+            g,
+            _mm256_set1_ps(m[2][1]),
             _mm256_mul_ps(r, _mm256_set1_ps(m[2][0])),
         ),
     );
@@ -239,10 +245,8 @@ unsafe fn pq_to_display_linear8_avx2(code: __m256, sdr_white_nits: f32) -> __m25
         let clamped = _mm256_min_ps(_mm256_max_ps(code, zero), one);
         let code_m2 = pow8_avx2(clamped, 1.0 / m2);
         let numerator = _mm256_max_ps(_mm256_sub_ps(code_m2, c1), zero);
-        let denominator = _mm256_max_ps(
-            _mm256_fnmadd_ps(c3, code_m2, c2),
-            _mm256_set1_ps(0.000001),
-        );
+        let denominator =
+            _mm256_max_ps(_mm256_fnmadd_ps(c3, code_m2, c2), _mm256_set1_ps(0.000001));
         let ratio = _mm256_div_ps(numerator, denominator);
         let nits = _mm256_mul_ps(_mm256_set1_ps(10_000.0), pow8_avx2(ratio, 1.0 / m1));
         _mm256_div_ps(nits, _mm256_set1_ps(sdr_white_nits.max(1.0)))

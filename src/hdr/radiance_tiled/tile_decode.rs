@@ -231,7 +231,7 @@ pub(crate) fn decode_radiance_sdr_preview(
                     params.apply_to_pixels(&mut row_rgba);
                     crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
                         preview_width,
-                        row_rgba,
+                        &row_rgba,
                         HdrColorSpace::LinearSrgb,
                         &metadata,
                     )
@@ -246,7 +246,7 @@ pub(crate) fn decode_radiance_sdr_preview(
                 params.apply_to_pixels(&mut row_rgba);
                 let row_u8 = crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
                     preview_width,
-                    row_rgba,
+                    &row_rgba,
                     HdrColorSpace::LinearSrgb,
                     &metadata,
                 )?;
@@ -273,7 +273,7 @@ pub(crate) fn decode_radiance_sdr_preview(
                     params.apply_to_pixels(&mut row_rgba);
                     crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
                         preview_width,
-                        row_rgba,
+                        &row_rgba,
                         HdrColorSpace::LinearSrgb,
                         &metadata,
                     )
@@ -288,7 +288,7 @@ pub(crate) fn decode_radiance_sdr_preview(
                 params.apply_to_pixels(&mut row_rgba);
                 let row_u8 = crate::hdr::tiled::tone_map_linear_rgba_f32_row_to_sdr_u8(
                     preview_width,
-                    row_rgba,
+                    &row_rgba,
                     HdrColorSpace::LinearSrgb,
                     &metadata,
                 )?;

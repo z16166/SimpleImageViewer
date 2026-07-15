@@ -692,25 +692,19 @@ unsafe fn apply_matrix4_neon(
     m: &[[f32; 3]; 3],
 ) -> (float32x4_t, float32x4_t, float32x4_t) {
     let sr = vfmaq_f32(
-        vfmaq_f32(
-            vmulq_f32(r, vdupq_n_f32(m[0][0])),
-            g, vdupq_n_f32(m[0][1]),
-        ),
-        b, vdupq_n_f32(m[0][2]),
+        vfmaq_f32(vmulq_f32(r, vdupq_n_f32(m[0][0])), g, vdupq_n_f32(m[0][1])),
+        b,
+        vdupq_n_f32(m[0][2]),
     );
     let sg = vfmaq_f32(
-        vfmaq_f32(
-            vmulq_f32(r, vdupq_n_f32(m[1][0])),
-            g, vdupq_n_f32(m[1][1]),
-        ),
-        b, vdupq_n_f32(m[1][2]),
+        vfmaq_f32(vmulq_f32(r, vdupq_n_f32(m[1][0])), g, vdupq_n_f32(m[1][1])),
+        b,
+        vdupq_n_f32(m[1][2]),
     );
     let sb = vfmaq_f32(
-        vfmaq_f32(
-            vmulq_f32(r, vdupq_n_f32(m[2][0])),
-            g, vdupq_n_f32(m[2][1]),
-        ),
-        b, vdupq_n_f32(m[2][2]),
+        vfmaq_f32(vmulq_f32(r, vdupq_n_f32(m[2][0])), g, vdupq_n_f32(m[2][1])),
+        b,
+        vdupq_n_f32(m[2][2]),
     );
     (sr, sg, sb)
 }
