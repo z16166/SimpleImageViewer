@@ -54,8 +54,13 @@ pub(crate) fn extract_embedded_thumbnail(
 
                 let raster_len = (tw * th) as usize;
                 let pixels_len = raster_len * 4;
-                raster.clear();
-                raster.resize(raster_len, 0);
+                // Grow the raster buffer only when needed (avoid zero-fill on
+                // every candidate IFD — TIFFReadRGBAImageOriented overwrites all
+                // content so the initial zeros are unnecessary).  The pixels vec
+                // is mem::take'd by the caller, so its length must be accurate.
+                if raster_len > raster.len() {
+                    raster.resize(raster_len, 0);
+                }
                 pixels.clear();
                 pixels.resize(pixels_len, 0);
                 if lib::TIFFReadRGBAImageOriented(
