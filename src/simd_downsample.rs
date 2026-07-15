@@ -701,10 +701,10 @@ unsafe fn downsample_rgba8_box_sse41(params: DownsampleSimdParams<'_>) {
                     if let Some(cnt) = NonZeroU64::new(cnt as u64) {
                         let cnt = cnt.get() as u32;
                         let di = (dy * dst_w_u + base_x + i) * 4;
-                        *dst.get_unchecked_mut(di) = (lane_r[i] / cnt as i32) as u8;
-                        *dst.get_unchecked_mut(di + 1) = (lane_g[i] / cnt as i32) as u8;
-                        *dst.get_unchecked_mut(di + 2) = (lane_b[i] / cnt as i32) as u8;
-                        *dst.get_unchecked_mut(di + 3) = (lane_a[i] / cnt as i32) as u8;
+                        *dst.get_unchecked_mut(di) = (lane_r[i] as u32 / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 1) = (lane_g[i] as u32 / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 2) = (lane_b[i] as u32 / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 3) = (lane_a[i] as u32 / cnt) as u8;
                     }
                 }
             }
@@ -866,10 +866,10 @@ unsafe fn downsample_rgba8_box_avx2(params: DownsampleSimdParams<'_>) {
                     if let Some(cnt) = NonZeroU64::new(cnt as u64) {
                         let cnt = cnt.get() as u32;
                         let di = (dy * dst_w_u + base_x + i) * 4;
-                        *dst.get_unchecked_mut(di) = (lane_r[i] / cnt as i32) as u8;
-                        *dst.get_unchecked_mut(di + 1) = (lane_g[i] / cnt as i32) as u8;
-                        *dst.get_unchecked_mut(di + 2) = (lane_b[i] / cnt as i32) as u8;
-                        *dst.get_unchecked_mut(di + 3) = (lane_a[i] / cnt as i32) as u8;
+                        *dst.get_unchecked_mut(di) = (lane_r[i] as u32 / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 1) = (lane_g[i] as u32 / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 2) = (lane_b[i] as u32 / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 3) = (lane_a[i] as u32 / cnt) as u8;
                     }
                 }
             }
