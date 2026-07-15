@@ -424,7 +424,10 @@ impl CallbackTrait for HdrTilePlaneCallback {
                         return Vec::new();
                     }
                     Err(err) => {
-                        log::warn!("[HDR] Skipping JPEG deferred tile compose: {err}");
+                        static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                        ONCE.get_or_init(|| {
+                            log::warn!("[HDR] Skipping JPEG deferred tile compose: {err}");
+                        });
                         resources.tile_bindings.remove(tile_key);
                         return Vec::new();
                     }
