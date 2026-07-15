@@ -124,6 +124,27 @@ pub fn visibility_force_open_subtree(records: &[LayerRecord], members: &[usize])
 pub fn visibility_force_open_all(records: &[LayerRecord]) -> Vec<bool> {
     let mut visible: Vec<bool> = records.iter().map(is_drawable_leaf).collect();
     ensure_clip_bases_force_open(records, &mut visible);
+
+    // Cap drawable layers so excessive template layers do not stall decode.
+    let drawable_count = visible.iter().filter(|&&v| v).count();
+    if drawable_count > crate::psb_p25_pipeline::MAX_FORCE_OPEN_ALL_DRAWABLE {
+        log::debug!(
+            "PSD/PSB P2.5b force-open-all drawable={drawable_count} exceeds max {}; keeping only the first {} bottommost layers",
+            crate::psb_p25_pipeline::MAX_FORCE_OPEN_ALL_DRAWABLE,
+            crate::psb_p25_pipeline::MAX_FORCE_OPEN_ALL_DRAWABLE,
+        );
+        let mut kept = 0usize;
+        for v in &mut visible {
+            if *v {
+                if kept < crate::psb_p25_pipeline::MAX_FORCE_OPEN_ALL_DRAWABLE {
+                    kept += 1;
+                } else {
+                    *v = false;
+                }
+            }
+        }
+    }
+
     visible
 }
 
