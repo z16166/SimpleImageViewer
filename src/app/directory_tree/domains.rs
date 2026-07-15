@@ -411,9 +411,9 @@ pub(super) fn publish_preview_snapshot(
     let revision_matches = cache_revision == prev.revision;
     let list_gen_matches = list_publish_generation == prev.list_publish_generation;
     let image_list_gen_matches = image_list_generation == prev.image_list_generation;
-    let textures_match = textures_match_snapshot(textures, &prev.textures);
-    let logical_match = logical_sizes_match_snapshot(logical_sizes, &prev.logical_sizes);
-    let tags_match = tags_match_snapshot(buffer_tags, &prev.buffer_tags);
+    let textures_match = textures_match_snapshot(&preview_textures, &prev.textures);
+    let logical_match = logical_sizes_match_snapshot(&preview_logical_sizes, &prev.logical_sizes);
+    let tags_match = tags_match_snapshot(&preview_buffer_tags, &prev.buffer_tags);
     if revision_matches
         && list_gen_matches
         && image_list_gen_matches

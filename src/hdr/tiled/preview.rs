@@ -361,7 +361,7 @@ pub(crate) fn tone_map_linear_rgba_f32_row_to_sdr_u8(
         format: HdrPixelFormat::Rgba32Float,
         color_space,
         metadata: metadata.clone(),
-        rgba_f32: Arc::new(row_rgba_f32.to_vec()),
+        rgba_f32: Arc::new(row_rgba_f32.to_vec()), // clone slice into Arc<Vec<f32>> for HdrImageBuffer
     };
     hdr_to_sdr_rgba8_for_preview(&row, 0.0)
 }

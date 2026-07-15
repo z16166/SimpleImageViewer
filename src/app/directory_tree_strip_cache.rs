@@ -565,6 +565,13 @@ impl DirectoryTreeStripCache {
         &self,
         path_to_index: &HashMap<PathBuf, usize>,
     ) -> ProjectedStripPreview {
+        if path_to_index.is_empty() {
+            return ProjectedStripPreview {
+                textures: Vec::new(),
+                logical_sizes: Vec::new(),
+                buffer_tags: Vec::new(),
+            };
+        }
         let max_index = path_to_index.values().copied().max().unwrap_or(0);
         let mut textures: Vec<Option<egui::TextureHandle>> = vec![None; max_index + 1];
         let mut logical_sizes: Vec<Option<(u32, u32)>> = vec![None; max_index + 1];
