@@ -429,8 +429,10 @@ pub(crate) fn load_via_libtiff_from_mmap(
                     height,
                     rows_per_strip: rps,
                     handle_pool: TiffHandlePool::new(handle),
-                    strip_cache: Mutex::new(std::collections::HashMap::new()),
-                    cache_order: Mutex::new(crate::lru_order::LruOrder::default()),
+                    cache: Mutex::new((
+                        std::collections::HashMap::new(),
+                        crate::lru_order::LruOrder::default(),
+                    )),
                     max_cached_strips: max_cached,
                 })));
             }

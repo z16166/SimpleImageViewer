@@ -574,7 +574,52 @@ fn bilinear_rgb_taps_encoded(
     out
 }
 
-/// Bilinear upsample one gain-map row to primary width (encoded 0-1, not BT.709-linear yet).
+/// Precompute X-upsampled gain map for all gain rows (decouples X and Y interpolation).
+///
+/// Output is planar f32: `[gain_height][R₀..Rₙ, G₀..Gₙ, B₀..Bₙ]` (total `gain_height × width × 3`).
+/// Each gain row is bilinearly interpolated in X only; Y interpolation happens per target row
+/// in the compose loop. This eliminates the per-row overhead of re-sampling the gain map bytes
+/// when the gain map is much smaller than the primary image.
+pub(crate) fn precompute_gain_map_x_upsampled(
+    gain_rgba: &[u8],
+    gain_width: u32,
+    gain_height: u32,
+    width: u32,
+) -> Vec<f32> {
+    if gain_width == 0 || gain_height == 0 || width == 0 {
+        return Vec::new();
+    }
+    let out_len = (gain_height as usize) * (width as usize) * 3;
+    let mut buffer = vec![0.0_f32; out_len];
+    let w = width as usize;
+    for gy in 0..gain_height as usize {
+        let row_stride = gain_width as usize * 4;
+        let row = &gain_rgba[gy * row_stride..][..row_stride];
+        let out_offset = gy * w * 3;
+        let out_row = &mut buffer[out_offset..out_offset + w * 3];
+        let mut cache_x0 = u32::MAX;
+        let mut c0 = [0.0; 3];
+        let mut c1 = [0.0; 3];
+        for x in 0..width {
+            let gx = ((x as f32 + 0.5) * gain_width as f32 / width as f32 - 0.5)
+                .clamp(0.0, gain_width.saturating_sub(1) as f32);
+            let x0 = gx.floor() as u32;
+            let tx = gx - x0 as f32;
+            if x0 != cache_x0 {
+                let x1 = (x0 + 1).min(gain_width - 1);
+                c0 = gain_map_rgb_at_row(row, x0);
+                c1 = gain_map_rgb_at_row(row, x1);
+                cache_x0 = x0;
+            }
+            let xi = x as usize;
+            for ch in 0..3 {
+                out_row[ch * w + xi] = c0[ch] + (c1[ch] - c0[ch]) * tx;
+            }
+        }
+    }
+    buffer
+}
+
 ///
 /// Output is planar `[R0..Rn, G0..Gn, B0..Bn]` for SIMD channel loads.
 /// **Keep in sync** with

@@ -16,8 +16,8 @@
 
 //! SIMD/NEON ISO gain-map CPU compose fallback (Ultra HDR / AVIF JPEG-R deferred planes).
 //!
-//! Rows compose in parallel via rayon; each row upsamples the gain map once with
-//! [`precompute_gain_map_row_encoded`]. Per-pixel ISO recovery uses AVX2 (`pow8_avx2` /
+//! Rows compose in parallel via rayon; each row applies Y interpolation between two
+//! pre-X-upsampled gain rows from [`precompute_gain_map_x_upsampled`]. Per-pixel ISO recovery uses AVX2 (`pow8_avx2` /
 //! `exp2_8_avx2`, 8 pixels/step), SSE4.1 (`pow4_sse41` / `exp2_4_sse41`), or NEON
 //! (`pow4_neon` / `exp2_4_neon`) for gain shaping and per-lane `2^log_boost`, matching
 //! the scalar reference within the same tolerance band as
@@ -28,7 +28,7 @@ use std::cell::UnsafeCell;
 use rayon::prelude::*;
 
 use crate::hdr::gain_map::{
-    GainMapMetadata, compose_gain_map_pixel, gain_map_weight, precompute_gain_map_row_encoded,
+    GainMapMetadata, compose_gain_map_pixel, gain_map_weight, precompute_gain_map_x_upsampled,
     validate_iso_deferred_planes,
 };
 #[cfg(target_arch = "aarch64")]
@@ -167,7 +167,17 @@ pub(crate) fn compose_iso_deferred_cpu_pixels_simd(
     let mut rgba_f32 = vec![0.0_f32; width as usize * height as usize * 4];
     let row_stride = width as usize * 4;
     let sdr = deferred.sdr_rgba.as_slice();
-    let gain = deferred.gain_rgba.as_slice();
+
+    // Precompute gain-map X-upsample once (decouples X from Y interpolation),
+    // eliminating per-row re-sampling of gain map bytes when the gain map
+    // is much smaller than the primary image.
+    let gain_pre_x = precompute_gain_map_x_upsampled(
+        deferred.gain_rgba.as_slice(),
+        deferred.gain_width,
+        deferred.gain_height,
+        width,
+    );
+    let gain_h = deferred.gain_height as usize;
 
     rgba_f32
         .par_chunks_mut(row_stride)
@@ -183,19 +193,30 @@ pub(crate) fn compose_iso_deferred_cpu_pixels_simd(
                 unsafe {
                     gain_row.set_len(needed);
                 }
-                precompute_gain_map_row_encoded(
-                    gain,
-                    deferred.gain_width,
-                    deferred.gain_height,
-                    y as u32,
-                    width,
-                    height,
-                    gain_row,
-                );
+
+                // Y-interpolate from precomputed X-upsampled rows.
+                let gy = ((y as f32 + 0.5) * gain_h as f32 / height as f32 - 0.5)
+                    .clamp(0.0, gain_h.saturating_sub(1) as f32);
+                let y0 = gy.floor() as usize;
+                let y1 = (y0 + 1).min(gain_h.saturating_sub(1));
+                let ty = gy - y0 as f32;
+                let w = width as usize;
+                let row0 = &gain_pre_x[y0 * w * 3..];
+                let row1 = &gain_pre_x[y1 * w * 3..];
+                for ch in 0..3 {
+                    let base = ch * w;
+                    let dst = &mut gain_row[base..base + w];
+                    let src0 = &row0[base..base + w];
+                    let src1 = &row1[base..base + w];
+                    for xi in 0..w {
+                        dst[xi] = src0[xi] + (src1[xi] - src0[xi]) * ty;
+                    }
+                }
+
                 compose_iso_row(
                     &sdr[y * row_stride..(y + 1) * row_stride],
                     row_out,
-                    &gain_row,
+                    gain_row,
                     constants,
                     &simd_pack,
                 );
