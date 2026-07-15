@@ -557,26 +557,25 @@ impl DirectoryTreeStripCache {
     ///
     /// `path_to_index` maps the current `image_files` paths to their row index; entries
     /// whose path is not in the map (no longer in the list) are dropped.
+    ///
+    /// Single-pass iteration: builds all 3 maps in one traversal, reducing
+    /// `path_to_index` lookups from 3×N to N (H-8).
     pub(crate) fn project_index_maps(
         &self,
         path_to_index: &HashMap<PathBuf, usize>,
     ) -> ProjectedStripPreview {
         let mut textures = HashMap::with_capacity(self.textures.len());
+        let mut logical_sizes = HashMap::with_capacity(self.logical_sizes.len());
+        let mut buffer_tags = HashMap::with_capacity(self.preview_buffer_tag.len());
         for (path, handle) in &self.textures {
             if let Some(&index) = path_to_index.get(path) {
                 textures.insert(index, handle.clone());
-            }
-        }
-        let mut logical_sizes = HashMap::with_capacity(self.logical_sizes.len());
-        for (path, &size) in &self.logical_sizes {
-            if let Some(&index) = path_to_index.get(path) {
-                logical_sizes.insert(index, size);
-            }
-        }
-        let mut buffer_tags = HashMap::with_capacity(self.preview_buffer_tag.len());
-        for (path, &tag) in &self.preview_buffer_tag {
-            if let Some(&index) = path_to_index.get(path) {
-                buffer_tags.insert(index, tag);
+                if let Some(&size) = self.logical_sizes.get(path) {
+                    logical_sizes.insert(index, size);
+                }
+                if let Some(&tag) = self.preview_buffer_tag.get(path) {
+                    buffer_tags.insert(index, tag);
+                }
             }
         }
         ProjectedStripPreview {
