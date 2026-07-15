@@ -877,7 +877,7 @@ impl HugeTiffStrideDecoder {
 
         if let Some(offsets) = offsets {
             // Engine A: Fast Zero-Copy Mmap
-            log::info!("MacOS ImageIO: Engine A - Unified Zero-Copy Mmap Stride-Reader");
+            log::debug!("MacOS ImageIO: Engine A - Unified Zero-Copy Mmap Stride-Reader");
             for ty in 0..target_h {
                 let y = ty * stride;
                 let chunk_row = y / chunk_h;
@@ -915,7 +915,7 @@ impl HugeTiffStrideDecoder {
             // ========================================================
             // Engine B: Rayon Multi-threaded Decompression + Zero Allocation
             // ========================================================
-            log::info!("MacOS ImageIO: Engine B - Rayon Parallel Decompression (Zero Alloc)");
+            log::debug!("MacOS ImageIO: Engine B - Rayon Parallel Decompression (Zero Alloc)");
 
             // 1. Identify which chunks are ACTUALLY required
             let mut required_chunks = HashSet::new();
@@ -1196,9 +1196,9 @@ fn load_via_image_io_with_mmap(
                 let th_key = CFString::from_static_string("TileHeight");
 
                 if tiff_props.contains_key(&tw_key) && tiff_props.contains_key(&th_key) {
-                    log::info!("TIFF Diagnostics: [{}] is TILED", path.display());
+                    log::debug!("TIFF Diagnostics: [{}] is TILED", path.display());
                 } else {
-                    log::info!(
+                    log::debug!(
                         "TIFF Diagnostics: [{}] is STRIPPED (Potentially slower random access)",
                         path.display()
                     );
@@ -1255,7 +1255,7 @@ fn load_via_image_io_with_mmap(
         // Optimization: For giant STRIPPED TIFFs, use our custom caching loader to avoid CoreGraphics re-decoding overhead.
         let is_tiff = ext == "tif" || ext == "tiff";
         if is_tiff && is_stripped {
-            log::info!(
+            log::debug!(
                 "MacOS ImageIO: Giant STRIPPED TIFF detected ({}x{}, orientation {}). Using TiffStripCachingSource.",
                 physical_width,
                 physical_height,
