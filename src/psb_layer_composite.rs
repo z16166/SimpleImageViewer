@@ -929,7 +929,7 @@ pub(crate) struct LayerInfo<'a> {
     pub cmyk_icc: Vec<u8>,
 }
 
-pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
+pub(crate) fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
     let index = crate::psb_section_index::PsdSectionIndex::parse(bytes)?;
     parse_layer_records_from_index(&index, bytes)
 }
@@ -937,7 +937,7 @@ pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
 /// Same as [`parse_layer_records`], but reuses an already-parsed
 /// [`crate::psb_section_index::PsdSectionIndex`] instead of re-walking the
 /// header, color mode data, and image resources sections.
-pub fn parse_layer_records_from_index<'a>(
+pub(crate) fn parse_layer_records_from_index<'a>(
     index: &crate::psb_section_index::PsdSectionIndex,
     bytes: &'a [u8],
 ) -> Result<LayerInfo<'a>, String> {
