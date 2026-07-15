@@ -1479,8 +1479,8 @@ mod tests {
     #[test]
     fn decode_channel_image_rejects_oversized_dims() {
         let data = [0u8, 0u8]; // compression = Raw
-        let err =
-            decode_channel_image(&data, u32::MAX, u32::MAX, 8, false, None).expect_err("oversized");
+        let err = decode_channel_image(&data, None, u32::MAX, u32::MAX, 8, false, None)
+            .expect_err("oversized");
         assert!(
             err.as_str().contains("exceeds limit"),
             "unexpected err: {err}"
@@ -1490,22 +1490,23 @@ mod tests {
     #[test]
     fn decode_channel_image_raw_short_input_no_panic() {
         // Shorter than the compression header: fail at read_u16, never slice.
-        assert!(decode_channel_image(&[], 1, 1, 8, false, None).is_err());
-        assert!(decode_channel_image(&[0], 1, 1, 8, false, None).is_err());
+        assert!(decode_channel_image(&[], None, 1, 1, 8, false, None).is_err());
+        assert!(decode_channel_image(&[0], None, 1, 1, 8, false, None).is_err());
         // Header only / truncated payload must fail closed (no silent zero-fill).
-        let err = decode_channel_image(&[0, 0], 1, 1, 8, false, None).expect_err("truncated raw");
+        let err =
+            decode_channel_image(&[0, 0], None, 1, 1, 8, false, None).expect_err("truncated raw");
         assert!(err.as_str().contains("truncated"), "unexpected err: {err}");
         // Partial payload shorter than width*height*bps.
-        let err = decode_channel_image(&[0, 0, 0xAB], 2, 1, 8, false, None)
+        let err = decode_channel_image(&[0, 0, 0xAB], None, 2, 1, 8, false, None)
             .expect_err("partial raw plane");
         assert!(err.as_str().contains("truncated"), "unexpected err: {err}");
     }
 
     #[test]
     fn decode_channel_image_raw_exact_length_ok() {
-        let out = decode_channel_image(&[0, 0, 0x11, 0x22], 2, 1, 8, false, None)
+        let out = decode_channel_image(&[0, 0, 0x11, 0x22], None, 2, 1, 8, false, None)
             .expect("exact raw payload");
-        assert_eq!(out, vec![0x11, 0x22]);
+        assert_eq!(&*out, &[0x11, 0x22][..]);
     }
 
     #[test]
@@ -1513,7 +1514,7 @@ mod tests {
         // compression=1, one row claiming 2 compressed bytes (within per-row cap
         // for width=1) while only 1 byte remains after the row-count table.
         let data = vec![0u8, 1u8, 0u8, 2u8, 0x00];
-        let err = decode_channel_image(&data, 1, 1, 8, false, None)
+        let err = decode_channel_image(&data, None, 1, 1, 8, false, None)
             .expect_err("RLE total must not exceed remaining channel bytes");
         assert!(
             err.as_str().contains("exceeds remaining"),
@@ -1864,7 +1865,7 @@ mod tests {
         });
 
         // a = 200 * 200 / 255 = 156, then 156 * 128 / 255 = 78.
-        assert_eq!(rgba, vec![163, 122, 81, 78]);
+        assert_eq!(rgba, vec![163, 122, 81, 78].into());
     }
 
     #[test]
@@ -1889,7 +1890,7 @@ mod tests {
             opacity: 200,
             cmyk_icc: &[],
         });
-        assert_eq!(rgba, vec![10, 20, 30, 78]);
+        assert_eq!(rgba, vec![10, 20, 30, 78].into());
     }
 
     #[test]
@@ -1910,7 +1911,7 @@ mod tests {
             opacity: 255,
             cmyk_icc: &[],
         });
-        assert_eq!(rgba, vec![1, 3, 5, 255, 2, 4, 6, 255]);
+        assert_eq!(rgba, vec![1, 3, 5, 255, 2, 4, 6, 255].into());
     }
 
     #[test]
@@ -1932,7 +1933,7 @@ mod tests {
             opacity: 255,
             cmyk_icc: &[],
         });
-        assert_eq!(rgba, vec![9, 0, 7, 255]);
+        assert_eq!(rgba, vec![9, 0, 7, 255].into());
     }
 
     #[test]

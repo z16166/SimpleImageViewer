@@ -1031,6 +1031,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 0,
                 rgba: &base_rgba,
+                rgba_arc: None,
             },
             ClipLayerRefF32 {
                 left: 2,
@@ -1040,6 +1041,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 1,
                 rgba: &clip_rgba,
+                rgba_arc: None,
             },
         ];
 
