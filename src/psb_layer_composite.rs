@@ -2953,6 +2953,7 @@ mod tests {
                 blend: l.blend,
                 clipping: l.clipping,
                 rgba: &l.rgba,
+                rgba_arc: Some(&l.rgba),
             })
             .collect();
         let mut batch = vec![0u8; (width * height * 4) as usize];

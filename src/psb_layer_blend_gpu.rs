@@ -1581,6 +1581,7 @@ mod tests {
                 blend,
                 clipping: 0,
                 rgba: &layer_rgba,
+                rgba_arc: None,
             }];
             blend_layers_with_clipping(
                 &mut cpu_canvas,
@@ -1599,6 +1600,7 @@ mod tests {
                 blend,
                 clipping: 0,
                 rgba: &layer_rgba,
+                rgba_arc: None,
             }];
             let Some(gpu_canvas) = try_blend_layers_gpu(
                 &ctx,
@@ -1658,6 +1660,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 0,
                 rgba: &base_rgba,
+                rgba_arc: None,
             },
             ClipLayerRef {
                 left: CLIPPING_ACCURACY_OFFSET,
@@ -1667,6 +1670,7 @@ mod tests {
                 blend: *b"scrn",
                 clipping: 1,
                 rgba: &clip_rgba,
+                rgba_arc: None,
             },
             ClipLayerRef {
                 left: CLIPPING_ACCURACY_OVERLAY_LEFT,
@@ -1676,6 +1680,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 0,
                 rgba: &overlay_rgba,
+                rgba_arc: None,
             },
         ];
         blend_layers_with_clipping(
@@ -1859,6 +1864,7 @@ mod tests {
                 blend,
                 clipping: 0,
                 rgba: &layer_rgba,
+                rgba_arc: None,
             }];
             blend_layers_with_clipping(
                 &mut cpu_canvas,
@@ -1877,6 +1883,7 @@ mod tests {
                 blend,
                 clipping: 0,
                 rgba: &layer_rgba,
+                rgba_arc: None,
             }];
             let Some(gpu_canvas) = try_blend_layers_gpu(
                 &ctx,

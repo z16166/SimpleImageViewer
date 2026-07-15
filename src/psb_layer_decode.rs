@@ -29,6 +29,8 @@ use crate::psb_layer_composite::{
     CompositeTiming, LayerInfo, LayerMaskInfo, LayerRecord, accumulate_decoded_layer_bytes,
     checked_layer_pixel_count, dimensions_within_limit, layer_will_decode,
 };
+use std::sync::Arc;
+
 use crate::psb_reader::{
     PSD_CHANNEL_ID_ALPHA, PSD_CHANNEL_ID_COLOR_MAX, PSD_CHANNEL_ID_REAL_USER_MASK,
     PSD_CHANNEL_ID_USER_MASK, PSD_COLOR_MODE_BITMAP, PSD_COLOR_MODE_CMYK, PSD_COLOR_MODE_DUOTONE,
@@ -45,7 +47,7 @@ const RLE_ROW_CANCEL_POLL_INTERVAL: usize = 64;
 ///
 /// `data` must be exactly the channel's declared byte range. `depth` controls
 /// bytes-per-sample: 8 → 1 byte, 16 → 2 bytes BE, 32 → 4 bytes BE (f32 planes).
-/// The returned `Vec<u8>` is `width * height * bps` bytes in raster order.
+/// The returned `Arc<[u8]>` is `width * height * bps` bytes in raster order.
 pub(crate) fn decode_channel_image(
     data: &[u8],
     width: u32,
@@ -53,7 +55,7 @@ pub(crate) fn decode_channel_image(
     depth: u16,
     is_psb: bool,
     cancel: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<Vec<u8>, crate::loader::DecodeError> {
+) -> Result<Arc<[u8]>, crate::loader::DecodeError> {
     let bps = crate::psb_reader::bytes_per_sample(depth)?;
     let mut r = std::io::Cursor::new(data);
     let compression = crate::psb_reader::read_u16(&mut r)?;
@@ -78,7 +80,7 @@ pub(crate) fn decode_channel_image(
             let raw = data
                 .get(2..2 + total_raw_bytes)
                 .ok_or_else(|| "PSD/PSB layer channel raw payload out of bounds".to_string())?;
-            Ok(raw.to_vec())
+            Ok(Arc::from(raw))
         }
         PSD_COMPRESSION_RLE => {
             let mut row_counts = Vec::with_capacity(height as usize);
@@ -125,7 +127,7 @@ pub(crate) fn decode_channel_image(
                     .copy_from_slice(&row_buf[..row_raw_bytes]);
                 r.set_position(end as u64);
             }
-            Ok(out)
+            Ok(out.into())
         }
         PSD_COMPRESSION_ZIP | PSD_COMPRESSION_ZIP_PREDICTION => {
             crate::psb_reader::check_decode_cancel(cancel)?;
@@ -139,6 +141,7 @@ pub(crate) fn decode_channel_image(
                 depth,
                 compression == PSD_COMPRESSION_ZIP_PREDICTION,
             )
+            .map(Arc::from)
             .map_err(Into::into)
         }
         _ => Err(format!("Unsupported layer channel compression: {compression}").into()),
@@ -155,19 +158,19 @@ pub(crate) struct LayerRgbaArgs<'a> {
     pub(crate) color_mode: u16,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) color: &'a [Option<Vec<u8>>; 4],
+    pub(crate) color: &'a [Option<Arc<[u8]>>; 4],
     pub(crate) alpha: Option<&'a [u8]>,
     pub(crate) mask: Option<&'a [u8]>,
     pub(crate) opacity: u8,
     pub(crate) cmyk_icc: &'a [u8],
 }
 
-pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
+pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Arc<[u8]> {
     let Some(pixel_count) = checked_layer_pixel_count(args.width, args.height) else {
-        return Vec::new();
+        return Arc::new([]);
     };
     let Some(rgba_len) = pixel_count.checked_mul(4) else {
-        return Vec::new();
+        return Arc::new([]);
     };
     let opacity = args.opacity as u32;
 
@@ -198,7 +201,7 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
                 args.opacity,
                 args.mask,
             );
-            return rgba;
+            return rgba.into();
         }
     }
 
@@ -228,7 +231,7 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
             args.opacity,
             args.mask,
         );
-        return rgba;
+        return rgba.into();
     }
 
     // RGB fast path: planar R/G/B -> interleaved via SIMD, then fold opacity/mask.
@@ -262,12 +265,13 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
             args.opacity,
             args.mask,
         );
-        return rgba;
+        return rgba.into();
     }
 
     let mut rgba = vec![0u8; rgba_len];
-    let sample =
-        |ch: &Option<Vec<u8>>, i: usize| ch.as_deref().and_then(|d| d.get(i)).copied().unwrap_or(0);
+    let sample = |ch: &Option<Arc<[u8]>>, i: usize| {
+        ch.as_deref().and_then(|d| d.get(i)).copied().unwrap_or(0)
+    };
 
     for i in 0..pixel_count {
         let (r, g, b) = match args.color_mode {
@@ -312,7 +316,7 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
         rgba[off + 3] = a as u8;
     }
 
-    rgba
+    rgba.into()
 }
 
 // -- HDR f32 channel helpers -------------------------------------------------
@@ -693,7 +697,9 @@ pub(crate) struct DecodedLayer {
     pub(crate) blend: [u8; 4],
     /// 0 = base / unclipped; non-zero = clipped to nearest base below.
     pub(crate) clipping: u8,
-    pub(crate) rgba: Vec<u8>,
+    /// Layer RGBA pixel data, shared via `Arc<[u8]>` so clip groups can clone
+    /// the Arc (cheap refcount bump) instead of copying the entire buffer.
+    pub(crate) rgba: Arc<[u8]>,
 }
 
 pub(crate) struct LayerDecodeParams<'a> {
@@ -738,8 +744,8 @@ pub(crate) fn decode_one_layer(
     }
     let can_decode = has_bounds && dimensions_within_limit(width, height);
 
-    let mut color: [Option<Vec<u8>>; 4] = [None, None, None, None];
-    let mut alpha: Option<Vec<u8>> = None;
+    let mut color: [Option<Arc<[u8]>>; 4] = [None, None, None, None];
+    let mut alpha: Option<Arc<[u8]>> = None;
     let mut mask: Option<Vec<u8>> = None;
     let mut layer_failed = false;
 
@@ -1150,6 +1156,7 @@ pub(crate) fn run_composite_pass_gpu_batch(
             blend: l.blend,
             clipping: l.clipping,
             rgba: &l.rgba,
+            rgba_arc: Some(&l.rgba),
         })
         .collect();
     // Re-verified from the decoded layers themselves (not just the metadata
@@ -1301,6 +1308,7 @@ pub(crate) fn run_composite_pass_cpu_streaming(
             blend: layer.blend,
             clipping: layer.clipping,
             rgba: &layer.rgba,
+            rgba_arc: Some(&layer.rgba),
         };
 
         let (next_result, blend_result) = if next_idx < record_count {
@@ -1885,7 +1893,7 @@ mod tests {
             height: 32_768,
             blend: *b"norm",
             clipping: 0,
-            rgba: Vec::new(),
+            rgba: Arc::new([]),
         };
         assert!(
             crate::psb_layer_composite::check_streaming_pair_budget(&current, 32_768, 32_768)
