@@ -16,7 +16,9 @@
 
 //! AVX2 8-pixel ISO gain-map compose helpers (nested from `iso_gain_map_compose_simd`).
 
-use super::{IsoComposeSimdPack, SRGB_DIVISOR, SRGB_GAMMA, SRGB_LINEAR_SEGMENT_END, SRGB_OFFSET, SRGB_SCALE};
+use super::{
+    IsoComposeSimdPack, SRGB_DIVISOR, SRGB_GAMMA, SRGB_LINEAR_SEGMENT_END, SRGB_OFFSET, SRGB_SCALE,
+};
 use crate::hdr::simd_fast_pow::{exp2_8_avx2, pow8_avx2};
 use core::arch::x86_64::*;
 

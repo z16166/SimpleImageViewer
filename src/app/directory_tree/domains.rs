@@ -384,7 +384,10 @@ pub(super) fn publish_preview_snapshot(
     buffer_tags: &[Option<crate::app::directory_tree_strip_cache::StripPreviewBufferTag>],
 ) -> bool {
     let prev = swap.load();
-    let len = textures.len().max(logical_sizes.len()).max(buffer_tags.len());
+    let len = textures
+        .len()
+        .max(logical_sizes.len())
+        .max(buffer_tags.len());
     let mut preview_textures: Vec<Option<egui::TextureHandle>> = vec![None; len];
     let mut preview_logical_sizes: Vec<Option<(u32, u32)>> = vec![None; len];
     let mut preview_buffer_tags: Vec<Option<StripPreviewBufferTag>> = vec![None; len];
@@ -436,17 +439,19 @@ fn textures_match_snapshot(
     prev: &[Option<egui::TextureHandle>],
 ) -> bool {
     let max = cur.len().max(prev.len());
-    (0..max).all(|i| match (cur.get(i).and_then(|t| t.as_ref()), prev.get(i).and_then(|t| t.as_ref())) {
-        (Some(a), Some(b)) => a.id() == b.id(),
-        (None, None) => true,
-        _ => false,
+    (0..max).all(|i| {
+        match (
+            cur.get(i).and_then(|t| t.as_ref()),
+            prev.get(i).and_then(|t| t.as_ref()),
+        ) {
+            (Some(a), Some(b)) => a.id() == b.id(),
+            (None, None) => true,
+            _ => false,
+        }
     })
 }
 
-fn logical_sizes_match_snapshot(
-    cur: &[Option<(u32, u32)>],
-    prev: &[Option<(u32, u32)>],
-) -> bool {
+fn logical_sizes_match_snapshot(cur: &[Option<(u32, u32)>], prev: &[Option<(u32, u32)>]) -> bool {
     let max = cur.len().max(prev.len());
     (0..max).all(|i| cur.get(i).copied().flatten() == prev.get(i).copied().flatten())
 }

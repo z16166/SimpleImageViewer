@@ -132,9 +132,7 @@ impl DirectoryTreeView {
         self.tree.scroll_folder_tree_to_selected
     }
 
-    pub(super) fn preview_textures(
-        &self,
-    ) -> &[Option<egui::TextureHandle>] {
+    pub(super) fn preview_textures(&self) -> &[Option<egui::TextureHandle>] {
         &self.preview.textures
     }
 
@@ -322,7 +320,9 @@ pub(super) fn publish_directory_tree_domains(
     preview_cache_revision: Option<u64>,
     preview_textures: Option<&[Option<egui::TextureHandle>]>,
     preview_logical_sizes: Option<&[Option<(u32, u32)>]>,
-    preview_buffer_tags: Option<&[Option<crate::app::directory_tree_strip_cache::StripPreviewBufferTag>]>,
+    preview_buffer_tags: Option<
+        &[Option<crate::app::directory_tree_strip_cache::StripPreviewBufferTag>],
+    >,
 ) -> bool {
     let mut last_list_publish_at = runtime.last_list_publish_at.lock();
     let mut ctx = super::domains::DirectoryTreePublishContext {

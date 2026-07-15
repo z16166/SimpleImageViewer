@@ -254,7 +254,8 @@ impl DirectoryTreeStripCache {
         // Remove old tick entry for this path (if any) — O(n) over 128 entries, negligible.
         self.lru_tick.retain(|(_, p), _| p != path);
         self.lru_clock = self.lru_clock.wrapping_add(1);
-        self.lru_tick.insert((self.lru_clock, path.to_path_buf()), ());
+        self.lru_tick
+            .insert((self.lru_clock, path.to_path_buf()), ());
     }
 
     /// Mark a cached strip entry recently used so LRU eviction skips visible rows.

@@ -102,7 +102,10 @@ pub(crate) fn hdr_to_sdr_rgba8_with_tone_settings_scalar(
     };
 
     let mut pixels = vec![0_u8; expected_len];
-    for (pixel_out, pixel) in pixels.chunks_exact_mut(4).zip(buffer.rgba_f32.chunks_exact(4)) {
+    for (pixel_out, pixel) in pixels
+        .chunks_exact_mut(4)
+        .zip(buffer.rgba_f32.chunks_exact(4))
+    {
         let rgb_in = [pixel[0], pixel[1], pixel[2]];
         let decoded = decode_transfer_to_display_linear(rgb_in, tf, tone.sdr_white_nits);
         let linear_srgb =

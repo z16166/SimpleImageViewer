@@ -232,14 +232,7 @@ fn compose_iso_row(
             } else if std::arch::is_x86_feature_detected!("sse4.1") {
                 let mut simd_x = 0_u32;
                 unsafe {
-                    compose_iso_row_sse41(
-                        sdr_row,
-                        row_out,
-                        gain_row,
-                        width as u32,
-                        c,
-                        &mut simd_x,
-                    );
+                    compose_iso_row_sse41(sdr_row, row_out, gain_row, width as u32, c, &mut simd_x);
                 }
                 simd_x as usize
             } else {
@@ -250,14 +243,7 @@ fn compose_iso_row(
         {
             let mut simd_x = 0_u32;
             unsafe {
-                compose_iso_row_neon(
-                    sdr_row,
-                    row_out,
-                    gain_row,
-                    width as u32,
-                    c,
-                    &mut simd_x,
-                );
+                compose_iso_row_neon(sdr_row, row_out, gain_row, width as u32, c, &mut simd_x);
             }
             simd_x as usize
         }
