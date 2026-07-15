@@ -29,6 +29,7 @@
 //! following `clipping != 0` layers merge into the open group, then the group
 //! is masked by the base alpha silhouette and blended with the base mode.
 
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use crate::hdr::types::{
@@ -414,9 +415,11 @@ struct OpenClipGroupF32 {
     base_width: u32,
     base_height: u32,
     base_blend: [u8; 4],
-    /// Owned copy of the base pixels while the group is still unmaterialized.
+    /// Owned/shared copy of the base pixels while the group is still unmaterialized.
     /// Dropped after `temp` + `base_alpha` have captured everything needed.
-    base_rgba: Option<Vec<f32>>,
+    /// Uses `Arc<[f32]>` so the same allocation can be shared across multiple
+    /// clip groups when they reference the same base layer data.
+    base_rgba: Option<Arc<[f32]>>,
     /// Full-canvas group content once a clip layer has been merged in.
     temp: Option<Vec<f32>>,
     base_alpha: Option<Vec<f32>>,
@@ -430,7 +433,7 @@ impl OpenClipGroupF32 {
             base_width: base.width,
             base_height: base.height,
             base_blend: base.blend,
-            base_rgba: Some(base.rgba.to_vec()),
+            base_rgba: Some(Arc::from(base.rgba)),
             temp: None,
             base_alpha: None,
         }
@@ -451,7 +454,7 @@ impl OpenClipGroupF32 {
             let base_rgba = self
                 .base_rgba
                 .as_deref()
-                .expect("base_rgba is present until temp is initialized");
+                .ok_or_else(|| "PSD/PSB HDR clip group base pixels are missing".to_string())?;
             // Build group content: base first (Normal into empty), then clips with their modes.
             blend_f32_layer_onto(
                 &mut temp,
@@ -481,7 +484,9 @@ impl OpenClipGroupF32 {
             self.temp = Some(temp);
         }
         blend_f32_layer_onto(
-            self.temp.as_mut().expect("temp initialized above"),
+            self.temp
+                .as_mut()
+                .ok_or_else(|| "PSD/PSB HDR clip group temp buffer is missing".to_string())?,
             canvas_w,
             canvas_h,
             clip.rgba,
@@ -494,7 +499,7 @@ impl OpenClipGroupF32 {
         Ok(())
     }
 
-    fn finalize(self, canvas: &mut [f32], canvas_w: u32, canvas_h: u32) {
+    fn finalize(self, canvas: &mut [f32], canvas_w: u32, canvas_h: u32) -> Result<(), DecodeError> {
         let OpenClipGroupF32 {
             base_left,
             base_top,
@@ -511,9 +516,9 @@ impl OpenClipGroupF32 {
                     canvas,
                     canvas_w,
                     canvas_h,
-                    base_rgba
-                        .as_deref()
-                        .expect("base_rgba is present until temp is initialized"),
+                    base_rgba.as_deref().ok_or_else(|| {
+                        "PSD/PSB HDR clip group base pixels are missing".to_string()
+                    })?,
                     base_left,
                     base_top,
                     base_width,
@@ -522,7 +527,8 @@ impl OpenClipGroupF32 {
                 );
             }
             Some(mut temp) => {
-                let base_alpha = base_alpha.expect("base_alpha is set whenever temp is set");
+                let base_alpha = base_alpha
+                    .ok_or_else(|| "PSD/PSB HDR clip group base_alpha is missing".to_string())?;
                 apply_base_alpha_mask_f32(&mut temp, &base_alpha);
                 blend_f32_layer_onto(
                     canvas,
@@ -537,6 +543,7 @@ impl OpenClipGroupF32 {
                 );
             }
         }
+        Ok(())
     }
 }
 
@@ -588,7 +595,7 @@ impl ClipBlendStateF32 {
     ) -> Result<(), DecodeError> {
         crate::psb_reader::check_decode_cancel(cancel)?;
         if let Some(open) = self.open.take() {
-            open.finalize(canvas, self.canvas_w, self.canvas_h);
+            open.finalize(canvas, self.canvas_w, self.canvas_h)?;
         }
         Ok(())
     }

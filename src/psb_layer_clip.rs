@@ -22,6 +22,7 @@
 //! blend mode.
 
 use crate::psb_layer_blend_simd::{SeparableBlendKind, blend_separable_span};
+use std::sync::Arc;
 
 /// Decoded layer view for clip-aware blending (bottom-to-top order).
 pub(crate) struct ClipLayerRef<'a> {
@@ -380,7 +381,7 @@ struct OpenClipGroup {
     base_blend: [u8; 4],
     /// Owned copy of the base pixels while the group is still unmaterialized.
     /// Dropped after `temp` + `base_alpha` have captured everything needed.
-    base_rgba: Option<Vec<u8>>,
+    base_rgba: Option<Arc<[u8]>>,
     /// Full-canvas group content once a clip layer has been merged in.
     temp: Option<Vec<u8>>,
     base_alpha: Option<Vec<u8>>,
@@ -394,7 +395,7 @@ impl OpenClipGroup {
             base_width: base.width,
             base_height: base.height,
             base_blend: base.blend,
-            base_rgba: Some(base.rgba.to_vec()),
+            base_rgba: Some(Arc::from(base.rgba)),
             temp: None,
             base_alpha: None,
         }
