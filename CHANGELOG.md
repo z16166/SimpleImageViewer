@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.1.1] - 2026-07-15
+
+### Improved
+- **Faster PSD/PSB layer compositing**: Reduced memory copies during channel decoding, especially for large uncompressed layers, resulting in faster overall load times and lower peak memory usage.
+- **Reduced memory usage for clipping groups**: Clipping groups now share pixel data instead of copying it, cutting memory overhead for PSD/PSB files with many clipping layers.
+
+### Changed
+- **Internal type cleanup**: Layer pixel buffers now use shared ownership (`Arc<[u8]>`), improving data sharing safety and reducing unnecessary allocations.
+
 ## [3.1.0] - 2026-07-14
 
 ### Added
