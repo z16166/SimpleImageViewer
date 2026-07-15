@@ -35,9 +35,9 @@ use core::arch::x86_64::*;
 fn log_approx_scalar(x: f32) -> f32 {
     const INV_MANT_MASK: u32 = !0x7f80_0000;
     const EXP_BIAS: i32 = 0x7f;
-    const LOG_Q1: f32 = -2.121_944_4e-4;
-    const LOG_Q2: f32 = 0.693_359_4;
-    const SQRTHF: f32 = 0.707_106_77;
+    const LOG_Q1: f32 = -2.121_944_40e-4;
+    const LOG_Q2: f32 = 0.693_359_375;
+    const SQRTHF: f32 = 0.707_106_781_186_547_5;
 
     let x = x.max(f32::MIN_POSITIVE);
     let bits = x.to_bits();
@@ -79,11 +79,11 @@ fn log_approx_scalar(x: f32) -> f32 {
 #[inline]
 fn exp_approx_scalar(x: f32) -> f32 {
     const EXP_BIAS: i32 = 0x7f;
-    const EXP_HI: f32 = 88.376_26;
-    const EXP_LO: f32 = -88.376_26;
+    const EXP_HI: f32 = 88.376_262_664_794_9;
+    const EXP_LO: f32 = -88.376_262_664_794_9;
     const LOG2EF: f32 = std::f32::consts::LOG2_E;
-    const EXP_C1: f32 = 0.693_359_4;
-    const EXP_C2: f32 = -2.121_944_4e-4;
+    const EXP_C1: f32 = 0.693_359_375;
+    const EXP_C2: f32 = -2.121_944_40e-4;
 
     let x = x.clamp(EXP_LO, EXP_HI);
 
@@ -142,14 +142,14 @@ mod x86 {
 
     const INV_MANT_MASK: i32 = !0x7f80_0000_u32 as i32;
     const EXP_BIAS: i32 = 0x7f;
-    const EXP_HI: f32 = 88.376_26;
-    const EXP_LO: f32 = -88.376_26;
+    const EXP_HI: f32 = 88.376_262_664_794_9;
+    const EXP_LO: f32 = -88.376_262_664_794_9;
     const LOG2EF: f32 = std::f32::consts::LOG2_E;
-    const LOG_Q1: f32 = -2.121_944_4e-4;
-    const LOG_Q2: f32 = 0.693_359_4;
-    const EXP_C1: f32 = 0.693_359_4;
-    const EXP_C2: f32 = -2.121_944_4e-4;
-    const SQRTHF: f32 = 0.707_106_77;
+    const LOG_Q1: f32 = -2.121_944_40e-4;
+    const LOG_Q2: f32 = 0.693_359_375;
+    const EXP_C1: f32 = 0.693_359_375;
+    const EXP_C2: f32 = -2.121_944_40e-4;
+    const SQRTHF: f32 = 0.707_106_781_186_547_5;
 
     #[target_feature(enable = "sse4.1")]
     #[inline]

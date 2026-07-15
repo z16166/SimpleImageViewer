@@ -46,13 +46,7 @@ impl AlignedU32Buffer {
         let align = align.max(std::mem::align_of::<u32>());
         let pad = align / std::mem::size_of::<u32>() + 1;
         let cap = len.saturating_add(pad).saturating_add(pad);
-        let mut storage = Vec::<u32>::with_capacity(cap);
-        // SAFETY: Immediately set length to capacity so as_ptr() below is valid.
-        // Elements beyond offset..offset+len are always written before being read
-        // by as_mut_slice() callers, so zero-fill is unnecessary.
-        unsafe {
-            storage.set_len(cap);
-        }
+        let storage = vec![0u32; cap];
         let base = storage.as_ptr() as usize;
         let byte_off = (align - (base % align)) % align;
         let offset = byte_off / std::mem::size_of::<u32>();

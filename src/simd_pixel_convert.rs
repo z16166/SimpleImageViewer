@@ -1459,6 +1459,11 @@ unsafe fn finalize_gray_linear_scratch_row_to_rgba8_avx2(
             for (i, &ix) in indices.iter().enumerate() {
                 gray[i] = *lut.add(ix.clamp(0, 255) as usize);
             }
+            // `_mm_loadl_epi64` loads only the low 8 bytes (gray[0..8]) into the
+            // lower half of g8; the upper 8 bytes remain zero. `_mm_xor_si128`
+            // with miniswhite flips both halves, but the upper half is discarded
+            // by `_mm_unpacklo_epi8` in store_gray_u8x8_as_rgba8_avx2, which only
+            // uses the lower 8 bytes — so this is correct and intentional.
             let mut g8 = _mm_loadl_epi64(gray.as_ptr() as *const __m128i);
             if miniswhite {
                 g8 = _mm_xor_si128(g8, _mm_set1_epi8(-1));
