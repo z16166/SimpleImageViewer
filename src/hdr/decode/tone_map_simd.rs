@@ -296,7 +296,8 @@ fn tone_map_strip_simd(src: &[f32], dst: &mut [u8], ctx: StripToneMapContext) {
     let mut offset = 0_usize;
     #[cfg(target_arch = "x86_64")]
     {
-        if std::arch::is_x86_feature_detected!("avx2") {
+        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+        {
             unsafe {
                 avx2::tone_map_strip_simd_avx2(src, dst, pixel_count, ctx, &mut offset);
             }
@@ -1259,6 +1260,35 @@ mod tests {
                 vld1q_f32(a.as_ptr()),
             );
             assert_eq!(simd, expected, "NEON pack must match scalar");
+        }
+    }
+
+    #[test]
+    fn strip_simd_non_aligned_widths_matches_scalar() {
+        // Regression: cover widths not divisible by 4 or 8 so the scalar tail
+        // (0-3 pixels for SSE4.1/NEON, 0-7 for AVX2) is exercised on all paths.
+        let widths: &[u32] = &[1, 2, 3, 5, 6, 7, 9];
+        let height = 8_u32;
+        for &width in widths {
+            let mut pixels = Vec::new();
+            for y in 0..height {
+                for x in 0..width {
+                    let t = (x + y) as f32 / 100.0;
+                    pixels.extend_from_slice(&[0.5 + t * 0.3, 0.4, 0.3, 1.0]);
+                }
+            }
+            let buffer = make_buffer(
+                width,
+                height,
+                HdrTransferFunction::Pq,
+                HdrColorSpace::Rec2020Linear,
+                pixels,
+            );
+            let tone = HdrToneMapSettings {
+                max_display_nits: DEFAULT_SDR_WHITE_NITS,
+                ..HdrToneMapSettings::default()
+            };
+            assert_strip_simd_matches_scalar(&buffer, &tone);
         }
     }
 }

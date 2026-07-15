@@ -379,33 +379,30 @@ pub(super) fn publish_preview_snapshot(
     image_list_generation: u64,
     row_count: usize,
     cache_revision: u64,
-    textures: &[Option<egui::TextureHandle>],
-    logical_sizes: &[Option<(u32, u32)>],
-    buffer_tags: &[Option<crate::app::directory_tree_strip_cache::StripPreviewBufferTag>],
+    textures: &[(usize, egui::TextureHandle)],
+    logical_sizes: &[(usize, (u32, u32))],
+    buffer_tags: &[(
+        usize,
+        crate::app::directory_tree_strip_cache::StripPreviewBufferTag,
+    )],
 ) -> bool {
     let prev = swap.load();
-    let len = textures
-        .len()
-        .max(logical_sizes.len())
-        .max(buffer_tags.len());
-    let mut preview_textures: Vec<Option<egui::TextureHandle>> = vec![None; len];
-    let mut preview_logical_sizes: Vec<Option<(u32, u32)>> = vec![None; len];
-    let mut preview_buffer_tags: Vec<Option<StripPreviewBufferTag>> = vec![None; len];
-    for (index, tex) in textures.iter().enumerate() {
+    let mut preview_textures: Vec<Option<egui::TextureHandle>> = vec![None; row_count];
+    let mut preview_logical_sizes: Vec<Option<(u32, u32)>> = vec![None; row_count];
+    let mut preview_buffer_tags: Vec<Option<StripPreviewBufferTag>> = vec![None; row_count];
+    for &(index, ref handle) in textures {
         if index < row_count {
-            if let Some(handle) = tex {
-                preview_textures[index] = Some(handle.clone());
-            }
+            preview_textures[index] = Some(handle.clone());
         }
     }
-    for (index, size) in logical_sizes.iter().enumerate() {
+    for &(index, size) in logical_sizes {
         if index < row_count {
-            preview_logical_sizes[index] = *size;
+            preview_logical_sizes[index] = Some(size);
         }
     }
-    for (index, tag) in buffer_tags.iter().enumerate() {
+    for &(index, tag) in buffer_tags {
         if index < row_count {
-            preview_buffer_tags[index] = *tag;
+            preview_buffer_tags[index] = Some(tag);
         }
     }
     let revision_matches = cache_revision == prev.revision;
@@ -477,10 +474,14 @@ pub(super) struct DirectoryTreePublishContext<'a> {
     pub last_list_publish_at: &'a mut Instant,
     pub force_list: bool,
     pub preview_cache_revision: Option<u64>,
-    pub preview_textures: Option<&'a [Option<egui::TextureHandle>]>,
-    pub preview_logical_sizes: Option<&'a [Option<(u32, u32)>]>,
-    pub preview_buffer_tags:
-        Option<&'a [Option<crate::app::directory_tree_strip_cache::StripPreviewBufferTag>]>,
+    pub preview_textures: Option<&'a [(usize, egui::TextureHandle)]>,
+    pub preview_logical_sizes: Option<&'a [(usize, (u32, u32))]>,
+    pub preview_buffer_tags: Option<
+        &'a [(
+            usize,
+            crate::app::directory_tree_strip_cache::StripPreviewBufferTag,
+        )],
+    >,
 }
 
 pub(super) fn publish_domain_snapshots(ctx: &mut DirectoryTreePublishContext<'_>) -> bool {

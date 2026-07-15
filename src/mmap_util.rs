@@ -59,7 +59,11 @@ pub(crate) fn map_file_with_len(path: &Path, len: u64) -> Result<(memmap2::Mmap,
 pub(crate) fn map_file(path: &Path) -> Result<(memmap2::Mmap, u64), String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     let len = file.metadata().map_err(|e| e.to_string())?.len();
-    map_file_with_len(path, len)
+    reject_len_below_image_minimum(len)?;
+    // SAFETY: mmap from the same `file` handle as metadata to avoid
+    // a second open + TOCTOU window between stat and mmap.
+    let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
+    Ok((mmap, len))
 }
 
 #[cfg(test)]

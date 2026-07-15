@@ -52,7 +52,8 @@ fn compose_row(
 
     #[cfg(target_arch = "x86_64")]
     {
-        if std::arch::is_x86_feature_detected!("avx2") {
+        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+        {
             unsafe {
                 compose_row_avx2(row_in, row_out, width, gain_rgb, transform);
             }

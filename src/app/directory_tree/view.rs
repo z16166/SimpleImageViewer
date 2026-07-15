@@ -318,10 +318,13 @@ pub(super) fn publish_directory_tree_domains(
     list: &mut DirectoryTreeListState,
     force_list: bool,
     preview_cache_revision: Option<u64>,
-    preview_textures: Option<&[Option<egui::TextureHandle>]>,
-    preview_logical_sizes: Option<&[Option<(u32, u32)>]>,
+    preview_textures: Option<&[(usize, egui::TextureHandle)]>,
+    preview_logical_sizes: Option<&[(usize, (u32, u32))]>,
     preview_buffer_tags: Option<
-        &[Option<crate::app::directory_tree_strip_cache::StripPreviewBufferTag>],
+        &[(
+            usize,
+            crate::app::directory_tree_strip_cache::StripPreviewBufferTag,
+        )],
     >,
 ) -> bool {
     let mut last_list_publish_at = runtime.last_list_publish_at.lock();

@@ -589,13 +589,25 @@ pub(crate) fn precompute_gain_map_x_upsampled(
     if gain_width == 0 || gain_height == 0 || width == 0 {
         return Vec::new();
     }
-    let out_len = (gain_height as usize) * (width as usize) * 3;
+    let Some(out_len) = (gain_height as usize)
+        .checked_mul(width as usize)
+        .and_then(|v| v.checked_mul(3))
+    else {
+        return Vec::new();
+    };
     let mut buffer = vec![0.0_f32; out_len];
     let w = width as usize;
+    let Some(row_stride) = (gain_width as usize).checked_mul(4) else {
+        return Vec::new();
+    };
     for gy in 0..gain_height as usize {
-        let row_stride = gain_width as usize * 4;
-        let row = &gain_rgba[gy * row_stride..][..row_stride];
-        let out_offset = gy * w * 3;
+        let Some(row_byte_offset) = gy.checked_mul(row_stride) else {
+            return Vec::new();
+        };
+        let Some(out_offset) = gy.checked_mul(w).and_then(|v| v.checked_mul(3)) else {
+            return Vec::new();
+        };
+        let row = &gain_rgba[row_byte_offset..][..row_stride];
         let out_row = &mut buffer[out_offset..out_offset + w * 3];
         let mut cache_x0 = u32::MAX;
         let mut c0 = [0.0; 3];

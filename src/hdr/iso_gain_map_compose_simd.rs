@@ -237,7 +237,9 @@ fn compose_iso_row(
     let mut x = {
         #[cfg(target_arch = "x86_64")]
         {
-            if std::arch::is_x86_feature_detected!("avx2") {
+            if std::arch::is_x86_feature_detected!("avx2")
+                && std::arch::is_x86_feature_detected!("fma")
+            {
                 let mut simd_x = 0_u32;
                 unsafe {
                     avx2::compose_iso_row_avx2(
@@ -739,5 +741,38 @@ mod tests {
         let simd =
             compose_iso_deferred_cpu_pixels_simd(width, height, &deferred, 2.0).expect("simd");
         assert_iso_compose_near_scalar(&scalar, &simd);
+    }
+
+    #[test]
+    fn iso_compose_simd_non_aligned_widths_matches_scalar() {
+        // Regression: cover widths not divisible by 4 or 8 so the scalar tail
+        // (0-3 pixels for SSE4.1/NEON, 0-7 for AVX2) is exercised on all paths.
+        let widths: &[u32] = &[1, 2, 3, 5, 6, 7, 9];
+        let height = 48_u32;
+        let gain_w = 8_u32;
+        let gain_h = 6_u32;
+        let metadata = test_metadata();
+        let mut gain = vec![0_u8; (gain_w * gain_h * 4) as usize];
+        for (index, byte) in gain.iter_mut().enumerate() {
+            *byte = ((index * 31 + 64) % 256) as u8;
+        }
+        for &width in widths {
+            let mut sdr = vec![0_u8; (width * height * 4) as usize];
+            for (index, byte) in sdr.iter_mut().enumerate() {
+                *byte = ((index * 17) % 256) as u8;
+            }
+            let deferred = IsoGainMapGpuSource {
+                sdr_rgba: Arc::new(sdr),
+                gain_rgba: Arc::new(gain.clone()),
+                gain_width: gain_w,
+                gain_height: gain_h,
+                metadata: metadata.clone(),
+            };
+            let scalar = compose_iso_deferred_cpu_pixels_scalar(width, height, &deferred, 2.0)
+                .expect("scalar");
+            let simd =
+                compose_iso_deferred_cpu_pixels_simd(width, height, &deferred, 2.0).expect("simd");
+            assert_iso_compose_near_scalar(&scalar, &simd);
+        }
     }
 }

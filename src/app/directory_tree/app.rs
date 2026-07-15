@@ -319,36 +319,23 @@ impl ImageViewerApp {
         let projected = self
             .directory_tree_strip_cache
             .project_index_maps(path_to_index);
-        if projected.textures.len() != snap.textures.len() {
-            return true;
-        }
-        if projected.logical_sizes.len() != snap.logical_sizes.len() {
-            return true;
-        }
-        if projected.buffer_tags.len() != snap.buffer_tags.len() {
-            return true;
-        }
-        for (index, tex) in projected.textures.iter().enumerate() {
+        // Sparse projection: compare each cached entry against the snapshot.
+        // Snapshot length may be larger (visible row count), but only the cached
+        // entries' indices matter for the difference check.
+        for &(index, ref tex) in &projected.textures {
             match snap.textures.get(index).and_then(|t| t.as_ref()) {
-                None => {
-                    if tex.is_some() {
-                        return true;
-                    }
-                }
-                Some(prev) => match tex {
-                    Some(cur) if prev.id() != cur.id() => return true,
-                    None => return true,
-                    _ => {}
-                },
+                Some(prev) if prev.id() != tex.id() => return true,
+                None => return true,
+                _ => {}
             }
         }
-        for (index, logical) in projected.logical_sizes.iter().enumerate() {
-            if snap.logical_sizes.get(index).copied().flatten() != *logical {
+        for &(index, logical) in &projected.logical_sizes {
+            if snap.logical_sizes.get(index).copied().flatten() != Some(logical) {
                 return true;
             }
         }
-        for (index, tag) in projected.buffer_tags.iter().enumerate() {
-            if snap.buffer_tags.get(index).copied().flatten() != *tag {
+        for &(index, tag) in &projected.buffer_tags {
+            if snap.buffer_tags.get(index).copied().flatten() != Some(tag) {
                 return true;
             }
         }
@@ -1423,10 +1410,9 @@ impl ImageViewerApp {
         if updated {
             crate::preload_debug!(
                 "[PreloadDebug][DirTree] sync_preview rev {previous_revision} -> {} \
-                 cache_count={cache_count} ui_preview={} snap_has_indices={:?}",
+                 cache_count={cache_count} ui_preview={}",
                 snap_after.revision,
                 snap_after.textures.len(),
-                snap_after.textures.keys().copied().collect::<Vec<_>>()
             );
         }
         if updated {
