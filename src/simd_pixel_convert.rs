@@ -53,6 +53,15 @@ fn checked_u16_sample_scanline_bytes(width: usize, samples_per_pixel: usize) -> 
         .and_then(|samples| samples.checked_mul(std::mem::size_of::<u16>()))
 }
 
+/// Convert a normalized `[0, 1]` float to `u8` via `round(x * 255)`.
+///
+/// Rust `f32::round` on non-negative values matches WGSL `floor(x * 255.0 + 0.5)`
+/// (WGSL `round` is ties-to-even and must not be used for this path).
+#[inline]
+pub fn f32_to_u8_round(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 /// Zero-extend packed u8 samples into u16 lanes (one lane per channel sample).
 pub fn unpack_u8_to_u16_lanes(dst: &mut [u16], src: &[u8]) {
     if dst.len() != src.len() {

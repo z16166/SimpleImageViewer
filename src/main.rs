@@ -92,6 +92,7 @@ mod scanner;
 #[cfg(target_os = "windows")]
 mod seh_handler;
 mod settings;
+mod simd_pixel_convert;
 mod system_memory;
 pub mod theme;
 mod tile_cache;
