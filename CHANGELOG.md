@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [3.1.1] - 2026-07-15
 
 ### Improved
 - **Faster image loading and navigation**: Optimised preview strip rendering, directory tree indexing, and per-frame memory allocation — reducing stutter when browsing large folders quickly.
@@ -11,8 +11,6 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - **Reduced log verbosity**: Suppressed repeated warning messages for uncommon tile-compose failures and downgraded macOS ImageIO debug logs, resulting in cleaner diagnostic output.
-
-## [3.1.1] - 2026-07-15
 
 ### Improved
 - **Faster PSD/PSB layer compositing**: Reduced memory copies during channel decoding, especially for large uncompressed layers, resulting in faster overall load times and lower peak memory usage.
