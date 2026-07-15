@@ -265,9 +265,9 @@ impl ImageViewerApp {
             match projected.as_ref() {
                 Some((revision, projected)) => (
                     Some(*revision),
-                    Some(&projected.textures),
-                    Some(&projected.logical_sizes),
-                    Some(&projected.buffer_tags),
+                    Some(projected.textures.as_slice()),
+                    Some(projected.logical_sizes.as_slice()),
+                    Some(projected.buffer_tags.as_slice()),
                 ),
                 None => (None, None, None, None),
             };
@@ -322,20 +322,33 @@ impl ImageViewerApp {
         if projected.textures.len() != snap.textures.len() {
             return true;
         }
-        for (index, handle) in &projected.textures {
-            match snap.textures.get(index) {
-                None => return true,
-                Some(prev) if prev.id() != handle.id() => return true,
-                Some(_) => {}
+        if projected.logical_sizes.len() != snap.logical_sizes.len() {
+            return true;
+        }
+        if projected.buffer_tags.len() != snap.buffer_tags.len() {
+            return true;
+        }
+        for (index, tex) in projected.textures.iter().enumerate() {
+            match snap.textures.get(index).and_then(|t| t.as_ref()) {
+                None => {
+                    if tex.is_some() {
+                        return true;
+                    }
+                }
+                Some(prev) => match tex {
+                    Some(cur) if prev.id() != cur.id() => return true,
+                    None => return true,
+                    _ => {}
+                },
             }
         }
-        for (index, logical) in &projected.logical_sizes {
-            if snap.logical_sizes.get(index) != Some(logical) {
+        for (index, logical) in projected.logical_sizes.iter().enumerate() {
+            if snap.logical_sizes.get(index).copied().flatten() != *logical {
                 return true;
             }
         }
-        for (index, tag) in &projected.buffer_tags {
-            if snap.buffer_tags.get(index) != Some(tag) {
+        for (index, tag) in projected.buffer_tags.iter().enumerate() {
+            if snap.buffer_tags.get(index).copied().flatten() != *tag {
                 return true;
             }
         }
