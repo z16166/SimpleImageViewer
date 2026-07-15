@@ -19,6 +19,7 @@ use super::constants::{
     MAX_HDR_FALLBACK_TOTAL_BYTES, MAX_HDR_TONE_MAP_INPUT,
 };
 
+use crate::hdr::simd_fast_pow::fast_powf_scalar;
 use crate::hdr::types::{
     HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrReference,
     HdrToneMapSettings, HdrTransferFunction,
@@ -100,8 +101,8 @@ pub(crate) fn hdr_to_sdr_rgba8_with_tone_settings_scalar(
         1.0
     };
 
-    let mut pixels = Vec::with_capacity(expected_len);
-    for pixel in buffer.rgba_f32.chunks_exact(4) {
+    let mut pixels = vec![0_u8; expected_len];
+    for (pixel_out, pixel) in pixels.chunks_exact_mut(4).zip(buffer.rgba_f32.chunks_exact(4)) {
         let rgb_in = [pixel[0], pixel[1], pixel[2]];
         let decoded = decode_transfer_to_display_linear(rgb_in, tf, tone.sdr_white_nits);
         let linear_srgb =
@@ -115,7 +116,7 @@ pub(crate) fn hdr_to_sdr_rgba8_with_tone_settings_scalar(
         } else {
             encode_sdr_rgb8(linear_srgb, exposure_scale, peak_scale)
         };
-        pixels.extend_from_slice(&[
+        pixel_out.copy_from_slice(&[
             encoded[0],
             encoded[1],
             encoded[2],
@@ -171,7 +172,7 @@ pub(crate) fn bt709_nonlinear_channel_to_linear(c: f32) -> f32 {
     if c < breakpoint {
         c / 4.5
     } else {
-        ((c + 0.099) / 1.099).powf(1.0 / 0.45)
+        fast_powf_scalar((c + 0.099) / 1.099, 1.0 / 0.45)
     }
 }
 
@@ -181,7 +182,7 @@ pub(crate) fn linear_srgb_linear_to_srgb_u8(linear: f32) -> u8 {
     let encoded = if linear <= 0.0031308 {
         linear * 12.92
     } else {
-        1.055 * linear.powf(1.0 / 2.4) - 0.055
+        1.055 * fast_powf_scalar(linear, 1.0 / 2.4) - 0.055
     };
     (encoded * 255.0).round().clamp(0.0, 255.0) as u8
 }
@@ -191,7 +192,7 @@ pub(crate) fn srgb_nonlinear_channel_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
         c / 12.92
     } else {
-        ((c + 0.055) / 1.055).powf(2.4)
+        fast_powf_scalar((c + 0.055) / 1.055, 2.4)
     }
 }
 
@@ -204,10 +205,10 @@ pub(crate) fn pq_nonlinear_to_absolute_nits(code: f32) -> f32 {
     let c1 = crate::constants::PQ_C1;
     let c2 = crate::constants::PQ_C2;
     let c3 = crate::constants::PQ_C3;
-    let code_m2 = code.clamp(0.0, 1.0).powf(1.0 / m2);
+    let code_m2 = fast_powf_scalar(code.clamp(0.0, 1.0), 1.0 / m2);
     let numerator = (code_m2 - c1).max(0.0);
     let denominator = (c2 - c3 * code_m2).max(0.000001);
-    10_000.0 * (numerator / denominator).powf(1.0 / crate::constants::PQ_M1)
+    10_000.0 * fast_powf_scalar(numerator / denominator, 1.0 / crate::constants::PQ_M1)
 }
 
 /// Reference **PQ EOTF** (non-linear code → absolute luminance, then ÷ `sdr_white_nits` for display-relative linear).
@@ -345,7 +346,7 @@ pub(crate) fn encode_sdr_rgb8(
             sanitize_hdr_rgb(linear_srgb[i]) * exposure_scale * peak_scale,
         );
         let mapped = exposed / (1.0 + exposed);
-        let encoded = mapped.powf(INVERSE_DISPLAY_GAMMA).clamp(0.0, 1.0);
+        let encoded = fast_powf_scalar(mapped, INVERSE_DISPLAY_GAMMA).clamp(0.0, 1.0);
         out[i] = float_to_u8(encoded);
     }
     out

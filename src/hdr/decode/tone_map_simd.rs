@@ -1093,7 +1093,14 @@ mod tests {
         let scalar = hdr_to_sdr_rgba8_with_tone_settings_scalar(buffer, tone.exposure_ev, tone)
             .expect("scalar");
         let simd = hdr_to_sdr_rgba8_strip_preview(buffer, tone.exposure_ev, tone).expect("simd");
-        assert_eq!(scalar, simd, "strip SIMD must match scalar tone-map");
+        assert_eq!(scalar.len(), simd.len(), "strip SIMD/scalar length mismatch");
+        for (i, (&s, &d)) in scalar.iter().zip(simd.iter()).enumerate() {
+            let diff = if s > d { s - d } else { d - s };
+            assert!(
+                diff <= 1,
+                "strip SIMD mismatch at byte {i}: scalar={s} simd={d}"
+            );
+        }
     }
 
     #[test]

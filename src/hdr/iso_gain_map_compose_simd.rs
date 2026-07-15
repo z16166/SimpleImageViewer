@@ -23,7 +23,7 @@
 //! the scalar reference within the same tolerance band as
 //! [`crate::hdr::heif_apple_gain_map_compose_simd`].
 
-use std::cell::RefCell;
+use std::cell::UnsafeCell;
 
 use rayon::prelude::*;
 
@@ -55,7 +55,18 @@ const SRGB_SCALE: f32 = 1.055;
 const SRGB_GAMMA: f32 = 2.4;
 
 thread_local! {
-    static GAIN_ROW_SCRATCH: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
+    static GAIN_ROW_SCRATCH: UnsafeCell<Vec<f32>> = const { UnsafeCell::new(Vec::new()) };
+}
+
+/// SAFETY: called from within a single rayon thread (`thread_local!`), single-borrow,
+/// never re-entered because `compose_iso_row` and its callees do not recurse into
+/// [`compose_iso_deferred_cpu_pixels_simd`].
+fn with_gain_scratch<R>(f: impl FnOnce(&mut Vec<f32>) -> R) -> R {
+    GAIN_ROW_SCRATCH.with(|cell| {
+        // SAFETY: thread-local, no other borrow exists at this call site.
+        let vec = unsafe { &mut *cell.get() };
+        f(vec)
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -86,6 +97,56 @@ impl IsoComposeConstants {
     }
 }
 
+/// Flat scalar pack pre-built once and passed by reference to every SIMD
+/// inner loop — eliminates per-step struct traversal through
+/// [`GainMapMetadata`] + per-channel indexing in hot functions such as
+/// [`recover_hdr_rgb4_sse41`], [`recover_hdr_rgb4_neon`], and
+/// [`avx2::recover_hdr_rgb8_avx2`].
+#[derive(Clone, Copy)]
+struct IsoComposeSimdPack {
+    weight: f32,
+    inv_gamma_r: f32,
+    inv_gamma_g: f32,
+    inv_gamma_b: f32,
+    gain_min_r: f32,
+    gain_min_g: f32,
+    gain_min_b: f32,
+    gain_span_r: f32,
+    gain_span_g: f32,
+    gain_span_b: f32,
+    offset_sdr_r: f32,
+    offset_sdr_g: f32,
+    offset_sdr_b: f32,
+    offset_hdr_r: f32,
+    offset_hdr_g: f32,
+    offset_hdr_b: f32,
+}
+
+impl IsoComposeConstants {
+    /// Pre-compute a flat scalar pack so SIMD inner loops see plain fields
+    /// instead of reaching through [`GainMapMetadata`] + per-channel indexing.
+    fn to_simd_pack(&self) -> IsoComposeSimdPack {
+        IsoComposeSimdPack {
+            weight: self.gain_weight,
+            inv_gamma_r: self.inv_gamma[0],
+            inv_gamma_g: self.inv_gamma[1],
+            inv_gamma_b: self.inv_gamma[2],
+            gain_min_r: self.metadata.gain_map_min[0],
+            gain_min_g: self.metadata.gain_map_min[1],
+            gain_min_b: self.metadata.gain_map_min[2],
+            gain_span_r: self.gain_span[0],
+            gain_span_g: self.gain_span[1],
+            gain_span_b: self.gain_span[2],
+            offset_sdr_r: self.metadata.offset_sdr[0],
+            offset_sdr_g: self.metadata.offset_sdr[1],
+            offset_sdr_b: self.metadata.offset_sdr[2],
+            offset_hdr_r: self.metadata.offset_hdr[0],
+            offset_hdr_g: self.metadata.offset_hdr[1],
+            offset_hdr_b: self.metadata.offset_hdr[2],
+        }
+    }
+}
+
 pub(crate) fn compose_iso_deferred_cpu_pixels_simd(
     width: u32,
     height: u32,
@@ -102,6 +163,7 @@ pub(crate) fn compose_iso_deferred_cpu_pixels_simd(
     )?;
 
     let constants = IsoComposeConstants::new(deferred.metadata, target_hdr_capacity);
+    let simd_pack = constants.to_simd_pack();
     let mut rgba_f32 = vec![0.0_f32; width as usize * height as usize * 4];
     let row_stride = width as usize * 4;
     let sdr = deferred.sdr_rgba.as_slice();
@@ -111,8 +173,7 @@ pub(crate) fn compose_iso_deferred_cpu_pixels_simd(
         .par_chunks_mut(row_stride)
         .enumerate()
         .for_each(|(y, row_out)| {
-            GAIN_ROW_SCRATCH.with(|scratch| {
-                let mut gain_row = scratch.borrow_mut();
+            with_gain_scratch(|gain_row| {
                 let needed = width as usize * 3;
                 if gain_row.capacity() < needed {
                     let extra = needed - gain_row.len();
@@ -129,13 +190,14 @@ pub(crate) fn compose_iso_deferred_cpu_pixels_simd(
                     y as u32,
                     width,
                     height,
-                    &mut gain_row,
+                    gain_row,
                 );
                 compose_iso_row(
                     &sdr[y * row_stride..(y + 1) * row_stride],
                     row_out,
                     &gain_row,
                     constants,
+                    &simd_pack,
                 );
             });
         });
@@ -148,6 +210,7 @@ fn compose_iso_row(
     row_out: &mut [f32],
     gain_row: &[f32],
     constants: IsoComposeConstants,
+    c: &IsoComposeSimdPack,
 ) {
     let width = sdr_row.len() / 4;
     let mut x = {
@@ -161,7 +224,7 @@ fn compose_iso_row(
                         row_out,
                         gain_row,
                         width as u32,
-                        constants,
+                        c,
                         &mut simd_x,
                     );
                 }
@@ -174,7 +237,7 @@ fn compose_iso_row(
                         row_out,
                         gain_row,
                         width as u32,
-                        constants,
+                        c,
                         &mut simd_x,
                     );
                 }
@@ -192,7 +255,7 @@ fn compose_iso_row(
                     row_out,
                     gain_row,
                     width as u32,
-                    constants,
+                    c,
                     &mut simd_x,
                 );
             }
@@ -240,7 +303,7 @@ unsafe fn compose_iso_row_sse41(
     row_out: &mut [f32],
     gain_row: &[f32],
     width: u32,
-    constants: IsoComposeConstants,
+    c: &IsoComposeSimdPack,
     x: &mut u32,
 ) {
     unsafe {
@@ -251,7 +314,7 @@ unsafe fn compose_iso_row_sse41(
             let (gain_r, gain_g, gain_b) =
                 load_gain_rgb4_sse41(gain_row.as_ptr(), xi, width as usize);
             let (out_r, out_g, out_b) =
-                recover_hdr_rgb4_sse41(enc_r, enc_g, enc_b, gain_r, gain_g, gain_b, constants);
+                recover_hdr_rgb4_sse41(enc_r, enc_g, enc_b, gain_r, gain_g, gain_b, c);
             store_rgba4_sse41(
                 row_out.as_mut_ptr().add(base),
                 sdr_row.as_ptr().add(base),
@@ -271,7 +334,7 @@ unsafe fn compose_iso_row_neon(
     row_out: &mut [f32],
     gain_row: &[f32],
     width: u32,
-    constants: IsoComposeConstants,
+    c: &IsoComposeSimdPack,
     x: &mut u32,
 ) {
     unsafe {
@@ -282,7 +345,7 @@ unsafe fn compose_iso_row_neon(
             let (gain_r, gain_g, gain_b) =
                 load_gain_rgb4_neon(gain_row.as_ptr(), xi, width as usize);
             let (out_r, out_g, out_b) =
-                recover_hdr_rgb4_neon(enc_r, enc_g, enc_b, gain_r, gain_g, gain_b, constants);
+                recover_hdr_rgb4_neon(enc_r, enc_g, enc_b, gain_r, gain_g, gain_b, c);
             store_rgba4_neon(
                 row_out.as_mut_ptr().add(base),
                 sdr_row.as_ptr().add(base),
@@ -432,33 +495,29 @@ unsafe fn recover_hdr_rgb4_sse41(
     gain_r: __m128,
     gain_g: __m128,
     gain_b: __m128,
-    constants: IsoComposeConstants,
+    c: &IsoComposeSimdPack,
 ) -> (__m128, __m128, __m128) {
     unsafe {
-        let weight = _mm_set1_ps(constants.gain_weight);
+        let weight = _mm_set1_ps(c.weight);
         let zero = _mm_setzero_ps();
         let lr = srgb_encoded_to_linear4_sse41(enc_r);
         let lg = srgb_encoded_to_linear4_sse41(enc_g);
         let lb = srgb_encoded_to_linear4_sse41(enc_b);
 
-        // Per-channel constants built once (not re-indexed via channel usize).
-        let inv_gamma_r = constants.inv_gamma[0];
-        let inv_gamma_g = constants.inv_gamma[1];
-        let inv_gamma_b = constants.inv_gamma[2];
-        let gain_min_r = _mm_set1_ps(constants.metadata.gain_map_min[0]);
-        let gain_min_g = _mm_set1_ps(constants.metadata.gain_map_min[1]);
-        let gain_min_b = _mm_set1_ps(constants.metadata.gain_map_min[2]);
-        let gain_span_r = _mm_set1_ps(constants.gain_span[0]);
-        let gain_span_g = _mm_set1_ps(constants.gain_span[1]);
-        let gain_span_b = _mm_set1_ps(constants.gain_span[2]);
-        let offset_sdr_r = _mm_set1_ps(constants.metadata.offset_sdr[0]);
-        let offset_sdr_g = _mm_set1_ps(constants.metadata.offset_sdr[1]);
-        let offset_sdr_b = _mm_set1_ps(constants.metadata.offset_sdr[2]);
-        let offset_hdr_r = _mm_set1_ps(constants.metadata.offset_hdr[0]);
-        let offset_hdr_g = _mm_set1_ps(constants.metadata.offset_hdr[1]);
-        let offset_hdr_b = _mm_set1_ps(constants.metadata.offset_hdr[2]);
+        let gain_min_r = _mm_set1_ps(c.gain_min_r);
+        let gain_min_g = _mm_set1_ps(c.gain_min_g);
+        let gain_min_b = _mm_set1_ps(c.gain_min_b);
+        let gain_span_r = _mm_set1_ps(c.gain_span_r);
+        let gain_span_g = _mm_set1_ps(c.gain_span_g);
+        let gain_span_b = _mm_set1_ps(c.gain_span_b);
+        let offset_sdr_r = _mm_set1_ps(c.offset_sdr_r);
+        let offset_sdr_g = _mm_set1_ps(c.offset_sdr_g);
+        let offset_sdr_b = _mm_set1_ps(c.offset_sdr_b);
+        let offset_hdr_r = _mm_set1_ps(c.offset_hdr_r);
+        let offset_hdr_g = _mm_set1_ps(c.offset_hdr_g);
+        let offset_hdr_b = _mm_set1_ps(c.offset_hdr_b);
 
-        let shaped_r = pow4_sse41(gain_r, inv_gamma_r);
+        let shaped_r = pow4_sse41(gain_r, c.inv_gamma_r);
         let boost_r = exp2_4_sse41(_mm_add_ps(
             gain_min_r,
             _mm_mul_ps(_mm_mul_ps(gain_span_r, shaped_r), weight),
@@ -471,7 +530,7 @@ unsafe fn recover_hdr_rgb4_sse41(
             zero,
         );
 
-        let shaped_g = pow4_sse41(gain_g, inv_gamma_g);
+        let shaped_g = pow4_sse41(gain_g, c.inv_gamma_g);
         let boost_g = exp2_4_sse41(_mm_add_ps(
             gain_min_g,
             _mm_mul_ps(_mm_mul_ps(gain_span_g, shaped_g), weight),
@@ -484,7 +543,7 @@ unsafe fn recover_hdr_rgb4_sse41(
             zero,
         );
 
-        let shaped_b = pow4_sse41(gain_b, inv_gamma_b);
+        let shaped_b = pow4_sse41(gain_b, c.inv_gamma_b);
         let boost_b = exp2_4_sse41(_mm_add_ps(
             gain_min_b,
             _mm_mul_ps(_mm_mul_ps(gain_span_b, shaped_b), weight),
@@ -510,32 +569,29 @@ unsafe fn recover_hdr_rgb4_neon(
     gain_r: float32x4_t,
     gain_g: float32x4_t,
     gain_b: float32x4_t,
-    constants: IsoComposeConstants,
+    c: &IsoComposeSimdPack,
 ) -> (float32x4_t, float32x4_t, float32x4_t) {
     unsafe {
-        let weight = vdupq_n_f32(constants.gain_weight);
+        let weight = vdupq_n_f32(c.weight);
         let zero = vdupq_n_f32(0.0);
         let lr = srgb_encoded_to_linear4_neon(enc_r);
         let lg = srgb_encoded_to_linear4_neon(enc_g);
         let lb = srgb_encoded_to_linear4_neon(enc_b);
 
-        let inv_gamma_r = constants.inv_gamma[0];
-        let inv_gamma_g = constants.inv_gamma[1];
-        let inv_gamma_b = constants.inv_gamma[2];
-        let gain_min_r = vdupq_n_f32(constants.metadata.gain_map_min[0]);
-        let gain_min_g = vdupq_n_f32(constants.metadata.gain_map_min[1]);
-        let gain_min_b = vdupq_n_f32(constants.metadata.gain_map_min[2]);
-        let gain_span_r = vdupq_n_f32(constants.gain_span[0]);
-        let gain_span_g = vdupq_n_f32(constants.gain_span[1]);
-        let gain_span_b = vdupq_n_f32(constants.gain_span[2]);
-        let offset_sdr_r = vdupq_n_f32(constants.metadata.offset_sdr[0]);
-        let offset_sdr_g = vdupq_n_f32(constants.metadata.offset_sdr[1]);
-        let offset_sdr_b = vdupq_n_f32(constants.metadata.offset_sdr[2]);
-        let offset_hdr_r = vdupq_n_f32(constants.metadata.offset_hdr[0]);
-        let offset_hdr_g = vdupq_n_f32(constants.metadata.offset_hdr[1]);
-        let offset_hdr_b = vdupq_n_f32(constants.metadata.offset_hdr[2]);
+        let gain_min_r = vdupq_n_f32(c.gain_min_r);
+        let gain_min_g = vdupq_n_f32(c.gain_min_g);
+        let gain_min_b = vdupq_n_f32(c.gain_min_b);
+        let gain_span_r = vdupq_n_f32(c.gain_span_r);
+        let gain_span_g = vdupq_n_f32(c.gain_span_g);
+        let gain_span_b = vdupq_n_f32(c.gain_span_b);
+        let offset_sdr_r = vdupq_n_f32(c.offset_sdr_r);
+        let offset_sdr_g = vdupq_n_f32(c.offset_sdr_g);
+        let offset_sdr_b = vdupq_n_f32(c.offset_sdr_b);
+        let offset_hdr_r = vdupq_n_f32(c.offset_hdr_r);
+        let offset_hdr_g = vdupq_n_f32(c.offset_hdr_g);
+        let offset_hdr_b = vdupq_n_f32(c.offset_hdr_b);
 
-        let shaped_r = pow4_neon(gain_r, inv_gamma_r);
+        let shaped_r = pow4_neon(gain_r, c.inv_gamma_r);
         let scaled_r = vmulq_f32(gain_span_r, shaped_r);
         let boost_r = exp2_4_neon(vfmaq_f32(gain_min_r, scaled_r, weight));
         let out_r = vmaxq_f32(
@@ -546,7 +602,7 @@ unsafe fn recover_hdr_rgb4_neon(
             zero,
         );
 
-        let shaped_g = pow4_neon(gain_g, inv_gamma_g);
+        let shaped_g = pow4_neon(gain_g, c.inv_gamma_g);
         let scaled_g = vmulq_f32(gain_span_g, shaped_g);
         let boost_g = exp2_4_neon(vfmaq_f32(gain_min_g, scaled_g, weight));
         let out_g = vmaxq_f32(
@@ -557,7 +613,7 @@ unsafe fn recover_hdr_rgb4_neon(
             zero,
         );
 
-        let shaped_b = pow4_neon(gain_b, inv_gamma_b);
+        let shaped_b = pow4_neon(gain_b, c.inv_gamma_b);
         let scaled_b = vmulq_f32(gain_span_b, shaped_b);
         let boost_b = exp2_4_neon(vfmaq_f32(gain_min_b, scaled_b, weight));
         let out_b = vmaxq_f32(
