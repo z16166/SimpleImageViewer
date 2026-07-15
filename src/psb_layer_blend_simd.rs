@@ -351,7 +351,15 @@ fn blend_one_pixel(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind, is_norm
             crate::psb_blend_nonseparable_full::blend_luminosity_rgb(dr, dg, db, sr, sg, sb)
         }
         SeparableBlendKind::DarkerColor => {
-            crate::psb_blend_nonseparable_full::darker_color_rgb(dr, dg, db, sr, sg, sb)
+            let result = crate::psb_blend_nonseparable_full::darker_color_rgb(dr, dg, db, sr, sg, sb);
+            log::warn!(
+                "TEMP_DBG DarkerColor: dr={:.4} dg={:.4} db={:.4} sr={:.4} sg={:.4} sb={:.4} lum_dst={:.4} lum_src={:.4} -> br={:.4} bg={:.4} bb={:.4}",
+                dr, dg, db, sr, sg, sb,
+                crate::psb_blend_nonseparable::lum(dr, dg, db),
+                crate::psb_blend_nonseparable::lum(sr, sg, sb),
+                result.0, result.1, result.2
+            );
+            result
         }
         SeparableBlendKind::LighterColor => {
             crate::psb_blend_nonseparable_full::lighter_color_rgb(dr, dg, db, sr, sg, sb)
@@ -376,6 +384,10 @@ fn blend_one_pixel(dst: &mut [u8], src: &[u8], kind: SeparableBlendKind, is_norm
         dst[c] = f32_to_u8_round(co / out_a_f);
     }
     dst[3] = f32_to_u8_round(out_a_f);
+    log::warn!(
+        "TEMP_DBG blend_pixel_inner cross out: da_f={:.4} sa_f={:.4} out_a_f={:.4} dst=({},{},{},{})",
+        da_f, sa_f, out_a_f, dst[0], dst[1], dst[2], dst[3]
+    );
 }
 
 #[inline]
