@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
@@ -210,7 +210,10 @@ pub(crate) struct DirectoryTreeStripCache {
     preview_stage: HashMap<PathBuf, PreviewStage>,
     logical_sizes: HashMap<PathBuf, (u32, u32)>,
     /// Access tick per path with a live texture; smallest tick is evicted first.
-    lru_tick: HashMap<PathBuf, u64>,
+    /// Keyed as `(tick, path)` so [`BTreeMap::pop_first`] yields the LRU victim in O(log n).
+    lru_tick: BTreeMap<(u64, PathBuf), ()>,
+    /// Cached texture names to avoid repeated `format!` allocations (H-9/H-11).
+    texture_names: HashMap<PathBuf, String>,
     lru_clock: u64,
     gpu_revision: u64,
 }
@@ -248,12 +251,10 @@ impl DirectoryTreeStripCache {
             self.textures.contains_key(path),
             "touch_lru requires an existing strip texture entry"
         );
+        // Remove old tick entry for this path (if any) — O(n) over 128 entries, negligible.
+        self.lru_tick.retain(|(_, p), _| p != path);
         self.lru_clock = self.lru_clock.wrapping_add(1);
-        if let Some(tick) = self.lru_tick.get_mut(path) {
-            *tick = self.lru_clock;
-        } else {
-            self.lru_tick.insert(path.to_path_buf(), self.lru_clock);
-        }
+        self.lru_tick.insert((self.lru_clock, path.to_path_buf()), ());
     }
 
     /// Mark a cached strip entry recently used so LRU eviction skips visible rows.
@@ -268,7 +269,8 @@ impl DirectoryTreeStripCache {
         self.preview_buffer_tag.remove(path);
         self.preview_stage.remove(path);
         self.logical_sizes.remove(path);
-        self.lru_tick.remove(path);
+        self.texture_names.remove(path);
+        self.lru_tick.retain(|(_, p), _| p != path);
     }
 
     /// Test/debug accessor for the path-keyed texture map. Production publish goes through
@@ -534,11 +536,11 @@ impl DirectoryTreeStripCache {
             self.commit_existing_strip_texture_update(buffer_tag, stage, logical_size, path);
             return;
         }
-        let handle = ctx.load_texture(
-            format!("dir_tree_strip::{}", path.display()),
-            color_image,
-            TextureOptions::LINEAR,
-        );
+        let name = self
+            .texture_names
+            .entry(path.to_path_buf())
+            .or_insert_with(|| format!("dir_tree_strip::{}", path.display()));
+        let handle = ctx.load_texture(name.as_str(), color_image, TextureOptions::LINEAR);
         self.commit_strip_texture(handle, buffer_tag, stage, logical_size, path);
     }
 
@@ -547,7 +549,8 @@ impl DirectoryTreeStripCache {
         self.preview_buffer_tag.retain(|path, _| keep(path));
         self.preview_stage.retain(|path, _| keep(path));
         self.logical_sizes.retain(|path, _| keep(path));
-        self.lru_tick.retain(|path, _| keep(path));
+        self.lru_tick.retain(|(_, p), _| keep(p));
+        self.texture_names.retain(|path, _| keep(path));
     }
 
     /// Project the path-keyed cache into index-keyed maps for the UI preview snapshot.
@@ -590,6 +593,7 @@ impl DirectoryTreeStripCache {
         self.preview_buffer_tag.clear();
         self.preview_stage.clear();
         self.lru_tick.clear();
+        self.texture_names.clear();
         self.bump_gpu_revision();
     }
 
@@ -599,18 +603,13 @@ impl DirectoryTreeStripCache {
         self.preview_stage.clear();
         self.logical_sizes.clear();
         self.lru_tick.clear();
+        self.texture_names.clear();
         self.bump_gpu_revision();
     }
 
     fn evict_if_needed(&mut self) {
-        let mut evicted = false;
         while self.textures.len() > DIRECTORY_TREE_STRIP_CACHE_MAX {
-            let Some(victim) = self
-                .lru_tick
-                .iter()
-                .min_by_key(|(_, tick)| **tick)
-                .map(|(path, _)| path.clone())
-            else {
+            let Some(((_, victim), _)) = self.lru_tick.pop_first() else {
                 break;
             };
             #[cfg(feature = "preload-debug")]
@@ -623,10 +622,6 @@ impl DirectoryTreeStripCache {
             self.preview_buffer_tag.remove(&victim);
             self.preview_stage.remove(&victim);
             // Keep logical_sizes so visible rows can cold-regenerate after LRU eviction.
-            self.lru_tick.remove(&victim);
-            evicted = true;
-        }
-        if evicted {
             self.bump_gpu_revision();
         }
     }

@@ -58,15 +58,15 @@ impl ImageViewerApp {
             }
             match msg {
                 IpcMessage::OpenImage(path) => {
-                    log::info!("IPC: open image {:?}", path);
+                    log::debug!("IPC: open image {}", path.display());
                     self.handle_ipc_open_image(path, ctx, false);
                 }
                 IpcMessage::OpenImageNoRecursive(path) => {
-                    log::info!("IPC: open image (no-recursive) {:?}", path);
+                    log::debug!("IPC: open image (no-recursive) {}", path.display());
                     self.handle_ipc_open_image(path, ctx, true);
                 }
                 IpcMessage::Focus => {
-                    log::info!("IPC received empty ping, requesting window focus");
+                    log::debug!("IPC received empty ping, requesting window focus");
                     Self::focus_and_unminimize_window(ctx);
                 }
             }
@@ -107,7 +107,7 @@ impl ImageViewerApp {
             if !self.scanning {
                 if path.is_dir() {
                     // Dropped a directory — scan it (non-recursive to avoid surprises)
-                    log::info!("Drop: opening directory {:?}", path);
+                    log::debug!("Drop: opening directory {}", path.display());
                     self.settings.browse_mode = crate::settings::BrowseMode::Linear;
                     self.settings.show_directory_tree_nav = false;
                     self.settings.tree_nav_selected_dir = None;
@@ -123,7 +123,7 @@ impl ImageViewerApp {
                         .unwrap_or(false);
 
                     if is_supported {
-                        log::info!("Drop: opening file {:?}", path);
+                        log::debug!("Drop: opening file {}", path.display());
                         if let Some(parent) = path.parent() {
                             self.initial_image = Some(path.clone());
                             self.settings.browse_mode = crate::settings::BrowseMode::Linear;
