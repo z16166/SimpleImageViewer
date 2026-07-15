@@ -16,6 +16,14 @@
 
 use super::*;
 
+/// Returns the [`Path`] at `files[idx]`, or an empty path when `idx` is out of bounds.
+fn path_or_empty<'a>(files: &'a [std::path::PathBuf], idx: usize) -> &'a std::path::Path {
+    files
+        .get(idx)
+        .map(|p| p.as_path())
+        .unwrap_or(std::path::Path::new(""))
+}
+
 impl ImageViewerApp {
     /// True when the active tile pyramid belongs to the image at [`Self::current_index`].
     pub(crate) fn tiled_canvas_matches_current_index(&self) -> bool {
@@ -39,12 +47,10 @@ impl ImageViewerApp {
         // HdrTiledSource cache. Either way, clear the shared pending marker.
         let gate_ctx = self.result_gate_context();
         if let Some(ref mut tm) = self.tile_manager {
-            let source_key = crate::loader::source_key_for_path(
-                self.image_files
-                    .get(tile_result.index)
-                    .map(|p| p.as_path())
-                    .unwrap_or(std::path::Path::new("")),
-            );
+            let source_key = crate::loader::source_key_for_path(path_or_empty(
+                &self.image_files,
+                tile_result.index,
+            ));
             let gate = result_gate::gate_tile_result(
                 &gate_ctx,
                 &tile_result,
@@ -473,12 +479,7 @@ impl ImageViewerApp {
         }
 
         let profile = self.decode_profile_for_index(idx);
-        let source_key = crate::loader::source_key_for_path(
-            self.image_files
-                .get(idx)
-                .map(|p| p.as_path())
-                .unwrap_or(std::path::Path::new("")),
-        );
+        let source_key = crate::loader::source_key_for_path(path_or_empty(&self.image_files, idx));
         let display = self.display_requirements_for_index(idx);
         if crate::loader::output_mode_is_hdr(display.output_mode) {
             if self.hdr_tiled_preview_cache.contains_key(&idx) {

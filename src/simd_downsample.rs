@@ -50,7 +50,9 @@ impl AlignedU32Buffer {
         // SAFETY: Immediately set length to capacity so as_ptr() below is valid.
         // Elements beyond offset..offset+len are always written before being read
         // by as_mut_slice() callers, so zero-fill is unnecessary.
-        unsafe { storage.set_len(cap); }
+        unsafe {
+            storage.set_len(cap);
+        }
         let base = storage.as_ptr() as usize;
         let byte_off = (align - (base % align)) % align;
         let offset = byte_off / std::mem::size_of::<u32>();
@@ -653,7 +655,6 @@ unsafe fn downsample_rgba8_box_sse41(params: DownsampleSimdParams<'_>) {
                     continue;
                 }
 
-
                 let x0_v_u = _mm_xor_si128(x0_v, sign_bit128);
                 let x1_v_u = _mm_xor_si128(x1_v, sign_bit128);
 
@@ -812,7 +813,6 @@ unsafe fn downsample_rgba8_box_avx2(params: DownsampleSimdParams<'_>) {
                     });
                     continue;
                 }
-
 
                 let x0_v_u = _mm256_xor_si256(x0_v, sign_bit256);
                 let x1_v_u = _mm256_xor_si256(x1_v, sign_bit256);
