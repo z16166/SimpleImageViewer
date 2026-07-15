@@ -22,7 +22,9 @@
 //! row interleave, dimension validation, seek/read helpers, and memory
 //! estimation. All are re-exported through `psb_reader`.
 
+use std::fmt;
 use std::io::{Read, Seek, SeekFrom};
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use simple_image_viewer::simd_swizzle;
@@ -70,6 +72,82 @@ pub(crate) const PSD_CHANNEL_ID_USER_MASK: i16 = -2;
 pub(crate) const PSD_CHANNEL_ID_REAL_USER_MASK: i16 = -3;
 /// Inclusive upper bound for color-channel IDs (0=R/C/Gray, 1=G/M, 2=B/Y, 3=K).
 pub(crate) const PSD_CHANNEL_ID_COLOR_MAX: i16 = 3;
+
+/// A reference-counted byte slice that supports zero-copy sub-slicing.
+///
+/// Wraps an `Arc<[u8]>` with an offset + length pair so that sub-ranges
+/// can be created by bumping the Arc refcount and adjusting the offset
+/// — no data is copied unless `from_slice` is used.
+///
+/// Used for RAW-compressed PSD/PSB channel data to avoid copying from
+/// the mmap-backed byte slice.
+#[derive(Clone)]
+pub(crate) struct SharedSlice {
+    inner: Arc<[u8]>,
+    offset: usize,
+    len: usize,
+}
+
+impl fmt::Debug for SharedSlice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedSlice")
+            .field("len", &self.len)
+            .field("offset", &self.offset)
+            .field("capacity", &self.inner.len())
+            .finish()
+    }
+}
+
+impl SharedSlice {
+    /// Wrap an `Arc<[u8]>`, covering its entire range.
+    pub(crate) fn new(data: Arc<[u8]>) -> Self {
+        let len = data.len();
+        Self {
+            inner: data,
+            offset: 0,
+            len,
+        }
+    }
+
+    /// Create a zero-copy sub-slice (cheap: bumps the Arc refcount).
+    pub(crate) fn sub_slice(&self, start: usize, end: usize) -> Self {
+        debug_assert!(start <= end && end <= self.len);
+        Self {
+            inner: Arc::clone(&self.inner),
+            offset: self.offset + start,
+            len: end - start,
+        }
+    }
+
+    /// The backing allocation as `&[u8]`.
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.inner[self.offset..self.offset + self.len]
+    }
+}
+
+impl From<Vec<u8>> for SharedSlice {
+    fn from(data: Vec<u8>) -> Self {
+        let len = data.len();
+        Self {
+            inner: Arc::from(data.into_boxed_slice()),
+            offset: 0,
+            len,
+        }
+    }
+}
+
+impl std::ops::Deref for SharedSlice {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl AsRef<[u8]> for SharedSlice {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
 
 /// Adobe Photoshop PSD/PSB maximum canvas dimension (pixels per side).
 pub(crate) const PSD_MAX_DIMENSION: u32 = 300_000;

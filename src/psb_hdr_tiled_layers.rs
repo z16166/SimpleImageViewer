@@ -258,6 +258,7 @@ pub fn open_hdr_tiled_layers_source_from_mmap(
         color_mode,
         is_psb,
         cmyk_icc,
+        channel_data_shared,
     } = info;
     // SAFETY: `channel_data` points into the immutable, heap-stable memory map
     // owned by `mmap`. That `Arc<Mmap>` is stored in the returned struct and is
@@ -274,6 +275,7 @@ pub fn open_hdr_tiled_layers_source_from_mmap(
         color_mode,
         is_psb,
         cmyk_icc,
+        channel_data_shared,
     };
 
     if plan.visible.len() != layer_info.records.len() {

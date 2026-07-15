@@ -31,6 +31,8 @@ use crate::psb_layer_composite::{
 };
 use std::sync::Arc;
 
+use crate::psb_reader_util::SharedSlice;
+
 use crate::psb_reader::{
     PSD_CHANNEL_ID_ALPHA, PSD_CHANNEL_ID_COLOR_MAX, PSD_CHANNEL_ID_REAL_USER_MASK,
     PSD_CHANNEL_ID_USER_MASK, PSD_COLOR_MODE_BITMAP, PSD_COLOR_MODE_CMYK, PSD_COLOR_MODE_DUOTONE,
@@ -47,15 +49,18 @@ const RLE_ROW_CANCEL_POLL_INTERVAL: usize = 64;
 ///
 /// `data` must be exactly the channel's declared byte range. `depth` controls
 /// bytes-per-sample: 8 → 1 byte, 16 → 2 bytes BE, 32 → 4 bytes BE (f32 planes).
-/// The returned `Arc<[u8]>` is `width * height * bps` bytes in raster order.
+/// The returned `SharedSlice` is `width * height * bps` bytes in raster order.
+/// When `backing` is provided and covers the same range as `data`, the RAW
+/// path returns a zero-copy sub-slice of the backing store.
 pub(crate) fn decode_channel_image(
     data: &[u8],
+    backing: Option<&SharedSlice>,
     width: u32,
     height: u32,
     depth: u16,
     is_psb: bool,
     cancel: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<Arc<[u8]>, crate::loader::DecodeError> {
+) -> Result<SharedSlice, crate::loader::DecodeError> {
     let bps = crate::psb_reader::bytes_per_sample(depth)?;
     let mut r = std::io::Cursor::new(data);
     let compression = crate::psb_reader::read_u16(&mut r)?;
@@ -77,10 +82,16 @@ pub(crate) fn decode_channel_image(
                 )
                 .into());
             }
+            // Zero-copy RAW: when a backing store is available, return a
+            // sub-slice of the shared allocation.
             let raw = data
                 .get(2..2 + total_raw_bytes)
                 .ok_or_else(|| "PSD/PSB layer channel raw payload out of bounds".to_string())?;
-            Ok(Arc::from(raw))
+            if let Some(backing) = backing {
+                Ok(backing.sub_slice(2, 2 + total_raw_bytes))
+            } else {
+                Ok(SharedSlice::new(Arc::from(raw)))
+            }
         }
         PSD_COMPRESSION_RLE => {
             let mut row_counts = Vec::with_capacity(height as usize);
@@ -141,7 +152,7 @@ pub(crate) fn decode_channel_image(
                 depth,
                 compression == PSD_COMPRESSION_ZIP_PREDICTION,
             )
-            .map(Arc::from)
+            .map(SharedSlice::from)
             .map_err(Into::into)
         }
         _ => Err(format!("Unsupported layer channel compression: {compression}").into()),
@@ -158,7 +169,7 @@ pub(crate) struct LayerRgbaArgs<'a> {
     pub(crate) color_mode: u16,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) color: &'a [Option<Arc<[u8]>>; 4],
+    pub(crate) color: &'a [Option<SharedSlice>; 4],
     pub(crate) alpha: Option<&'a [u8]>,
     pub(crate) mask: Option<&'a [u8]>,
     pub(crate) opacity: u8,
@@ -269,7 +280,7 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Arc<[u8]> {
     }
 
     let mut rgba = vec![0u8; rgba_len];
-    let sample = |ch: &Option<Arc<[u8]>>, i: usize| {
+    let sample = |ch: &Option<SharedSlice>, i: usize| {
         ch.as_deref().and_then(|d| d.get(i)).copied().unwrap_or(0)
     };
 
@@ -390,12 +401,12 @@ pub(crate) fn layer_planes_to_rgba_f32(
     alpha: Option<&[f32]>,
     mask: Option<&[f32]>,
     opacity: u8,
-) -> Vec<f32> {
+) -> Arc<[f32]> {
     let Some(pixel_count) = checked_layer_pixel_count(width, height) else {
-        return Vec::new();
+        return Arc::new([]);
     };
     let Some(rgba_len) = pixel_count.checked_mul(4) else {
-        return Vec::new();
+        return Arc::new([]);
     };
     let mut out = Vec::with_capacity(rgba_len);
     // Caller should pass `LayerRecord::effective_fill_opacity()` so fill
@@ -447,7 +458,7 @@ pub(crate) fn layer_planes_to_rgba_f32(
         out.push(a.clamp(0.0, 1.0));
     }
 
-    out
+    out.into()
 }
 
 /// Decode a user/real mask channel into a layer-sized alpha matte, or `None`
@@ -457,6 +468,7 @@ pub(crate) fn layer_planes_to_rgba_f32(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_mask_channel_to_layer(
     slice: &[u8],
+    backing: Option<&SharedSlice>,
     mask_info: &LayerMaskInfo,
     layer_left: i32,
     layer_top: i32,
@@ -493,7 +505,7 @@ pub(crate) fn decode_mask_channel_to_layer(
         );
         return Ok(None);
     }
-    let mask_pixels = decode_channel_image(slice, mask_w, mask_h, depth, is_psb, cancel)?;
+    let mask_pixels = decode_channel_image(slice, backing, mask_w, mask_h, depth, is_psb, cancel)?;
     let mut layer_mask = build_layer_sized_mask(
         mask_info,
         &mask_pixels,
@@ -714,6 +726,10 @@ pub(crate) struct LayerDecodeParams<'a> {
     /// fractional-to-pixel coordinate conversion.
     pub(crate) image_width: u32,
     pub(crate) image_height: u32,
+    /// Shared backing for the channel data section of the PSD/PSB file.
+    /// When present, RAW-compressed channels return a zero-copy sub-slice
+    /// instead of copying from the mmap.
+    pub(crate) channel_backing: Option<SharedSlice>,
 }
 
 /// Decode one layer's channels from `channel_data[*cursor..]`, advancing `*cursor`
@@ -744,8 +760,8 @@ pub(crate) fn decode_one_layer(
     }
     let can_decode = has_bounds && dimensions_within_limit(width, height);
 
-    let mut color: [Option<Arc<[u8]>>; 4] = [None, None, None, None];
-    let mut alpha: Option<Arc<[u8]>> = None;
+    let mut color: [Option<SharedSlice>; 4] = [None, None, None, None];
+    let mut alpha: Option<SharedSlice> = None;
     let mut mask: Option<Vec<u8>> = None;
     let mut layer_failed = false;
 
@@ -767,6 +783,11 @@ pub(crate) fn decode_one_layer(
         match ch.id {
             PSD_CHANNEL_ID_ALPHA => match decode_channel_image(
                 slice,
+                params
+                    .channel_backing
+                    .as_ref()
+                    .map(|b| b.sub_slice(start, end))
+                    .as_ref(),
                 width,
                 height,
                 params.depth,
@@ -802,6 +823,11 @@ pub(crate) fn decode_one_layer(
                 if let Some(mask_info) = mask_info {
                     match decode_mask_channel_to_layer(
                         slice,
+                        params
+                            .channel_backing
+                            .as_ref()
+                            .map(|b| b.sub_slice(start, end))
+                            .as_ref(),
                         mask_info,
                         record.left,
                         record.top,
@@ -828,6 +854,11 @@ pub(crate) fn decode_one_layer(
                 let idx = ch.id as usize;
                 match decode_channel_image(
                     slice,
+                    params
+                        .channel_backing
+                        .as_ref()
+                        .map(|b| b.sub_slice(start, end))
+                        .as_ref(),
                     width,
                     height,
                     params.depth,
@@ -1082,6 +1113,10 @@ pub(crate) fn decode_layers_for_composite(
                 cmyk_icc: info.cmyk_icc.as_slice(),
                 image_width: info.width,
                 image_height: info.height,
+                channel_backing: info
+                    .channel_data_shared
+                    .as_ref()
+                    .map(|s| s.sub_slice(start, end)),
             },
         )
     };
@@ -1267,6 +1302,10 @@ pub(crate) fn run_composite_pass_cpu_streaming(
                 cmyk_icc: info.cmyk_icc.as_slice(),
                 image_width: info.width,
                 image_height: info.height,
+                channel_backing: info
+                    .channel_data_shared
+                    .as_ref()
+                    .map(|s| s.sub_slice(start, end)),
             },
         )
     };
@@ -1554,6 +1593,7 @@ mod tests {
                 cmyk_icc: &[],
                 image_width: 100,
                 image_height: 100,
+                channel_backing: None,
             },
         );
 
@@ -1607,6 +1647,7 @@ mod tests {
                 cmyk_icc: &[],
                 image_width: 100,
                 image_height: 100,
+                channel_backing: None,
             },
         );
 
@@ -1658,6 +1699,7 @@ mod tests {
                 cmyk_icc: &[],
                 image_width: 100,
                 image_height: 100,
+                channel_backing: None,
             },
         );
         assert!(

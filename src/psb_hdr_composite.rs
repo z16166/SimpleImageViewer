@@ -114,6 +114,10 @@ pub(crate) struct ClipLayerRefF32<'a> {
     /// 0 = base / unclipped; non-zero = clipped to nearest base below.
     pub(crate) clipping: u8,
     pub(crate) rgba: &'a [f32],
+    /// When the rgba data lives in an `Arc<[f32]>`, this field provides a
+    /// borrow so that clip groups can clone the Arc (cheap refcount bump)
+    /// instead of copying the pixel data.
+    pub(crate) rgba_arc: Option<&'a Arc<[f32]>>,
 }
 
 /// Snapshot base-layer alpha into a full-canvas plane (0 outside the base rect).
@@ -427,13 +431,16 @@ struct OpenClipGroupF32 {
 
 impl OpenClipGroupF32 {
     fn new(base: &ClipLayerRefF32<'_>) -> Self {
+        let base_rgba = base
+            .rgba_arc
+            .map_or_else(|| Arc::from(base.rgba), |a| Arc::clone(a));
         Self {
             base_left: base.left,
             base_top: base.top,
             base_width: base.width,
             base_height: base.height,
             base_blend: base.blend,
-            base_rgba: Some(Arc::from(base.rgba)),
+            base_rgba: Some(base_rgba),
             temp: None,
             base_alpha: None,
         }
@@ -478,6 +485,7 @@ impl OpenClipGroupF32 {
                     blend: self.base_blend,
                     clipping: 0,
                     rgba: base_rgba,
+                    rgba_arc: None,
                 },
             )?);
             self.base_rgba = None;
@@ -634,7 +642,7 @@ pub(crate) struct LayerF32DecodeArgs<'a> {
 
 pub(crate) fn decode_layer_to_f32(
     args: LayerF32DecodeArgs<'_>,
-) -> Result<Option<Vec<f32>>, DecodeError> {
+) -> Result<Option<Arc<[f32]>>, DecodeError> {
     let LayerF32DecodeArgs {
         channel_data,
         record,
@@ -673,7 +681,7 @@ pub(crate) fn decode_layer_to_f32(
         match ch.id {
             PSD_CHANNEL_ID_ALPHA => {
                 // Alpha channel: linear, no transfer decode.
-                match decode_channel_image(slice, width, height, depth, is_psb, cancel) {
+                match decode_channel_image(slice, None, width, height, depth, is_psb, cancel) {
                     Ok(raw) => {
                         alpha = Some(channel_samples_to_f32(&raw, depth, linear, sdr_white_nits)?)
                     }
@@ -700,6 +708,7 @@ pub(crate) fn decode_layer_to_f32(
                 if let Some(mi) = mask_info {
                     match decode_mask_channel_to_layer(
                         slice,
+                        None, // HDR path doesn't have channel backing yet
                         mi,
                         record.left,
                         record.top,
@@ -740,7 +749,7 @@ pub(crate) fn decode_layer_to_f32(
             }
             0..=3 => {
                 let idx = ch.id as usize;
-                match decode_channel_image(slice, width, height, depth, is_psb, cancel) {
+                match decode_channel_image(slice, None, width, height, depth, is_psb, cancel) {
                     Ok(raw) => {
                         color[idx] = Some(channel_samples_to_f32(
                             &raw,
@@ -787,7 +796,7 @@ pub(crate) fn decode_layer_to_f32(
         record.effective_fill_opacity(),
     );
 
-    Ok(Some(rgba))
+    Ok(Some(rgba.into()))
 }
 
 // -- public entry point -------------------------------------------------------
@@ -912,6 +921,7 @@ fn composite_layers_hdr_with_visibility(
                     blend: record.blend,
                     clipping: record.clipping,
                     rgba: &rgba_f32,
+                    rgba_arc: Some(&rgba_f32),
                 };
                 clip_state.push_layer(&mut canvas, &clip_ref, cancel)?;
             }
