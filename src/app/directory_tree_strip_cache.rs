@@ -630,6 +630,7 @@ impl DirectoryTreeStripCache {
             self.textures.remove(&victim);
             self.preview_buffer_tag.remove(&victim);
             self.preview_stage.remove(&victim);
+            self.texture_names.remove(&victim);
             // Keep logical_sizes so visible rows can cold-regenerate after LRU eviction.
             self.bump_gpu_revision();
         }

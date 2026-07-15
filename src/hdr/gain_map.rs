@@ -632,7 +632,7 @@ pub(crate) fn precompute_gain_map_x_upsampled(
     buffer
 }
 
-///
+/// Precompute one row of the gain map from RGBA byte input into planar f32 output.
 /// Output is planar `[R0..Rn, G0..Gn, B0..Bn]` for SIMD channel loads.
 /// **Keep in sync** with
 /// [`sample_gain_map_row_nonlinear`](crate::hdr::heif_apple_gain_map_compose_simd::sample_gain_map_row_nonlinear).
