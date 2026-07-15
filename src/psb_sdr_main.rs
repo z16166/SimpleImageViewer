@@ -306,18 +306,6 @@ fn decode_psd_sdr_main_with_index(
             Ok(composite) => {
                 // Timing log includes parse_ms; do not re-attribute on later stages.
                 parse_ms = 0.0;
-
-                // TEMP DEBUG: log first and mid pixel of P2 composite
-                let px = &composite.pixels;
-                let mid = px.len().saturating_sub(4) / 4 * 4;
-                let first = if px.len() >= 4 { format!("({},{},{},{})", px[0], px[1], px[2], px[3]) } else { "N/A".into() };
-                let mid_px = if mid + 3 < px.len() { format!("({},{},{},{})", px[mid], px[mid+1], px[mid+2], px[mid+3]) } else { "N/A".into() };
-                let all_same = px.chunks_exact(4).all(|p| p[..3] == px[..3]);
-                log::warn!(
-                    "TEMP_DBG P2 composite {}x{} pixels={} first={} mid={} all_same_rgb={}",
-                    composite.width, composite.height, px.len(), first, mid_px, all_same
-                );
-
                 let zero_info = crate::psb_reader::rgba8_is_zero_information_with_cancel(
                     &composite.pixels,
                     cancel,
