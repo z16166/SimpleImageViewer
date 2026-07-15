@@ -25,6 +25,15 @@
 
 use crate::psb_section_index::PsdSectionIndex;
 
+/// Maximum drawable layers in the P2.5b force-open-all composite.
+///
+/// Template PSDs can have hundreds of layers (all hidden by default); opening
+/// all of them produces O(w×h×layers) runtime — minutes on a large
+/// document.  We cap the forced-open set so the most relevant layers
+/// (bottommost in the stack) are rendered quickly, falling back to P3 if the
+/// result is still zero-information.
+pub(crate) const MAX_FORCE_OPEN_ALL_DRAWABLE: usize = 10;
+
 /// Try a P2.5a Layer Comp reveal pass.
 ///
 /// Returns `Ok(Some((result, osd)))` when a Layer Comp is present, selected,

@@ -173,12 +173,31 @@ pub(crate) fn apply_mask_density(mask: &mut [u8], density: u8) {
     }
 }
 
+/// Maximum mask feather radius in pixels.
+///
+/// Photoshop's Layer Mask feather UI caps at 250 px; the "Feather Selection"
+/// dialog allows up to 1000 px.  Our convolution runs in O(w×h×kernel_len) —
+/// with `kernel_len = 2·ceil(1.25·feather) + 1` — so an unbounded feather can
+/// stall the UI for minutes on large documents.  We clamp to this safe upper
+/// bound and log a warning when it triggers.
+const MAX_MASK_FEATHER: f64 = 1024.0;
+
 /// Apply a separable Gaussian blur as a Photoshop-compatible mask feather.
 /// `feather` is the pixel radius; values ≤ 0.5 produce a no-op.
 ///
 /// Sigma is derived as `feather / 2.0`; the kernel spans ±2.5σ (capturing
-/// >99 % of the Gaussian mass), clamped to the image edge.
+/// >99 % of the Gaussian mass), clamped to the image edge.  The feather value
+/// is clamped to [`MAX_MASK_FEATHER`] to prevent pathological runtime.
 pub(crate) fn apply_mask_feather(mask: &mut [u8], w: u32, h: u32, feather: f64) {
+    let feather = if feather > MAX_MASK_FEATHER {
+        log::warn!(
+            "PSD/PSB mask feather {feather:.1} exceeds max {MAX_MASK_FEATHER}; clamping to \
+             {MAX_MASK_FEATHER} to prevent excessive composite time"
+        );
+        MAX_MASK_FEATHER
+    } else {
+        feather
+    };
     if feather <= 0.5 || w < 2 || h < 2 {
         return;
     }
