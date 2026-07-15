@@ -58,7 +58,7 @@ fn grow_vec_uninit<T>(buf: &mut Vec<T>, len: usize) {
         buf.reserve(len.saturating_sub(buf.len()));
     }
     unsafe {
-        debug_assert!(buf.capacity() >= len);
+        assert!(buf.capacity() >= len);
         buf.set_len(len);
     }
 }

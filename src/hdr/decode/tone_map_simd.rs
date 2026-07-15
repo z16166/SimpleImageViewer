@@ -296,7 +296,8 @@ fn tone_map_strip_simd(src: &[f32], dst: &mut [u8], ctx: StripToneMapContext) {
     let mut offset = 0_usize;
     #[cfg(target_arch = "x86_64")]
     {
-        if std::arch::is_x86_feature_detected!("avx2") {
+        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+        {
             unsafe {
                 avx2::tone_map_strip_simd_avx2(src, dst, pixel_count, ctx, &mut offset);
             }
@@ -691,26 +692,20 @@ unsafe fn apply_matrix4_neon(
     b: float32x4_t,
     m: &[[f32; 3]; 3],
 ) -> (float32x4_t, float32x4_t, float32x4_t) {
-    let sr = vaddq_f32(
-        vaddq_f32(
-            vmulq_f32(r, vdupq_n_f32(m[0][0])),
-            vmulq_f32(g, vdupq_n_f32(m[0][1])),
-        ),
-        vmulq_f32(b, vdupq_n_f32(m[0][2])),
+    let sr = vfmaq_f32(
+        vfmaq_f32(vmulq_f32(r, vdupq_n_f32(m[0][0])), g, vdupq_n_f32(m[0][1])),
+        b,
+        vdupq_n_f32(m[0][2]),
     );
-    let sg = vaddq_f32(
-        vaddq_f32(
-            vmulq_f32(r, vdupq_n_f32(m[1][0])),
-            vmulq_f32(g, vdupq_n_f32(m[1][1])),
-        ),
-        vmulq_f32(b, vdupq_n_f32(m[1][2])),
+    let sg = vfmaq_f32(
+        vfmaq_f32(vmulq_f32(r, vdupq_n_f32(m[1][0])), g, vdupq_n_f32(m[1][1])),
+        b,
+        vdupq_n_f32(m[1][2]),
     );
-    let sb = vaddq_f32(
-        vaddq_f32(
-            vmulq_f32(r, vdupq_n_f32(m[2][0])),
-            vmulq_f32(g, vdupq_n_f32(m[2][1])),
-        ),
-        vmulq_f32(b, vdupq_n_f32(m[2][2])),
+    let sb = vfmaq_f32(
+        vfmaq_f32(vmulq_f32(r, vdupq_n_f32(m[2][0])), g, vdupq_n_f32(m[2][1])),
+        b,
+        vdupq_n_f32(m[2][2]),
     );
     (sr, sg, sb)
 }
@@ -826,7 +821,7 @@ unsafe fn pq_to_display_linear4_neon(code: float32x4_t, sdr_white_nits: f32) -> 
         let clamped = vminq_f32(vmaxq_f32(code, zero), one);
         let code_m2 = pow4_neon(clamped, 1.0 / m2);
         let numerator = vmaxq_f32(vsubq_f32(code_m2, c1), zero);
-        let denominator = vmaxq_f32(vsubq_f32(c2, vmulq_f32(c3, code_m2)), vdupq_n_f32(0.000001));
+        let denominator = vmaxq_f32(vfmsq_f32(c2, c3, code_m2), vdupq_n_f32(0.000001));
         let ratio = vdivq_f32(numerator, denominator);
         let nits = vmulq_f32(vdupq_n_f32(10_000.0), pow4_neon(ratio, 1.0 / m1));
         vdivq_f32(nits, vdupq_n_f32(sdr_white_nits.max(1.0)))
@@ -1099,7 +1094,18 @@ mod tests {
         let scalar = hdr_to_sdr_rgba8_with_tone_settings_scalar(buffer, tone.exposure_ev, tone)
             .expect("scalar");
         let simd = hdr_to_sdr_rgba8_strip_preview(buffer, tone.exposure_ev, tone).expect("simd");
-        assert_eq!(scalar, simd, "strip SIMD must match scalar tone-map");
+        assert_eq!(
+            scalar.len(),
+            simd.len(),
+            "strip SIMD/scalar length mismatch"
+        );
+        for (i, (&s, &d)) in scalar.iter().zip(simd.iter()).enumerate() {
+            let diff = if s > d { s - d } else { d - s };
+            assert!(
+                diff <= 1,
+                "strip SIMD mismatch at byte {i}: scalar={s} simd={d}"
+            );
+        }
     }
 
     #[test]
@@ -1254,6 +1260,35 @@ mod tests {
                 vld1q_f32(a.as_ptr()),
             );
             assert_eq!(simd, expected, "NEON pack must match scalar");
+        }
+    }
+
+    #[test]
+    fn strip_simd_non_aligned_widths_matches_scalar() {
+        // Regression: cover widths not divisible by 4 or 8 so the scalar tail
+        // (0-3 pixels for SSE4.1/NEON, 0-7 for AVX2) is exercised on all paths.
+        let widths: &[u32] = &[1, 2, 3, 5, 6, 7, 9];
+        let height = 8_u32;
+        for &width in widths {
+            let mut pixels = Vec::new();
+            for y in 0..height {
+                for x in 0..width {
+                    let t = (x + y) as f32 / 100.0;
+                    pixels.extend_from_slice(&[0.5 + t * 0.3, 0.4, 0.3, 1.0]);
+                }
+            }
+            let buffer = make_buffer(
+                width,
+                height,
+                HdrTransferFunction::Pq,
+                HdrColorSpace::Rec2020Linear,
+                pixels,
+            );
+            let tone = HdrToneMapSettings {
+                max_display_nits: DEFAULT_SDR_WHITE_NITS,
+                ..HdrToneMapSettings::default()
+            };
+            assert_strip_simd_matches_scalar(&buffer, &tone);
         }
     }
 }

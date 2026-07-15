@@ -16,7 +16,9 @@
 
 //! AVX2 8-pixel strip tone-map kernels (x86_64).
 //!
-//! Bit-identical to the SSE4.1 4-pixel path after packing to RGBA8.
+//! Matches the SSE4.1 4-pixel path within ±1 u8 after packing to RGBA8 (AVX2 uses
+//! FMA which fuses multiply+add in one rounding step, differing from SSE4.1/scalar
+//! mul+add two-rounding steps in the lowest mantissa bits).
 
 use super::super::constants::{INVERSE_DISPLAY_GAMMA, MAX_HDR_TONE_MAP_INPUT};
 use super::{
@@ -30,7 +32,7 @@ use core::arch::x86_64::*;
 
 pub(super) const PIXELS_PER_AVX2_STEP: usize = 8;
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 pub(super) unsafe fn tone_map_strip_simd_avx2(
     src: &[f32],
     dst: &mut [u8],
@@ -50,7 +52,7 @@ pub(super) unsafe fn tone_map_strip_simd_avx2(
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn load_rgba_pixel8_avx2(
     row: *const f32,
     pixel_offset: usize,
@@ -77,7 +79,7 @@ unsafe fn load_rgba_pixel8_avx2(
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn decode_transfer8_avx2(
     r: __m256,
     g: __m256,
@@ -124,7 +126,7 @@ unsafe fn decode_transfer8_avx2(
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn apply_color_matrix8_avx2(
     r: __m256,
     g: __m256,
@@ -160,38 +162,44 @@ unsafe fn apply_color_matrix8_avx2(
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn apply_matrix8_avx2(
     r: __m256,
     g: __m256,
     b: __m256,
     m: &[[f32; 3]; 3],
 ) -> (__m256, __m256, __m256) {
-    let sr = _mm256_add_ps(
-        _mm256_add_ps(
+    let sr = _mm256_fmadd_ps(
+        b,
+        _mm256_set1_ps(m[0][2]),
+        _mm256_fmadd_ps(
+            g,
+            _mm256_set1_ps(m[0][1]),
             _mm256_mul_ps(r, _mm256_set1_ps(m[0][0])),
-            _mm256_mul_ps(g, _mm256_set1_ps(m[0][1])),
         ),
-        _mm256_mul_ps(b, _mm256_set1_ps(m[0][2])),
     );
-    let sg = _mm256_add_ps(
-        _mm256_add_ps(
+    let sg = _mm256_fmadd_ps(
+        b,
+        _mm256_set1_ps(m[1][2]),
+        _mm256_fmadd_ps(
+            g,
+            _mm256_set1_ps(m[1][1]),
             _mm256_mul_ps(r, _mm256_set1_ps(m[1][0])),
-            _mm256_mul_ps(g, _mm256_set1_ps(m[1][1])),
         ),
-        _mm256_mul_ps(b, _mm256_set1_ps(m[1][2])),
     );
-    let sb = _mm256_add_ps(
-        _mm256_add_ps(
+    let sb = _mm256_fmadd_ps(
+        b,
+        _mm256_set1_ps(m[2][2]),
+        _mm256_fmadd_ps(
+            g,
+            _mm256_set1_ps(m[2][1]),
             _mm256_mul_ps(r, _mm256_set1_ps(m[2][0])),
-            _mm256_mul_ps(g, _mm256_set1_ps(m[2][1])),
         ),
-        _mm256_mul_ps(b, _mm256_set1_ps(m[2][2])),
     );
     (sr, sg, sb)
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn store_rgba_u8_pixel8_avx2(
     dst: *mut u8,
     r: __m256,
@@ -218,7 +226,7 @@ unsafe fn store_rgba_u8_pixel8_avx2(
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn sanitize_hdr_rgb8_avx2(v: __m256) -> __m256 {
     let zero = _mm256_setzero_ps();
     let max_input = _mm256_set1_ps(MAX_HDR_TONE_MAP_INPUT);
@@ -226,7 +234,7 @@ unsafe fn sanitize_hdr_rgb8_avx2(v: __m256) -> __m256 {
     _mm256_min_ps(sanitized, max_input)
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn pq_to_display_linear8_avx2(code: __m256, sdr_white_nits: f32) -> __m256 {
     unsafe {
         let m2 = crate::constants::PQ_M2;
@@ -239,17 +247,15 @@ unsafe fn pq_to_display_linear8_avx2(code: __m256, sdr_white_nits: f32) -> __m25
         let clamped = _mm256_min_ps(_mm256_max_ps(code, zero), one);
         let code_m2 = pow8_avx2(clamped, 1.0 / m2);
         let numerator = _mm256_max_ps(_mm256_sub_ps(code_m2, c1), zero);
-        let denominator = _mm256_max_ps(
-            _mm256_sub_ps(c2, _mm256_mul_ps(c3, code_m2)),
-            _mm256_set1_ps(0.000001),
-        );
+        let denominator =
+            _mm256_max_ps(_mm256_fnmadd_ps(c3, code_m2, c2), _mm256_set1_ps(0.000001));
         let ratio = _mm256_div_ps(numerator, denominator);
         let nits = _mm256_mul_ps(_mm256_set1_ps(10_000.0), pow8_avx2(ratio, 1.0 / m1));
         _mm256_div_ps(nits, _mm256_set1_ps(sdr_white_nits.max(1.0)))
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn hlg_to_scene_linear8_avx2(e_prime: __m256) -> __m256 {
     unsafe {
         let zero = _mm256_setzero_ps();
@@ -270,7 +276,7 @@ unsafe fn hlg_to_scene_linear8_avx2(e_prime: __m256) -> __m256 {
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn bt709_to_linear8_avx2(v: __m256) -> __m256 {
     unsafe {
         let zero = _mm256_setzero_ps();
@@ -288,7 +294,7 @@ unsafe fn bt709_to_linear8_avx2(v: __m256) -> __m256 {
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn encode_reinhard_channel8_avx2(linear: __m256, scale: f32) -> __m256 {
     unsafe {
         let exposed = sanitize_hdr_rgb8_avx2(_mm256_mul_ps(linear, _mm256_set1_ps(scale)));
@@ -301,7 +307,7 @@ unsafe fn encode_reinhard_channel8_avx2(linear: __m256, scale: f32) -> __m256 {
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn encode_iec61966_channel8_avx2(linear: __m256, scale: f32) -> __m256 {
     unsafe {
         let scaled = _mm256_min_ps(
@@ -331,7 +337,7 @@ unsafe fn encode_iec61966_channel8_avx2(linear: __m256, scale: f32) -> __m256 {
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 #[inline]
 unsafe fn pack_i32x8_to_u8x8_avx2(v: __m256i) -> __m128i {
     // packus is lane-wise; permute gathers [lo4, hi4] into the low 128 bits.
@@ -340,7 +346,7 @@ unsafe fn pack_i32x8_to_u8x8_avx2(v: __m256i) -> __m128i {
     _mm_packus_epi16(_mm256_castsi256_si128(v16), _mm_setzero_si128())
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn float8_to_u8x8_avx2(v: __m256) -> __m128i {
     let zero = _mm256_setzero_ps();
     let one = _mm256_set1_ps(1.0);
@@ -352,7 +358,7 @@ unsafe fn float8_to_u8x8_avx2(v: __m256) -> __m128i {
     unsafe { pack_i32x8_to_u8x8_avx2(rounded) }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn pack_rgba_u8_pixel8_avx2(dst: *mut u8, r: __m256, g: __m256, b: __m256, a: __m256) {
     unsafe {
         let r8 = float8_to_u8x8_avx2(r);

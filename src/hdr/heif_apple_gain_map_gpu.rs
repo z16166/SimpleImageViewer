@@ -26,7 +26,8 @@ use crate::hdr::gain_map::validate_gain_map_rgba_len;
 use crate::hdr::heif_apple_gain_map::apple_gain_map_display_weight;
 use crate::hdr::heif_apple_gain_map_compose_simd::compose_apple_gain_map_pixels;
 use crate::hdr::types::{
-    AppleHeicGainMapGpuSource, HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata,
+    AppleHeicGainMapGpuSource, GAIN_MAP_SOURCE_HEIF, HdrColorSpace, HdrGainMapMetadata,
+    HdrImageBuffer, HdrImageMetadata,
 };
 use std::sync::Arc;
 
@@ -116,7 +117,7 @@ pub(crate) fn attach_apple_heic_gpu_deferred(
 
     let mut metadata = hdr.metadata.clone();
     metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "HEIF",
+        source: GAIN_MAP_SOURCE_HEIF,
         target_hdr_capacity: Some(hdr_target_capacity),
         diagnostic: format!(
             "Apple HDR Gain Map GPU deferred ({}x{} pixels, stops: {:.2}, weight: {:.2})",

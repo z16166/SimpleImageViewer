@@ -60,3 +60,4 @@ AGENTS.md
 # Reasonix agent config
 .reasonix/
 reasonix.toml
+rust_out.pdb

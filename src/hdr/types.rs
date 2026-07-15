@@ -120,6 +120,12 @@ pub struct HdrGainMapMetadata {
 
 /// [`HdrGainMapMetadata::source`] tag for HEIF primary SDR shown as embedded master (no float plane).
 pub(crate) const HEIF_EMBEDDED_SDR_PRIMARY_GAIN_MAP_SOURCE: &str = "HEIF:embedded_sdr_primary";
+/// Gain-map source tag for Ultra HDR JPEG (ISO 21496 gain-map in JPEG container).
+pub(crate) const GAIN_MAP_SOURCE_JPEG_R: &str = "JPEG_R";
+/// Gain-map source tag for AVIF (ISO 21496 gain-map in AVIF container).
+pub(crate) const GAIN_MAP_SOURCE_AVIF: &str = "AVIF";
+/// Gain-map source tag for HEIF (ISO 21496 gain-map in HEIF container).
+pub(crate) const GAIN_MAP_SOURCE_HEIF: &str = "HEIF";
 
 impl HdrGainMapMetadata {
     pub(crate) fn is_heif_embedded_sdr_primary_only(&self) -> bool {

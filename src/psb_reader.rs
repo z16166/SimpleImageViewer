@@ -291,7 +291,12 @@ pub fn read_composite_from_index(
             let raw = planar
                 .get(start..end)
                 .ok_or_else(|| "PSD/PSB ZIP channel slice out of bounds".to_string())?;
-            let mut ch_u8 = vec![0u8; samples_per_channel];
+            let mut ch_u8 = Vec::with_capacity(samples_per_channel);
+            // SAFETY: downconvert_samples_to_u8 writes all samples_per_channel bytes (fills
+            // tail with 0 when src is short), so the slot is fully initialized.
+            unsafe {
+                ch_u8.set_len(samples_per_channel);
+            }
             downconvert_samples_to_u8(&mut ch_u8, raw, bps);
             planar_channels[ch_idx as usize] = Some(ch_u8);
         }
@@ -304,7 +309,12 @@ pub fn read_composite_from_index(
             let is_used = channel_is_used(color_mode, ch_idx, channels);
 
             if is_used {
-                let mut ch_u8 = vec![0u8; samples_per_channel];
+                let mut ch_u8 = Vec::with_capacity(samples_per_channel);
+                // SAFETY: downconvert_samples_to_u8 writes all bytes for each row slice;
+                // all rows together cover the full buffer. On error the Vec is dropped.
+                unsafe {
+                    ch_u8.set_len(samples_per_channel);
+                }
                 match compression {
                     PSD_COMPRESSION_RAW => {
                         ensure_readable_within(
@@ -313,7 +323,12 @@ pub fn read_composite_from_index(
                             file_size,
                             "raw channel data",
                         )?;
-                        let mut raw = vec![0u8; raw_channel_bytes];
+                        let mut raw = Vec::with_capacity(raw_channel_bytes);
+                        // SAFETY: read_exact writes exactly raw_channel_bytes on success;
+                        // on error the Vec is dropped without reading uninit bytes.
+                        unsafe {
+                            raw.set_len(raw_channel_bytes);
+                        }
                         r.read_exact(&mut raw)
                             .map_err(|e| format!("Read raw channel {ch_idx}: {e}"))?;
                         check_decode_cancel(cancel)?;
@@ -334,18 +349,18 @@ pub fn read_composite_from_index(
                                 file_size,
                                 "RLE row data",
                             )?;
-                            // Reuse capacity across rows; read_exact overwrites every byte.
+                            // Reuse capacity across rows; read from limited source into vec.
                             compressed.clear();
-                            if compressed.capacity() < compressed_len {
-                                compressed.reserve(compressed_len);
+                            let n_read = (&mut r)
+                                .take(compressed_len as u64)
+                                .read_to_end(&mut compressed)
+                                .map_err(|e| format!("Read RLE row {row}: {e}"))?;
+                            if n_read != compressed_len {
+                                return Err(format!(
+                                    "RLE row {row}: expected {compressed_len} bytes, got {n_read}"
+                                )
+                                .into());
                             }
-                            // SAFETY: capacity >= compressed_len; read_exact fills all bytes
-                            // or we return Err without reading `compressed`.
-                            unsafe {
-                                compressed.set_len(compressed_len);
-                            }
-                            r.read_exact(&mut compressed)
-                                .map_err(|e| format!("Read RLE: {e}"))?;
                             unpack_bits_into(&mut row_raw, &compressed, row_raw_bytes)?;
                             // Safe: `checked_pixel_count` already proved width*height fits
                             // in usize, and row < height here.

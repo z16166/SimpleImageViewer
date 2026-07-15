@@ -424,7 +424,13 @@ impl CallbackTrait for HdrTilePlaneCallback {
                         return Vec::new();
                     }
                     Err(err) => {
-                        log::warn!("[HDR] Skipping JPEG deferred tile compose: {err}");
+                        static LAST_ERR: parking_lot::Mutex<Option<String>> =
+                            parking_lot::Mutex::new(None);
+                        let mut last = LAST_ERR.lock();
+                        if last.as_deref() != Some(&err) {
+                            log::warn!("[HDR] Skipping JPEG deferred tile compose: {err}");
+                            *last = Some(err);
+                        }
                         resources.tile_bindings.remove(tile_key);
                         return Vec::new();
                     }

@@ -801,26 +801,20 @@ unsafe fn apply_display_p3_matrix4_neon(
     b: float32x4_t,
 ) -> (float32x4_t, float32x4_t, float32x4_t) {
     let m = DISPLAY_P3_TO_LINEAR_SRGB;
-    let lr = vaddq_f32(
-        vaddq_f32(
-            vmulq_f32(r, vdupq_n_f32(m[0][0])),
-            vmulq_f32(g, vdupq_n_f32(m[0][1])),
-        ),
-        vmulq_f32(b, vdupq_n_f32(m[0][2])),
+    let lr = vfmaq_f32(
+        vfmaq_f32(vmulq_f32(r, vdupq_n_f32(m[0][0])), g, vdupq_n_f32(m[0][1])),
+        b,
+        vdupq_n_f32(m[0][2]),
     );
-    let lg = vaddq_f32(
-        vaddq_f32(
-            vmulq_f32(r, vdupq_n_f32(m[1][0])),
-            vmulq_f32(g, vdupq_n_f32(m[1][1])),
-        ),
-        vmulq_f32(b, vdupq_n_f32(m[1][2])),
+    let lg = vfmaq_f32(
+        vfmaq_f32(vmulq_f32(r, vdupq_n_f32(m[1][0])), g, vdupq_n_f32(m[1][1])),
+        b,
+        vdupq_n_f32(m[1][2]),
     );
-    let lb = vaddq_f32(
-        vaddq_f32(
-            vmulq_f32(r, vdupq_n_f32(m[2][0])),
-            vmulq_f32(g, vdupq_n_f32(m[2][1])),
-        ),
-        vmulq_f32(b, vdupq_n_f32(m[2][2])),
+    let lb = vfmaq_f32(
+        vfmaq_f32(vmulq_f32(r, vdupq_n_f32(m[2][0])), g, vdupq_n_f32(m[2][1])),
+        b,
+        vdupq_n_f32(m[2][2]),
     );
     (lr, lg, lb)
 }
@@ -855,9 +849,9 @@ unsafe fn compose_gain4_neon(
     let span = vdupq_n_f32(transform.headroom_span);
     let w = vdupq_n_f32(transform.weight);
     let zero = vdupq_n_f32(0.0);
-    let scale_r = vaddq_f32(one, vmulq_f32(span, vmulq_f32(gain_r, w)));
-    let scale_g = vaddq_f32(one, vmulq_f32(span, vmulq_f32(gain_g, w)));
-    let scale_b = vaddq_f32(one, vmulq_f32(span, vmulq_f32(gain_b, w)));
+    let scale_r = vfmaq_f32(one, vmulq_f32(gain_r, w), span);
+    let scale_g = vfmaq_f32(one, vmulq_f32(gain_g, w), span);
+    let scale_b = vfmaq_f32(one, vmulq_f32(gain_b, w), span);
     let out_r = vmaxq_f32(vmulq_f32(linear_r, scale_r), zero);
     let out_g = vmaxq_f32(vmulq_f32(linear_g, scale_g), zero);
     let out_b = vmaxq_f32(vmulq_f32(linear_b, scale_b), zero);

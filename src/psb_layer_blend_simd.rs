@@ -186,10 +186,7 @@ fn u8_to_f32(v: u8) -> f32 {
 /// Rust `f32::round` on non-negative values matches WGSL `floor(x * 255.0 + 0.5)`
 /// (WGSL `round` is ties-to-even and must not be used for this path).
 /// See [`UNIT_TO_U8_WGSL_FLOOR_BIAS`].
-#[inline]
-pub(crate) fn f32_to_u8_round(v: f32) -> u8 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as u8
-}
+pub use crate::simd_pixel_convert::f32_to_u8_round;
 
 /// WGSL expression that must stay bit-aligned with [`f32_to_u8_round`] for
 /// non-negative clamped inputs (shader string / review checklist 22).

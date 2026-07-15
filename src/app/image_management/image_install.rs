@@ -27,6 +27,13 @@ pub(super) fn hdr_sdr_fallback_texture_name(idx: usize) -> String {
     format!("{HDR_SDR_FALLBACK_TEXTURE_PREFIX}{idx}")
 }
 
+const SDR_MAIN_TEXTURE_PREFIX: &str = "img_";
+
+fn sdr_main_texture_name(idx: usize) -> String {
+    // "img_" + up to 10 decimal digits + null = max 15 bytes; small-heap allocated.
+    format!("{SDR_MAIN_TEXTURE_PREFIX}{idx}")
+}
+
 pub(super) struct StaticHdrInstall<'a> {
     pub(super) hdr: Arc<crate::hdr::types::HdrImageBuffer>,
     pub(super) fallback: &'a DecodedImage,
@@ -313,7 +320,7 @@ impl ImageViewerApp {
             self.upload_static_sdr_texture(
                 index,
                 &decoded,
-                format!("img_{index}"),
+                sdr_main_texture_name(index),
                 crate::loader::TexturePreviewBufferTag::MainWindowSdr,
                 crate::loader::PreviewStage::Refined,
                 ctx,
@@ -347,7 +354,7 @@ impl ImageViewerApp {
     ) {
         self.record_installed_display_mode(idx, crate::loader::RenderShape::Static);
         self.remove_hdr_image_resources(idx);
-        self.queue_or_upload_static_sdr_texture(idx, decoded, format!("img_{idx}"), ctx);
+        self.queue_or_upload_static_sdr_texture(idx, decoded, sdr_main_texture_name(idx), ctx);
         if idx == self.current_index {
             self.set_current_image_resolution(Some((decoded.width, decoded.height)));
             self.tile_manager = None;
@@ -1007,7 +1014,7 @@ impl ImageViewerApp {
         self.remove_hdr_image_resources(idx);
         if let Some(first) = frames.first() {
             let decoded = DecodedImage::from_arc(first.width, first.height, first.arc_pixels());
-            self.queue_or_upload_static_sdr_texture(idx, &decoded, format!("img_{idx}"), ctx);
+            self.queue_or_upload_static_sdr_texture(idx, &decoded, sdr_main_texture_name(idx), ctx);
             if idx == self.current_index {
                 self.set_current_image_resolution(Some((first.width, first.height)));
                 self.tile_manager = None;

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
@@ -210,7 +210,10 @@ pub(crate) struct DirectoryTreeStripCache {
     preview_stage: HashMap<PathBuf, PreviewStage>,
     logical_sizes: HashMap<PathBuf, (u32, u32)>,
     /// Access tick per path with a live texture; smallest tick is evicted first.
-    lru_tick: HashMap<PathBuf, u64>,
+    /// Keyed as `(tick, path)` so [`BTreeMap::pop_first`] yields the LRU victim in O(log n).
+    lru_tick: BTreeMap<(u64, PathBuf), ()>,
+    /// Cached texture names to avoid repeated `format!` allocations (H-9/H-11).
+    texture_names: HashMap<PathBuf, String>,
     lru_clock: u64,
     gpu_revision: u64,
 }
@@ -248,12 +251,11 @@ impl DirectoryTreeStripCache {
             self.textures.contains_key(path),
             "touch_lru requires an existing strip texture entry"
         );
+        // Remove old tick entry for this path (if any) — O(n) over 128 entries, negligible.
+        self.lru_tick.retain(|(_, p), _| p != path);
         self.lru_clock = self.lru_clock.wrapping_add(1);
-        if let Some(tick) = self.lru_tick.get_mut(path) {
-            *tick = self.lru_clock;
-        } else {
-            self.lru_tick.insert(path.to_path_buf(), self.lru_clock);
-        }
+        self.lru_tick
+            .insert((self.lru_clock, path.to_path_buf()), ());
     }
 
     /// Mark a cached strip entry recently used so LRU eviction skips visible rows.
@@ -268,7 +270,8 @@ impl DirectoryTreeStripCache {
         self.preview_buffer_tag.remove(path);
         self.preview_stage.remove(path);
         self.logical_sizes.remove(path);
-        self.lru_tick.remove(path);
+        self.texture_names.remove(path);
+        self.lru_tick.retain(|(_, p), _| p != path);
     }
 
     /// Test/debug accessor for the path-keyed texture map. Production publish goes through
@@ -534,11 +537,11 @@ impl DirectoryTreeStripCache {
             self.commit_existing_strip_texture_update(buffer_tag, stage, logical_size, path);
             return;
         }
-        let handle = ctx.load_texture(
-            format!("dir_tree_strip::{}", path.display()),
-            color_image,
-            TextureOptions::LINEAR,
-        );
+        let name = self
+            .texture_names
+            .entry(path.to_path_buf())
+            .or_insert_with(|| format!("dir_tree_strip::{}", path.display()));
+        let handle = ctx.load_texture(name.as_str(), color_image, TextureOptions::LINEAR);
         self.commit_strip_texture(handle, buffer_tag, stage, logical_size, path);
     }
 
@@ -547,33 +550,42 @@ impl DirectoryTreeStripCache {
         self.preview_buffer_tag.retain(|path, _| keep(path));
         self.preview_stage.retain(|path, _| keep(path));
         self.logical_sizes.retain(|path, _| keep(path));
-        self.lru_tick.retain(|path, _| keep(path));
+        self.lru_tick.retain(|(_, p), _| keep(p));
+        self.texture_names.retain(|path, _| keep(path));
     }
 
     /// Project the path-keyed cache into index-keyed maps for the UI preview snapshot.
     ///
     /// `path_to_index` maps the current `image_files` paths to their row index; entries
     /// whose path is not in the map (no longer in the list) are dropped.
+    ///
+    /// Returns sparse index→value Vecs (one entry per matched cache item, at most
+    /// `DIRECTORY_TREE_STRIP_CACHE_MAX` = 128) to avoid allocating dense N-element
+    /// Vecs for the entire file list. The caller merges these into the visible-row
+    /// snapshot Vec (see [`publish_preview_snapshot`]).
     pub(crate) fn project_index_maps(
         &self,
         path_to_index: &HashMap<PathBuf, usize>,
     ) -> ProjectedStripPreview {
-        let mut textures = HashMap::with_capacity(self.textures.len());
+        if path_to_index.is_empty() {
+            return ProjectedStripPreview {
+                textures: Vec::new(),
+                logical_sizes: Vec::new(),
+                buffer_tags: Vec::new(),
+            };
+        }
+        let mut textures: Vec<(usize, egui::TextureHandle)> = Vec::new();
+        let mut logical_sizes: Vec<(usize, (u32, u32))> = Vec::new();
+        let mut buffer_tags: Vec<(usize, StripPreviewBufferTag)> = Vec::new();
         for (path, handle) in &self.textures {
             if let Some(&index) = path_to_index.get(path) {
-                textures.insert(index, handle.clone());
-            }
-        }
-        let mut logical_sizes = HashMap::with_capacity(self.logical_sizes.len());
-        for (path, &size) in &self.logical_sizes {
-            if let Some(&index) = path_to_index.get(path) {
-                logical_sizes.insert(index, size);
-            }
-        }
-        let mut buffer_tags = HashMap::with_capacity(self.preview_buffer_tag.len());
-        for (path, &tag) in &self.preview_buffer_tag {
-            if let Some(&index) = path_to_index.get(path) {
-                buffer_tags.insert(index, tag);
+                textures.push((index, handle.clone()));
+                if let Some(&size) = self.logical_sizes.get(path) {
+                    logical_sizes.push((index, size));
+                }
+                if let Some(&tag) = self.preview_buffer_tag.get(path) {
+                    buffer_tags.push((index, tag));
+                }
             }
         }
         ProjectedStripPreview {
@@ -590,6 +602,7 @@ impl DirectoryTreeStripCache {
         self.preview_buffer_tag.clear();
         self.preview_stage.clear();
         self.lru_tick.clear();
+        self.texture_names.clear();
         self.bump_gpu_revision();
     }
 
@@ -599,18 +612,14 @@ impl DirectoryTreeStripCache {
         self.preview_stage.clear();
         self.logical_sizes.clear();
         self.lru_tick.clear();
+        self.texture_names.clear();
         self.bump_gpu_revision();
     }
 
     fn evict_if_needed(&mut self) {
         let mut evicted = false;
         while self.textures.len() > DIRECTORY_TREE_STRIP_CACHE_MAX {
-            let Some(victim) = self
-                .lru_tick
-                .iter()
-                .min_by_key(|(_, tick)| **tick)
-                .map(|(path, _)| path.clone())
-            else {
+            let Some(((_, victim), _)) = self.lru_tick.pop_first() else {
                 break;
             };
             #[cfg(feature = "preload-debug")]
@@ -622,21 +631,27 @@ impl DirectoryTreeStripCache {
             self.textures.remove(&victim);
             self.preview_buffer_tag.remove(&victim);
             self.preview_stage.remove(&victim);
+            self.texture_names.remove(&victim);
             // Keep logical_sizes so visible rows can cold-regenerate after LRU eviction.
-            self.lru_tick.remove(&victim);
             evicted = true;
         }
+        // Batch-bump once after all evictions rather than per-entry, avoiding
+        // unnecessary GPU-revision churn that could trigger extra UI re-projection.
         if evicted {
             self.bump_gpu_revision();
         }
     }
 }
 
-/// Index-keyed projection of the path-keyed strip cache, produced for UI publish.
+/// Sparse index→value projection of the strip cache (one entry per matched cache item).
+///
+/// Unlike the dense snapshot Vecs (which are sized to the visible row count), this
+/// holds at most [`DIRECTORY_TREE_STRIP_CACHE_MAX`] (128) entries and avoids allocating
+/// per-frame Vecs of size proportional to the full file list.
 pub(crate) struct ProjectedStripPreview {
-    pub textures: HashMap<usize, egui::TextureHandle>,
-    pub logical_sizes: HashMap<usize, (u32, u32)>,
-    pub buffer_tags: HashMap<usize, StripPreviewBufferTag>,
+    pub textures: Vec<(usize, egui::TextureHandle)>,
+    pub logical_sizes: Vec<(usize, (u32, u32))>,
+    pub buffer_tags: Vec<(usize, StripPreviewBufferTag)>,
 }
 
 pub(crate) fn decoded_rgba_size_valid(decoded: &DecodedImage) -> bool {
@@ -1383,11 +1398,18 @@ mod tests {
         let mut path_to_index = HashMap::new();
         path_to_index.insert(strip_test_path(0), 3usize);
         let projected = cache.project_index_maps(&path_to_index);
-        assert!(projected.textures.contains_key(&3));
-        assert_eq!(projected.logical_sizes.get(&3), Some(&(160, 160)));
-        assert_eq!(
-            projected.buffer_tags.get(&3),
-            Some(&StripPreviewBufferTag::StripDecodedPixels)
+        assert!(projected.textures.iter().any(|(i, _)| *i == 3));
+        assert!(
+            projected
+                .logical_sizes
+                .iter()
+                .any(|(i, s)| *i == 3 && *s == (160, 160))
+        );
+        assert!(
+            projected
+                .buffer_tags
+                .iter()
+                .any(|(i, t)| *i == 3 && *t == StripPreviewBufferTag::StripDecodedPixels)
         );
         // A path not present in the list is dropped from the projection.
         let empty = cache.project_index_maps(&HashMap::new());

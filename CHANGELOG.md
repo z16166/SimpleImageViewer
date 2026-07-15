@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Improved
+- **Faster image loading and navigation**: Optimised preview strip rendering, directory tree indexing, and per-frame memory allocation — reducing stutter when browsing large folders quickly.
+- **Enhanced decoding robustness**: Added checked arithmetic for WIC decoder strides and PSD signed-division corrections, preventing rare decode crashes on edge-case files.
+- **More stable NEON (Apple Silicon) support**: Fixed an out-of-bounds access in NEON SIMD pixel conversion, improving reliability on Apple Silicon Macs.
+
+### Changed
+- **Reduced log verbosity**: Suppressed repeated warning messages for uncommon tile-compose failures and downgraded macOS ImageIO debug logs, resulting in cleaner diagnostic output.
+
 ## [3.1.1] - 2026-07-15
 
 ### Improved

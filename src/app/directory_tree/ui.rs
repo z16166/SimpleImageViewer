@@ -1289,8 +1289,15 @@ fn draw_image_file_list(
                         body_font: &body_font,
                         thumb_px,
                         row_height,
-                        texture: view.preview_textures().get(&row_index),
-                        logical_size: view.preview_logical_sizes().get(&row_index).copied(),
+                        texture: view
+                            .preview_textures()
+                            .get(row_index)
+                            .and_then(|t| t.as_ref()),
+                        logical_size: view
+                            .preview_logical_sizes()
+                            .get(row_index)
+                            .copied()
+                            .flatten(),
                         command_tx,
                         chrome: &mut *chrome,
                         list_enabled: list_enabled && interaction_enabled,

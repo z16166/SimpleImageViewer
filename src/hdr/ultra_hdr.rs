@@ -44,7 +44,7 @@ use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
-use crate::hdr::types::IsoGainMapGpuSource;
+use crate::hdr::types::{GAIN_MAP_SOURCE_JPEG_R, IsoGainMapGpuSource};
 use crate::hdr::types::{
     HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, IsoDeferredTileContext,
 };
@@ -154,7 +154,11 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_cpu_compose(
 
     if iso_gain_map_skips_forward_compose(metadata) {
         return attach_iso_gain_map_hdr_base_from_primary_rgba8(
-            "JPEG_R", width, height, sdr_rgba, metadata,
+            GAIN_MAP_SOURCE_JPEG_R,
+            width,
+            height,
+            sdr_rgba,
+            metadata,
         );
     }
 
@@ -279,11 +283,13 @@ impl UltraHdrTiledImageSource {
         );
         let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
+        let sdr_rgba = Arc::new(sdr_rgba);
+        let gain_rgba = Arc::new(gain_rgba);
         let iso_deferred_metadata = Arc::new(attach_iso_deferred_tile_metadata(
             crate::hdr::jpeg_gain_map_gpu::IsoDeferredTileMetadataInput {
-                source: "JPEG_R",
-                sdr_rgba: Arc::new(sdr_rgba.clone()),
-                gain_rgba: Arc::new(gain_rgba.clone()),
+                source: GAIN_MAP_SOURCE_JPEG_R,
+                sdr_rgba: Arc::clone(&sdr_rgba),
+                gain_rgba: Arc::clone(&gain_rgba),
                 gain_width,
                 gain_height,
                 metadata,
@@ -300,10 +306,10 @@ impl UltraHdrTiledImageSource {
             physical_width,
             physical_height,
             orientation,
-            sdr_rgba: Arc::new(sdr_rgba),
+            sdr_rgba,
             gain_width,
             gain_height,
-            gain_rgba: Arc::new(gain_rgba),
+            gain_rgba,
             metadata,
             target_hdr_capacity,
             tile_cache: Mutex::new(HdrTileCache::new(configured_hdr_tile_cache_max_bytes())),
@@ -320,7 +326,7 @@ impl UltraHdrTiledImageSource {
     ) -> Result<Self, String> {
         let iso_deferred_metadata = Arc::new(attach_iso_deferred_tile_metadata(
             crate::hdr::jpeg_gain_map_gpu::IsoDeferredTileMetadataInput {
-                source: "JPEG_R",
+                source: GAIN_MAP_SOURCE_JPEG_R,
                 sdr_rgba: Arc::clone(&deferred.sdr_rgba),
                 gain_rgba: Arc::clone(&deferred.gain_rgba),
                 gain_width: deferred.gain_width,

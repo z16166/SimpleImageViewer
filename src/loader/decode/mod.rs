@@ -750,10 +750,10 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                         width,
                         height
                     );
-                    Ok(make_image_data(DecodedImage::new(
+                    Ok(make_image_data(DecodedImage::from_arc(
                         width,
                         height,
-                        first.fallback.rgba().to_vec(),
+                        first.fallback.arc_pixels(),
                     )))
                 } else {
                     log::info!(

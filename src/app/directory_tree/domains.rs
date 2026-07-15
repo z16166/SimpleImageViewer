@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 use eframe::egui;
 
+use crate::app::directory_tree_strip_cache::StripPreviewBufferTag;
 use crate::directory_tree_places::KnownFolderEntry;
 
 use super::node_store;
@@ -222,10 +223,10 @@ pub(crate) struct DirectoryTreePreviewSnapshot {
     /// `DirectoryTreeListState::image_list_generation` at the time this preview was published.
     /// Used by needs-publish fast path so steady-state frames skip remapping projections.
     pub(super) image_list_generation: u64,
-    pub(super) textures: HashMap<usize, egui::TextureHandle>,
-    pub(super) logical_sizes: HashMap<usize, (u32, u32)>,
+    pub(super) textures: Vec<Option<egui::TextureHandle>>,
+    pub(super) logical_sizes: Vec<Option<(u32, u32)>>,
     pub(super) buffer_tags:
-        HashMap<usize, crate::app::directory_tree_strip_cache::StripPreviewBufferTag>,
+        Vec<Option<crate::app::directory_tree_strip_cache::StripPreviewBufferTag>>,
 }
 
 impl Default for DirectoryTreeTreeSnapshot {
@@ -378,46 +379,38 @@ pub(super) fn publish_preview_snapshot(
     image_list_generation: u64,
     row_count: usize,
     cache_revision: u64,
-    textures: &HashMap<usize, egui::TextureHandle>,
-    logical_sizes: &HashMap<usize, (u32, u32)>,
-    buffer_tags: &HashMap<usize, crate::app::directory_tree_strip_cache::StripPreviewBufferTag>,
+    textures: &[(usize, egui::TextureHandle)],
+    logical_sizes: &[(usize, (u32, u32))],
+    buffer_tags: &[(
+        usize,
+        crate::app::directory_tree_strip_cache::StripPreviewBufferTag,
+    )],
 ) -> bool {
     let prev = swap.load();
-    let mut preview_textures = HashMap::new();
-    let mut preview_logical_sizes = HashMap::new();
-    let mut preview_buffer_tags = HashMap::new();
-    for (&index, handle) in textures {
+    let mut preview_textures: Vec<Option<egui::TextureHandle>> = vec![None; row_count];
+    let mut preview_logical_sizes: Vec<Option<(u32, u32)>> = vec![None; row_count];
+    let mut preview_buffer_tags: Vec<Option<StripPreviewBufferTag>> = vec![None; row_count];
+    for &(index, ref handle) in textures {
         if index < row_count {
-            preview_textures.insert(index, handle.clone());
+            preview_textures[index] = Some(handle.clone());
         }
     }
-    for (&index, &size) in logical_sizes {
+    for &(index, size) in logical_sizes {
         if index < row_count {
-            preview_logical_sizes.insert(index, size);
+            preview_logical_sizes[index] = Some(size);
         }
     }
-    for (&index, &tag) in buffer_tags {
+    for &(index, tag) in buffer_tags {
         if index < row_count {
-            preview_buffer_tags.insert(index, tag);
+            preview_buffer_tags[index] = Some(tag);
         }
     }
     let revision_matches = cache_revision == prev.revision;
     let list_gen_matches = list_publish_generation == prev.list_publish_generation;
     let image_list_gen_matches = image_list_generation == prev.image_list_generation;
-    let textures_match = preview_textures.len() == prev.textures.len()
-        && preview_textures.iter().all(|(index, handle)| {
-            prev.textures
-                .get(index)
-                .is_some_and(|prev_handle| prev_handle.id() == handle.id())
-        });
-    let logical_match = preview_logical_sizes.len() == prev.logical_sizes.len()
-        && preview_logical_sizes
-            .iter()
-            .all(|(index, size)| prev.logical_sizes.get(index) == Some(size));
-    let tags_match = preview_buffer_tags.len() == prev.buffer_tags.len()
-        && preview_buffer_tags
-            .iter()
-            .all(|(index, tag)| prev.buffer_tags.get(index) == Some(tag));
+    let textures_match = textures_match_snapshot(&preview_textures, &prev.textures);
+    let logical_match = logical_sizes_match_snapshot(&preview_logical_sizes, &prev.logical_sizes);
+    let tags_match = tags_match_snapshot(&preview_buffer_tags, &prev.buffer_tags);
     if revision_matches
         && list_gen_matches
         && image_list_gen_matches
@@ -438,6 +431,36 @@ pub(super) fn publish_preview_snapshot(
     true
 }
 
+fn textures_match_snapshot(
+    cur: &[Option<egui::TextureHandle>],
+    prev: &[Option<egui::TextureHandle>],
+) -> bool {
+    let max = cur.len().max(prev.len());
+    (0..max).all(|i| {
+        match (
+            cur.get(i).and_then(|t| t.as_ref()),
+            prev.get(i).and_then(|t| t.as_ref()),
+        ) {
+            (Some(a), Some(b)) => a.id() == b.id(),
+            (None, None) => true,
+            _ => false,
+        }
+    })
+}
+
+fn logical_sizes_match_snapshot(cur: &[Option<(u32, u32)>], prev: &[Option<(u32, u32)>]) -> bool {
+    let max = cur.len().max(prev.len());
+    (0..max).all(|i| cur.get(i).copied().flatten() == prev.get(i).copied().flatten())
+}
+
+fn tags_match_snapshot(
+    cur: &[Option<StripPreviewBufferTag>],
+    prev: &[Option<StripPreviewBufferTag>],
+) -> bool {
+    let max = cur.len().max(prev.len());
+    (0..max).all(|i| cur.get(i).copied().flatten() == prev.get(i).copied().flatten())
+}
+
 pub(super) fn clear_preview_snapshot(swap: &ArcSwap<DirectoryTreePreviewSnapshot>) {
     swap.store(Arc::new(DirectoryTreePreviewSnapshot::default()));
 }
@@ -451,10 +474,14 @@ pub(super) struct DirectoryTreePublishContext<'a> {
     pub last_list_publish_at: &'a mut Instant,
     pub force_list: bool,
     pub preview_cache_revision: Option<u64>,
-    pub preview_textures: Option<&'a HashMap<usize, egui::TextureHandle>>,
-    pub preview_logical_sizes: Option<&'a HashMap<usize, (u32, u32)>>,
-    pub preview_buffer_tags:
-        Option<&'a HashMap<usize, crate::app::directory_tree_strip_cache::StripPreviewBufferTag>>,
+    pub preview_textures: Option<&'a [(usize, egui::TextureHandle)]>,
+    pub preview_logical_sizes: Option<&'a [(usize, (u32, u32))]>,
+    pub preview_buffer_tags: Option<
+        &'a [(
+            usize,
+            crate::app::directory_tree_strip_cache::StripPreviewBufferTag,
+        )],
+    >,
 }
 
 pub(super) fn publish_domain_snapshots(ctx: &mut DirectoryTreePublishContext<'_>) -> bool {

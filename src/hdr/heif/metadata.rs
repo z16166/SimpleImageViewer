@@ -17,7 +17,7 @@ use super::brand::heif_nclx_to_metadata;
 use super::gain_map::HeifAuxiliaryImageHandle;
 
 #[cfg(feature = "heif-native")]
-use crate::hdr::types::HdrGainMapMetadata;
+use crate::hdr::types::{GAIN_MAP_SOURCE_HEIF, HdrGainMapMetadata};
 use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
@@ -218,7 +218,7 @@ pub(crate) fn inspect_heif_gain_map_auxiliaries(
         "[HDR] HEIF auxiliary gain-map/tmap evidence found but no stable ISO metadata parser is exposed yet: {diagnostic}"
     );
     Some(HdrGainMapMetadata {
-        source: "HEIF",
+        source: GAIN_MAP_SOURCE_HEIF,
         target_hdr_capacity: None,
         diagnostic,
         capped_display_referred: false,

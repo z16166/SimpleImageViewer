@@ -45,7 +45,8 @@ impl AlignedU32Buffer {
     fn new(len: usize, align: usize) -> Self {
         let align = align.max(std::mem::align_of::<u32>());
         let pad = align / std::mem::size_of::<u32>() + 1;
-        let storage = vec![0_u32; len.saturating_add(pad).saturating_add(pad)];
+        let cap = len.saturating_add(pad).saturating_add(pad);
+        let storage = vec![0u32; cap];
         let base = storage.as_ptr() as usize;
         let byte_off = (align - (base % align)) % align;
         let offset = byte_off / std::mem::size_of::<u32>();
@@ -607,6 +608,9 @@ unsafe fn downsample_rgba8_box_sse41(params: DownsampleSimdParams<'_>) {
                 .div_ceil(dst_h as u64)
                 .min(src_h as u64) as u32;
 
+            // Flip the sign bit to use signed comparison intrinsics for unsigned u32.
+            let sign_bit128 = _mm_set1_epi32(i32::MIN);
+
             for bx in 0..blocks {
                 let base_x = bx as usize * simd_w;
 
@@ -645,8 +649,6 @@ unsafe fn downsample_rgba8_box_sse41(params: DownsampleSimdParams<'_>) {
                     continue;
                 }
 
-                // Flip the sign bit to use signed comparison intrinsics for unsigned u32.
-                let sign_bit128 = _mm_set1_epi32(i32::MIN);
                 let x0_v_u = _mm_xor_si128(x0_v, sign_bit128);
                 let x1_v_u = _mm_xor_si128(x1_v, sign_bit128);
 
@@ -682,26 +684,27 @@ unsafe fn downsample_rgba8_box_sse41(params: DownsampleSimdParams<'_>) {
                     }
                 }
 
-                // SAFETY (extract closure): all lane indices are compile-time
-                // constants 0..3 inside the match arms below.
-                let extract = |v: __m128i, lane: usize| -> u32 {
-                    match lane {
-                        0 => _mm_extract_epi32::<0>(v) as u32,
-                        1 => _mm_extract_epi32::<1>(v) as u32,
-                        2 => _mm_extract_epi32::<2>(v) as u32,
-                        3 => _mm_extract_epi32::<3>(v) as u32,
-                        _ => 0,
-                    }
-                };
+                // Store accumulators to stack array once, then index directly.
+                // This avoids repeated _mm_extract_epi32 cross-lane extraction.
+                let mut lane_r = [0i32; 4];
+                let mut lane_g = [0i32; 4];
+                let mut lane_b = [0i32; 4];
+                let mut lane_a = [0i32; 4];
+                let mut lane_cnt = [0i32; 4];
+                _mm_storeu_si128(lane_r.as_mut_ptr() as *mut __m128i, acc_r);
+                _mm_storeu_si128(lane_g.as_mut_ptr() as *mut __m128i, acc_g);
+                _mm_storeu_si128(lane_b.as_mut_ptr() as *mut __m128i, acc_b);
+                _mm_storeu_si128(lane_a.as_mut_ptr() as *mut __m128i, acc_a);
+                _mm_storeu_si128(lane_cnt.as_mut_ptr() as *mut __m128i, acc_cnt);
                 for i in 0..simd_w {
-                    let cnt = extract(acc_cnt, i);
+                    let cnt = lane_cnt[i] as u32;
                     if let Some(cnt) = NonZeroU64::new(cnt as u64) {
                         let cnt = cnt.get() as u32;
                         let di = (dy * dst_w_u + base_x + i) * 4;
-                        *dst.get_unchecked_mut(di) = (extract(acc_r, i) / cnt) as u8;
-                        *dst.get_unchecked_mut(di + 1) = (extract(acc_g, i) / cnt) as u8;
-                        *dst.get_unchecked_mut(di + 2) = (extract(acc_b, i) / cnt) as u8;
-                        *dst.get_unchecked_mut(di + 3) = (extract(acc_a, i) / cnt) as u8;
+                        *dst.get_unchecked_mut(di) = (lane_r[i] as u32 / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 1) = (lane_g[i] as u32 / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 2) = (lane_b[i] as u32 / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 3) = (lane_a[i] as u32 / cnt) as u8;
                     }
                 }
             }
@@ -770,6 +773,9 @@ unsafe fn downsample_rgba8_box_avx2(params: DownsampleSimdParams<'_>) {
                 .div_ceil(dst_h as u64)
                 .min(src_h as u64) as u32;
 
+            // Flip the sign bit to use signed comparison intrinsics for unsigned u32.
+            let sign_bit256 = _mm256_set1_epi32(i32::MIN);
+
             for bx in 0..blocks {
                 let base_x = bx as usize * simd_w;
 
@@ -802,7 +808,6 @@ unsafe fn downsample_rgba8_box_avx2(params: DownsampleSimdParams<'_>) {
                     continue;
                 }
 
-                let sign_bit256 = _mm256_set1_epi32(i32::MIN);
                 let x0_v_u = _mm256_xor_si256(x0_v, sign_bit256);
                 let x1_v_u = _mm256_xor_si256(x1_v, sign_bit256);
 
@@ -843,28 +848,28 @@ unsafe fn downsample_rgba8_box_avx2(params: DownsampleSimdParams<'_>) {
                     }
                 }
 
-                let extract = |v: __m256i, lane: usize| -> u32 {
-                    match lane {
-                        0 => _mm256_extract_epi32::<0>(v) as u32,
-                        1 => _mm256_extract_epi32::<1>(v) as u32,
-                        2 => _mm256_extract_epi32::<2>(v) as u32,
-                        3 => _mm256_extract_epi32::<3>(v) as u32,
-                        4 => _mm256_extract_epi32::<4>(v) as u32,
-                        5 => _mm256_extract_epi32::<5>(v) as u32,
-                        6 => _mm256_extract_epi32::<6>(v) as u32,
-                        7 => _mm256_extract_epi32::<7>(v) as u32,
-                        _ => 0,
-                    }
-                };
+                // Store accumulators to stack array once, then index directly.
+                // This avoids repeated _mm256_extract_epi32 cross-lane extraction
+                // (vextracti128 + pextrd for lanes 4-7).
+                let mut lane_r = [0i32; 8];
+                let mut lane_g = [0i32; 8];
+                let mut lane_b = [0i32; 8];
+                let mut lane_a = [0i32; 8];
+                let mut lane_cnt = [0i32; 8];
+                _mm256_storeu_si256(lane_r.as_mut_ptr() as *mut __m256i, acc_r);
+                _mm256_storeu_si256(lane_g.as_mut_ptr() as *mut __m256i, acc_g);
+                _mm256_storeu_si256(lane_b.as_mut_ptr() as *mut __m256i, acc_b);
+                _mm256_storeu_si256(lane_a.as_mut_ptr() as *mut __m256i, acc_a);
+                _mm256_storeu_si256(lane_cnt.as_mut_ptr() as *mut __m256i, acc_cnt);
                 for i in 0..simd_w {
-                    let cnt = extract(acc_cnt, i);
+                    let cnt = lane_cnt[i] as u32;
                     if let Some(cnt) = NonZeroU64::new(cnt as u64) {
                         let cnt = cnt.get() as u32;
                         let di = (dy * dst_w_u + base_x + i) * 4;
-                        *dst.get_unchecked_mut(di) = (extract(acc_r, i) / cnt) as u8;
-                        *dst.get_unchecked_mut(di + 1) = (extract(acc_g, i) / cnt) as u8;
-                        *dst.get_unchecked_mut(di + 2) = (extract(acc_b, i) / cnt) as u8;
-                        *dst.get_unchecked_mut(di + 3) = (extract(acc_a, i) / cnt) as u8;
+                        *dst.get_unchecked_mut(di) = (lane_r[i] as u32 / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 1) = (lane_g[i] as u32 / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 2) = (lane_b[i] as u32 / cnt) as u8;
+                        *dst.get_unchecked_mut(di + 3) = (lane_a[i] as u32 / cnt) as u8;
                     }
                 }
             }

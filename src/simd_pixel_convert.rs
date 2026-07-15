@@ -18,6 +18,12 @@
 //!
 //! Dispatch follows [`crate::simd_swizzle`]: runtime feature detection on x86_64
 //! (AVX2 -> SSE4.1 -> scalar), NEON on aarch64, scalar fallback.
+//!
+//! Many functions/paths are only compiled when the corresponding feature (avif-native,
+//! heif-native, jpegxl, etc.) or architecture is enabled, which the compiler may flag
+//! as dead code on certain build configurations — the `#[allow(dead_code)]` attribute
+//! is intentional for this modular dispatch module.
+#![allow(dead_code)]
 
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
@@ -51,6 +57,15 @@ fn checked_scanline_bytes(width: usize, bytes_per_pixel: usize) -> Option<usize>
 fn checked_u16_sample_scanline_bytes(width: usize, samples_per_pixel: usize) -> Option<usize> {
     checked_pixel_row_len(width, samples_per_pixel)
         .and_then(|samples| samples.checked_mul(std::mem::size_of::<u16>()))
+}
+
+/// Convert a normalized `[0, 1]` float to `u8` via `round(x * 255)`.
+///
+/// Rust `f32::round` on non-negative values matches WGSL `floor(x * 255.0 + 0.5)`
+/// (WGSL `round` is ties-to-even and must not be used for this path).
+#[inline]
+pub fn f32_to_u8_round(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 /// Zero-extend packed u8 samples into u16 lanes (one lane per channel sample).
@@ -1450,6 +1465,11 @@ unsafe fn finalize_gray_linear_scratch_row_to_rgba8_avx2(
             for (i, &ix) in indices.iter().enumerate() {
                 gray[i] = *lut.add(ix.clamp(0, 255) as usize);
             }
+            // `_mm_loadl_epi64` loads only the low 8 bytes (gray[0..8]) into the
+            // lower half of g8; the upper 8 bytes remain zero. `_mm_xor_si128`
+            // with miniswhite flips both halves, but the upper half is discarded
+            // by `_mm_unpacklo_epi8` in store_gray_u8x8_as_rgba8_avx2, which only
+            // uses the lower 8 bytes — so this is correct and intentional.
             let mut g8 = _mm_loadl_epi64(gray.as_ptr() as *const __m128i);
             if miniswhite {
                 g8 = _mm_xor_si128(g8, _mm_set1_epi8(-1));

@@ -32,7 +32,7 @@ use crate::app::rendering::plan::RenderShape;
 use crate::app::rendering::plane::{
     PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
-use crate::tile_cache::{TileCoord, TileStatus};
+use crate::tile_cache::TileStatus;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::sync::Arc;
 
@@ -320,14 +320,9 @@ impl ImageViewerApp {
                 &self.tiled_primary_visible_tiles_scratch,
                 &self.tiled_visible_tiles_scratch,
                 &mut self.tiled_tile_visits_scratch,
+                &mut self.tiled_primary_visible_scratch,
             );
             let tile_visits = &self.tiled_tile_visits_scratch;
-            self.tiled_primary_visible_scratch.clear();
-            self.tiled_primary_visible_scratch.extend(
-                self.tiled_primary_visible_tiles_scratch
-                    .iter()
-                    .map(|(coord, _, _)| *coord),
-            );
             self.tiled_visible_coords_scratch.clear();
             self.tiled_visible_coords_scratch
                 .extend(self.tiled_visible_tiles_scratch.iter().map(|(c, _, _)| *c));
@@ -377,7 +372,8 @@ impl ImageViewerApp {
             };
 
             let mut newly_uploaded = 0;
-            let mut uploaded_coords_scratch: Vec<TileCoord> = Vec::new();
+            let uploaded_coords_scratch = &mut self.uploaded_coords_scratch;
+            uploaded_coords_scratch.clear();
             let mut tile_request_budget = TileRequestBudget::new(
                 tile_visits.len(),
                 crate::tile_cache::get_tile_size(),
@@ -500,7 +496,7 @@ impl ImageViewerApp {
                 // GPU textures are authoritative after upload; drop redundant CPU copies
                 // in one write-lock batch rather than per-tile inside get_or_create_tile.
                 if !uploaded_coords_scratch.is_empty() {
-                    tm.release_cpu_pixels_for_coords(&uploaded_coords_scratch);
+                    tm.release_cpu_pixels_for_coords(uploaded_coords_scratch);
                 }
             }
 

@@ -26,6 +26,108 @@ use core::arch::aarch64::*;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
+/// Natural-log approximation matching the SSE4.1/NEON Cephes-style minimax polynomial
+/// used in [`crate::hdr::simd_fast_pow`] — same constants, scalar evaluation.
+///
+/// Each Horner step uses `y*x + c` (mul+add, two roundings) matching the
+/// SSE4.1 `_mm_add_ps(_mm_mul_ps(y, x), c)` pattern so results are bit-identical.
+#[inline]
+fn log_approx_scalar(x: f32) -> f32 {
+    const INV_MANT_MASK: u32 = !0x7f80_0000;
+    const EXP_BIAS: i32 = 0x7f;
+    const LOG_Q1: f32 = -2.121_944_40e-4;
+    const LOG_Q2: f32 = 0.693_359_375;
+    const SQRTHF: f32 = 0.707_106_781_186_547_5;
+
+    let x = x.max(f32::MIN_POSITIVE);
+    let bits = x.to_bits();
+    let imm0 = (bits >> 23) as i32 - EXP_BIAS;
+    let mut x = f32::from_bits((bits & INV_MANT_MASK) | 0x3f00_0000);
+    let mut e = imm0 as f32 + 1.0;
+
+    if x < SQRTHF {
+        x *= 2.0;
+        e -= 1.0;
+    }
+
+    x -= 1.0;
+    let z = x * x;
+
+    let mut y: f32 = 7.037_683_6e-2;
+    y = y * x + -1.151_461e-1;
+    y = y * x + 1.167_699_84e-1;
+    y = y * x + -1.242_014_1e-1;
+    y = y * x + 1.424_932_3e-1;
+    y = y * x + -1.666_805_7e-1;
+    y = y * x + 2.000_071_4e-1;
+    y = y * x + -2.499_999_4e-1;
+    y = y * x + 3.333_333e-1;
+    y *= x * z;
+
+    let tmp = LOG_Q1 * e;
+    y += tmp;
+    y -= z * 0.5;
+    let tmp = LOG_Q2 * e;
+    x + y + tmp
+}
+
+/// Exponential approximation matching the SSE4.1/NEON Cephes-style minimax polynomial
+/// used in [`crate::hdr::simd_fast_pow`] — same constants, scalar evaluation.
+///
+/// Each Horner step uses `y*x + c` (mul+add, two roundings) matching the
+/// SSE4.1 `_mm_add_ps(_mm_mul_ps(y, x), c)` pattern so results are bit-identical.
+#[inline]
+fn exp_approx_scalar(x: f32) -> f32 {
+    const EXP_BIAS: i32 = 0x7f;
+    const EXP_HI: f32 = 88.376_262_664_794_9;
+    const EXP_LO: f32 = -88.376_262_664_794_9;
+    const LOG2EF: f32 = std::f32::consts::LOG2_E;
+    const EXP_C1: f32 = 0.693_359_375;
+    const EXP_C2: f32 = -2.121_944_40e-4;
+
+    let x = x.clamp(EXP_LO, EXP_HI);
+
+    // fx = floor(x * LOG2EF + 0.5), matching SSE4.1 cvt+sub rounding.
+    let fx_unadj = x * LOG2EF + 0.5;
+    let mut fx = fx_unadj.floor();
+    let tmp = fx as i32 as f32;
+    if tmp > fx {
+        fx = tmp - 1.0;
+    } else {
+        fx = tmp;
+    }
+
+    let x = (x - fx * EXP_C1) - fx * EXP_C2;
+    let z = x * x;
+
+    let mut y: f32 = 1.987_569_1e-4;
+    y = y * x + 1.398_199_9e-3;
+    y = y * x + 8.333_452e-3;
+    y = y * x + 4.166_579_6e-2;
+    y = y * x + 1.666_666_6e-1;
+    y = y * x + 5e-1;
+    y = y * z + x;
+    y += 1.0;
+
+    // Scale by 2^(fx) via exponent-field manipulation.
+    let imm0 = ((fx as i32 + EXP_BIAS) << 23) as u32;
+    y * f32::from_bits(imm0)
+}
+
+/// Scalar fast power: `base^exp` via the same Cephes minimax log+exp approximation
+/// used by the SSE4.1/NEON [`pow4_sse41`]/[`pow4_neon`] SIMD routines — bit-exact within
+/// the same tolerance band (~2 ULP relative error on [0, 1]).
+///
+/// Replaces [`f32::powf`] in tone-map scalar tails so the scalar fallback produces
+/// results identical to the SIMD fast path.
+#[inline]
+pub(crate) fn fast_powf_scalar(base: f32, exp: f32) -> f32 {
+    if base <= 0.0 {
+        return 0.0;
+    }
+    exp_approx_scalar(exp * log_approx_scalar(base))
+}
+
 /// Scalar reference for tests; positive bases only.
 #[cfg(test)]
 #[inline]
@@ -40,14 +142,14 @@ mod x86 {
 
     const INV_MANT_MASK: i32 = !0x7f80_0000_u32 as i32;
     const EXP_BIAS: i32 = 0x7f;
-    const EXP_HI: f32 = 88.376_26;
-    const EXP_LO: f32 = -88.376_26;
+    const EXP_HI: f32 = 88.376_262_664_794_9;
+    const EXP_LO: f32 = -88.376_262_664_794_9;
     const LOG2EF: f32 = std::f32::consts::LOG2_E;
-    const LOG_Q1: f32 = -2.121_944_4e-4;
-    const LOG_Q2: f32 = 0.693_359_4;
-    const EXP_C1: f32 = 0.693_359_4;
-    const EXP_C2: f32 = -2.121_944_4e-4;
-    const SQRTHF: f32 = 0.707_106_77;
+    const LOG_Q1: f32 = -2.121_944_40e-4;
+    const LOG_Q2: f32 = 0.693_359_375;
+    const EXP_C1: f32 = 0.693_359_375;
+    const EXP_C2: f32 = -2.121_944_40e-4;
+    const SQRTHF: f32 = 0.707_106_781_186_547_5;
 
     #[target_feature(enable = "sse4.1")]
     #[inline]
@@ -152,7 +254,7 @@ mod x86 {
         unsafe { exp_ps(x) }
     }
 
-    #[target_feature(enable = "avx2")]
+    #[target_feature(enable = "avx2", enable = "fma")]
     #[inline]
     unsafe fn log_ps_avx2(x: __m256) -> __m256 {
         let one = _mm256_set1_ps(1.0);
@@ -173,15 +275,16 @@ mod x86 {
         x = _mm256_add_ps(x, tmp);
 
         let z = _mm256_mul_ps(x, x);
+        // Horner polynomial evaluation via FMA (one instruction per step on Haswell+).
         let mut y = _mm256_set1_ps(7.037_683_6e-2);
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(-1.151_461e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(1.167_699_84e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(-1.242_014_1e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(1.424_932_3e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(-1.666_805_7e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(2.000_071_4e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(-2.499_999_4e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(3.333_333e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(-1.151_461e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.167_699_84e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(-1.242_014_1e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.424_932_3e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(-1.666_805_7e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(2.000_071_4e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(-2.499_999_4e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(3.333_333e-1));
         y = _mm256_mul_ps(_mm256_mul_ps(y, x), z);
 
         let mut tmp = _mm256_mul_ps(e, _mm256_set1_ps(LOG_Q1));
@@ -193,7 +296,7 @@ mod x86 {
         _mm256_add_ps(x, tmp)
     }
 
-    #[target_feature(enable = "avx2")]
+    #[target_feature(enable = "avx2", enable = "fma")]
     #[inline]
     unsafe fn exp_ps_avx2(x: __m256) -> __m256 {
         let one = _mm256_set1_ps(1.0);
@@ -214,12 +317,13 @@ mod x86 {
         x = _mm256_sub_ps(x, z);
         let z2 = _mm256_mul_ps(x, x);
 
+        // Horner polynomial evaluation via FMA.
         let mut y = _mm256_set1_ps(1.987_569_1e-4);
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(1.398_199_9e-3));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(8.333_452e-3));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(4.166_579_6e-2));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(1.666_666_6e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(5e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.398_199_9e-3));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(8.333_452e-3));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(4.166_579_6e-2));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.666_666_6e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(5e-1));
         y = _mm256_add_ps(_mm256_mul_ps(y, z2), x);
         y = _mm256_add_ps(y, one);
 
@@ -230,7 +334,7 @@ mod x86 {
         _mm256_mul_ps(y, _mm256_castsi256_ps(imm0))
     }
 
-    #[target_feature(enable = "avx2")]
+    #[target_feature(enable = "avx2", enable = "fma")]
     #[inline]
     unsafe fn pow_ps_avx2(base: __m256, exponent: f32) -> __m256 {
         let zero = _mm256_setzero_ps();
@@ -240,13 +344,13 @@ mod x86 {
         _mm256_and_ps(pow, positive)
     }
 
-    #[target_feature(enable = "avx2")]
+    #[target_feature(enable = "avx2", enable = "fma")]
     #[inline]
     pub(super) unsafe fn pow8_avx2(base: __m256, exponent: f32) -> __m256 {
         unsafe { pow_ps_avx2(base, exponent) }
     }
 
-    #[target_feature(enable = "avx2")]
+    #[target_feature(enable = "avx2", enable = "fma")]
     #[inline]
     pub(super) unsafe fn exp2_8_avx2(exponents: __m256) -> __m256 {
         unsafe {
@@ -257,7 +361,7 @@ mod x86 {
         }
     }
 
-    #[target_feature(enable = "avx2")]
+    #[target_feature(enable = "avx2", enable = "fma")]
     #[inline]
     pub(super) unsafe fn exp8_avx2(x: __m256) -> __m256 {
         unsafe { exp_ps_avx2(x) }
@@ -590,7 +694,9 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn pow8_avx2_matches_std_powf() {
-        if !std::arch::is_x86_feature_detected!("avx2") {
+        if !std::arch::is_x86_feature_detected!("avx2")
+            || !std::arch::is_x86_feature_detected!("fma")
+        {
             return;
         }
         for exp in EXPONENTS {
@@ -630,7 +736,9 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn exp2_8_avx2_matches_std_exp2() {
-        if !std::arch::is_x86_feature_detected!("avx2") {
+        if !std::arch::is_x86_feature_detected!("avx2")
+            || !std::arch::is_x86_feature_detected!("fma")
+        {
             return;
         }
         let mut x = -4.0_f32;

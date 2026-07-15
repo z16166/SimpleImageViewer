@@ -46,8 +46,12 @@ pub struct LibTiffScanlineSource {
     pub(crate) height: u32,
     pub(crate) rows_per_strip: u32,
     pub(crate) handle_pool: TiffHandlePool,
-    pub(crate) strip_cache: Mutex<std::collections::HashMap<u32, Arc<Vec<u8>>>>,
-    pub(crate) cache_order: Mutex<crate::lru_order::LruOrder<u32>>,
+    /// Single `(strip_cache, cache_order)` lock ensures atomic LRU + cache access
+    /// without the two-Mutex race and double-lock overhead.
+    pub(crate) cache: Mutex<(
+        std::collections::HashMap<u32, Arc<Vec<u8>>>,
+        crate::lru_order::LruOrder<u32>,
+    )>,
     pub(crate) max_cached_strips: usize,
 }
 
@@ -62,10 +66,11 @@ impl LibTiffScanlineSource {
 
     fn get_or_decode_strip(&self, strip_idx: u32, handle: &TiffHandle) -> Option<Arc<Vec<u8>>> {
         {
-            let cache = self.strip_cache.lock();
-            if let Some(data) = cache.get(&strip_idx) {
-                self.cache_order.lock().touch(strip_idx);
-                return Some(Arc::clone(data));
+            let mut guard = self.cache.lock();
+            let hit = guard.0.get(&strip_idx).map(Arc::clone);
+            if let Some(data) = hit {
+                guard.1.touch(strip_idx);
+                return Some(data);
             }
         }
 
@@ -127,19 +132,18 @@ impl LibTiffScanlineSource {
         let data = Arc::new(rgba);
 
         {
-            let mut cache = self.strip_cache.lock();
-            let mut order = self.cache_order.lock();
+            let mut guard = self.cache.lock();
 
-            while order.len() >= self.max_cached_strips {
-                if let Some(oldest) = order.pop_oldest() {
-                    cache.remove(&oldest);
+            while guard.1.len() >= self.max_cached_strips {
+                if let Some(oldest) = guard.1.pop_oldest() {
+                    guard.0.remove(&oldest);
                 } else {
                     break;
                 }
             }
 
-            cache.insert(strip_idx, Arc::clone(&data));
-            order.touch(strip_idx);
+            guard.0.insert(strip_idx, Arc::clone(&data));
+            guard.1.touch(strip_idx);
         }
 
         Some(data)

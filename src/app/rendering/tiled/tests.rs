@@ -470,7 +470,8 @@ fn tile_visit_order_prioritizes_primary_visible_before_lookahead() {
     ];
 
     let mut ordered = Vec::new();
-    super::prioritize_tile_visits_into(&mut ordered, &primary, &padded);
+    let mut coords_scratch = HashSet::new();
+    super::prioritize_tile_visits_into(&mut ordered, &mut coords_scratch, &primary, &padded);
     let ordered_coords = ordered
         .iter()
         .map(|(coord, _, _)| *coord)

@@ -178,12 +178,16 @@ pub(crate) fn generate_directory_tree_thumb_decode_from_path(
     cancel: &crate::loader::DecodeCancelFlag,
 ) -> Result<DirectoryTreeThumbDecode, String> {
     crate::loader::check_decode_cancel_str(Some(cancel.as_atomic()))?;
-    crate::mmap_util::reject_if_image_file_too_small(path)?;
+    // Single stat: reject + pass known length to map_file_with_len, avoiding a second file open.
+    let len = match std::fs::metadata(path) {
+        Ok(m) if m.len() >= crate::constants::MIN_IMAGE_FILE_BYTES => m.len(),
+        Ok(m) => return Err(crate::mmap_util::image_file_too_small_error(m.len())),
+        Err(e) => return Err(e.to_string()),
+    };
     let gain_map_container = super::modern::path_may_have_gain_map_embedded_sdr_preview(path);
     // Heuristic: all AVIF/HEIF/JXL — wider than verified gain-map detection; see modern.rs.
     let placeholder_if_fast_path = embedded_sdr_strip_may_be_placeholder(gain_map_container);
-    // map_file re-checks size via one metadata(); keep cheap reject above for early exit without mmap.
-    let mmap = crate::mmap_util::map_file(path)
+    let mmap = crate::mmap_util::map_file_with_len(path, len)
         .ok()
         .map(|(m, _)| Arc::new(m));
     let (exif, exif_probe, exif_probe_detail) = match mmap.as_deref() {

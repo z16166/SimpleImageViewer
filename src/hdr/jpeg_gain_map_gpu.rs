@@ -23,8 +23,8 @@ use crate::hdr::gain_map::{
     primary_srgb_rgba8_to_linear_rgba_f32, validate_iso_deferred_planes,
 };
 use crate::hdr::types::{
-    HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-    HdrReference, HdrTransferFunction, IsoGainMapGpuSource,
+    GAIN_MAP_SOURCE_JPEG_R, HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata,
+    HdrPixelFormat, HdrReference, HdrTransferFunction, IsoGainMapGpuSource,
 };
 
 pub(crate) struct IsoGainMapDeferredInput {
@@ -280,7 +280,7 @@ pub(crate) fn attach_jpeg_gain_map_gpu_deferred(
         hdr_target_capacity,
     } = input;
     attach_iso_gain_map_gpu_deferred(IsoGainMapDeferredInput {
-        source: "JPEG_R",
+        source: GAIN_MAP_SOURCE_JPEG_R,
         width,
         height,
         sdr_rgba,

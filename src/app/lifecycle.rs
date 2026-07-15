@@ -663,6 +663,7 @@ impl ImageViewerApp {
             tiled_visible_tiles_scratch: Vec::new(),
             tiled_primary_visible_tiles_scratch: Vec::new(),
             tiled_tile_visits_scratch: Vec::new(),
+            uploaded_coords_scratch: Vec::new(),
             tiled_protected_keys_scratch: Vec::new(),
             prefetched_tiles: std::collections::HashMap::new(),
             prefetch_resource_indices: HashSet::new(),

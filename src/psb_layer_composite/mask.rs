@@ -52,28 +52,29 @@ pub(crate) fn apply_mask_feather(mask: &mut [u8], w: u32, h: u32, feather: f64) 
     }
     let kernel_len = (radius * 2 + 1) as usize;
 
-    // Precompute Gaussian kernel weights and normalize.
-    let mut kernel_f64 = Vec::with_capacity(kernel_len);
-    let s2 = -(2.0 * sigma * sigma);
-    let mut total = 0.0f64;
+    // Precompute Gaussian kernel weights and normalize (directly in f32 — the
+    // extra precision of f64 is unnecessary for u8 feather output and avoiding
+    // the f64→f32 conversion saves one Vec allocation).
+    let mut kernel = Vec::with_capacity(kernel_len);
+    let s2 = -(2.0_f32 * (sigma as f32) * (sigma as f32));
+    let mut total = 0.0_f32;
     for i in 0..kernel_len {
-        let x = (i as f64) - radius as f64;
+        let x = (i as f32) - radius as f32;
         let w = (x * x / s2).exp();
-        kernel_f64.push(w);
+        kernel.push(w);
         total += w;
     }
     let inv_total = 1.0 / total;
-    for w in &mut kernel_f64 {
+    for w in &mut kernel {
         *w *= inv_total;
     }
-    let kernel_f32: Vec<f32> = kernel_f64.iter().map(|&v| v as f32).collect();
 
     let wp = w as usize;
     let hp = h as usize;
     let mut tmp = vec![0.0f32; wp * hp];
 
-    feather_horizontal_pass(mask, &mut tmp, wp, hp, radius as usize, &kernel_f32);
-    feather_vertical_pass(&tmp, mask, wp, hp, radius as usize, &kernel_f32);
+    feather_horizontal_pass(mask, &mut tmp, wp, hp, radius as usize, &kernel);
+    feather_vertical_pass(&tmp, mask, wp, hp, radius as usize, &kernel);
 }
 
 // ── SIMD-accelerated horizontal / vertical passes ────────────────────────
