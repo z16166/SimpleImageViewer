@@ -327,6 +327,7 @@ fn gather_alpha_row(dst: &mut [u8], src_rgba: &[u8]) {
     gather_alpha_row_scalar(dst, src_rgba, n);
 }
 
+#[cfg(target_arch = "x86_64")]
 fn gather_alpha_row_scalar(dst: &mut [u8], src_rgba: &[u8], n: usize) {
     for i in 0..n {
         dst[i] = src_rgba[i * 4 + 3];
