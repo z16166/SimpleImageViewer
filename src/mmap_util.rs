@@ -50,9 +50,6 @@ pub(crate) fn map_file_with_len(path: &Path, len: u64) -> Result<(memmap2::Mmap,
     reject_len_below_image_minimum(len)?;
     let file = File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
-    // Best-effort sequential-access hint (Unix: MADV_SEQUENTIAL; Windows: no-op).
-    #[cfg(unix)]
-    let _ = mmap.advise(memmap2::Advice::MadvSequential);
     Ok((mmap, len))
 }
 
