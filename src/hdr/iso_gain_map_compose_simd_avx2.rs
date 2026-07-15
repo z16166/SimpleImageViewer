@@ -24,7 +24,7 @@ use core::arch::x86_64::*;
 
 pub(super) const SIMD_PIXELS_PER_AVX2_STEP: u32 = 8;
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 pub(super) unsafe fn compose_iso_row_avx2(
     sdr_row: &[u8],
     row_out: &mut [f32],
@@ -54,13 +54,13 @@ pub(super) unsafe fn compose_iso_row_avx2(
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 #[inline]
 unsafe fn u8x4_lo_to_f32(packed: __m128i) -> __m128 {
     _mm_cvtepi32_ps(_mm_cvtepu8_epi32(packed))
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 #[inline]
 unsafe fn u8x8_lanes_to_f32_avx2(bytes: __m256i) -> __m256 {
     unsafe {
@@ -71,7 +71,7 @@ unsafe fn u8x8_lanes_to_f32_avx2(bytes: __m256i) -> __m256 {
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn load_sdr_rgb_encoded8_avx2(ptr: *const u8) -> (__m256, __m256, __m256) {
     unsafe {
         // Interleaved RGBA8 x8 -> planar R/G/B f32 via per-lane pshufb + widen.
@@ -103,7 +103,7 @@ unsafe fn load_sdr_rgb_encoded8_avx2(ptr: *const u8) -> (__m256, __m256, __m256)
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn load_gain_rgb8_avx2(
     gain_row: *const f32,
     x: usize,
@@ -119,7 +119,7 @@ unsafe fn load_gain_rgb8_avx2(
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn srgb_encoded_to_linear8_avx2(v: __m256) -> __m256 {
     unsafe {
         let threshold = _mm256_set1_ps(SRGB_LINEAR_SEGMENT_END);
@@ -134,7 +134,7 @@ unsafe fn srgb_encoded_to_linear8_avx2(v: __m256) -> __m256 {
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn recover_hdr_rgb8_avx2(
     enc_r: __m256,
     enc_g: __m256,
@@ -168,41 +168,26 @@ unsafe fn recover_hdr_rgb8_avx2(
         let offset_hdr_b = _mm256_set1_ps(constants.metadata.offset_hdr[2]);
 
         let shaped_r = pow8_avx2(gain_r, inv_gamma_r);
-        let boost_r = exp2_8_avx2(_mm256_add_ps(
-            gain_min_r,
-            _mm256_mul_ps(_mm256_mul_ps(gain_span_r, shaped_r), weight),
-        ));
+        let scaled_r = _mm256_mul_ps(gain_span_r, shaped_r);
+        let boost_r = exp2_8_avx2(_mm256_fmadd_ps(scaled_r, weight, gain_min_r));
         let out_r = _mm256_max_ps(
-            _mm256_sub_ps(
-                _mm256_mul_ps(_mm256_add_ps(lr, offset_sdr_r), boost_r),
-                offset_hdr_r,
-            ),
+            _mm256_fmsub_ps(_mm256_add_ps(lr, offset_sdr_r), boost_r, offset_hdr_r),
             zero,
         );
 
         let shaped_g = pow8_avx2(gain_g, inv_gamma_g);
-        let boost_g = exp2_8_avx2(_mm256_add_ps(
-            gain_min_g,
-            _mm256_mul_ps(_mm256_mul_ps(gain_span_g, shaped_g), weight),
-        ));
+        let scaled_g = _mm256_mul_ps(gain_span_g, shaped_g);
+        let boost_g = exp2_8_avx2(_mm256_fmadd_ps(scaled_g, weight, gain_min_g));
         let out_g = _mm256_max_ps(
-            _mm256_sub_ps(
-                _mm256_mul_ps(_mm256_add_ps(lg, offset_sdr_g), boost_g),
-                offset_hdr_g,
-            ),
+            _mm256_fmsub_ps(_mm256_add_ps(lg, offset_sdr_g), boost_g, offset_hdr_g),
             zero,
         );
 
         let shaped_b = pow8_avx2(gain_b, inv_gamma_b);
-        let boost_b = exp2_8_avx2(_mm256_add_ps(
-            gain_min_b,
-            _mm256_mul_ps(_mm256_mul_ps(gain_span_b, shaped_b), weight),
-        ));
+        let scaled_b = _mm256_mul_ps(gain_span_b, shaped_b);
+        let boost_b = exp2_8_avx2(_mm256_fmadd_ps(scaled_b, weight, gain_min_b));
         let out_b = _mm256_max_ps(
-            _mm256_sub_ps(
-                _mm256_mul_ps(_mm256_add_ps(lb, offset_sdr_b), boost_b),
-                offset_hdr_b,
-            ),
+            _mm256_fmsub_ps(_mm256_add_ps(lb, offset_sdr_b), boost_b, offset_hdr_b),
             zero,
         );
 
@@ -210,7 +195,7 @@ unsafe fn recover_hdr_rgb8_avx2(
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn store_rgba8_avx2(dst: *mut f32, sdr: *const u8, r: __m256, g: __m256, b: __m256) {
     unsafe {
         // Planar R/G/B + SDR alpha -> interleaved RGBA f32 for 8 pixels.

@@ -691,26 +691,26 @@ unsafe fn apply_matrix4_neon(
     b: float32x4_t,
     m: &[[f32; 3]; 3],
 ) -> (float32x4_t, float32x4_t, float32x4_t) {
-    let sr = vaddq_f32(
-        vaddq_f32(
+    let sr = vfmaq_f32(
+        vfmaq_f32(
             vmulq_f32(r, vdupq_n_f32(m[0][0])),
-            vmulq_f32(g, vdupq_n_f32(m[0][1])),
+            g, vdupq_n_f32(m[0][1]),
         ),
-        vmulq_f32(b, vdupq_n_f32(m[0][2])),
+        b, vdupq_n_f32(m[0][2]),
     );
-    let sg = vaddq_f32(
-        vaddq_f32(
+    let sg = vfmaq_f32(
+        vfmaq_f32(
             vmulq_f32(r, vdupq_n_f32(m[1][0])),
-            vmulq_f32(g, vdupq_n_f32(m[1][1])),
+            g, vdupq_n_f32(m[1][1]),
         ),
-        vmulq_f32(b, vdupq_n_f32(m[1][2])),
+        b, vdupq_n_f32(m[1][2]),
     );
-    let sb = vaddq_f32(
-        vaddq_f32(
+    let sb = vfmaq_f32(
+        vfmaq_f32(
             vmulq_f32(r, vdupq_n_f32(m[2][0])),
-            vmulq_f32(g, vdupq_n_f32(m[2][1])),
+            g, vdupq_n_f32(m[2][1]),
         ),
-        vmulq_f32(b, vdupq_n_f32(m[2][2])),
+        b, vdupq_n_f32(m[2][2]),
     );
     (sr, sg, sb)
 }
@@ -826,7 +826,7 @@ unsafe fn pq_to_display_linear4_neon(code: float32x4_t, sdr_white_nits: f32) -> 
         let clamped = vminq_f32(vmaxq_f32(code, zero), one);
         let code_m2 = pow4_neon(clamped, 1.0 / m2);
         let numerator = vmaxq_f32(vsubq_f32(code_m2, c1), zero);
-        let denominator = vmaxq_f32(vsubq_f32(c2, vmulq_f32(c3, code_m2)), vdupq_n_f32(0.000001));
+        let denominator = vmaxq_f32(vfmsq_f32(c2, c3, code_m2), vdupq_n_f32(0.000001));
         let ratio = vdivq_f32(numerator, denominator);
         let nits = vmulq_f32(vdupq_n_f32(10_000.0), pow4_neon(ratio, 1.0 / m1));
         vdivq_f32(nits, vdupq_n_f32(sdr_white_nits.max(1.0)))

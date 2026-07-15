@@ -334,17 +334,24 @@ unsafe fn load_sdr_rgb_encoded4_sse41(ptr: *const u8) -> (__m128, __m128, __m128
 unsafe fn load_sdr_rgb_encoded4_neon(ptr: *const u8) -> (float32x4_t, float32x4_t, float32x4_t) {
     unsafe {
         let scale = vdupq_n_f32(1.0 / 255.0);
-        let rgbe = vld4_u8(ptr);
+        // Load 4 RGBA pixels (16 bytes) — safe: only reads 4 pixels.
+        // vld4_u8 would read 8 pixels (32 bytes) and overrun the row.
+        let rgba = vld1q_u8(ptr);
+        // Extract R (bytes 0,4,8,12), G (1,5,9,13), B (2,6,10,14) via lookup.
+        // vcreate_u8(u64) interprets as 8 little-endian bytes.
+        let r_u8 = vqtbl1_u8(rgba, vcreate_u8(0x0C080400));
+        let g_u8 = vqtbl1_u8(rgba, vcreate_u8(0x0D090501));
+        let b_u8 = vqtbl1_u8(rgba, vcreate_u8(0x0E0A0602));
         let r = vmulq_f32(
-            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(rgbe.0)))),
+            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(r_u8)))),
             scale,
         );
         let g = vmulq_f32(
-            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(rgbe.1)))),
+            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(g_u8)))),
             scale,
         );
         let b = vmulq_f32(
-            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(rgbe.2)))),
+            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(b_u8)))),
             scale,
         );
         (r, g, b)
@@ -529,10 +536,8 @@ unsafe fn recover_hdr_rgb4_neon(
         let offset_hdr_b = vdupq_n_f32(constants.metadata.offset_hdr[2]);
 
         let shaped_r = pow4_neon(gain_r, inv_gamma_r);
-        let boost_r = exp2_4_neon(vaddq_f32(
-            gain_min_r,
-            vmulq_f32(vmulq_f32(gain_span_r, shaped_r), weight),
-        ));
+        let scaled_r = vmulq_f32(gain_span_r, shaped_r);
+        let boost_r = exp2_4_neon(vfmaq_f32(gain_min_r, scaled_r, weight));
         let out_r = vmaxq_f32(
             vsubq_f32(
                 vmulq_f32(vaddq_f32(lr, offset_sdr_r), boost_r),
@@ -542,10 +547,8 @@ unsafe fn recover_hdr_rgb4_neon(
         );
 
         let shaped_g = pow4_neon(gain_g, inv_gamma_g);
-        let boost_g = exp2_4_neon(vaddq_f32(
-            gain_min_g,
-            vmulq_f32(vmulq_f32(gain_span_g, shaped_g), weight),
-        ));
+        let scaled_g = vmulq_f32(gain_span_g, shaped_g);
+        let boost_g = exp2_4_neon(vfmaq_f32(gain_min_g, scaled_g, weight));
         let out_g = vmaxq_f32(
             vsubq_f32(
                 vmulq_f32(vaddq_f32(lg, offset_sdr_g), boost_g),
@@ -555,10 +558,8 @@ unsafe fn recover_hdr_rgb4_neon(
         );
 
         let shaped_b = pow4_neon(gain_b, inv_gamma_b);
-        let boost_b = exp2_4_neon(vaddq_f32(
-            gain_min_b,
-            vmulq_f32(vmulq_f32(gain_span_b, shaped_b), weight),
-        ));
+        let scaled_b = vmulq_f32(gain_span_b, shaped_b);
+        let boost_b = exp2_4_neon(vfmaq_f32(gain_min_b, scaled_b, weight));
         let out_b = vmaxq_f32(
             vsubq_f32(
                 vmulq_f32(vaddq_f32(lb, offset_sdr_b), boost_b),
@@ -605,9 +606,13 @@ unsafe fn store_rgba4_neon(
 ) {
     unsafe {
         let scale = vdupq_n_f32(1.0 / 255.0);
-        let rgbe = vld4_u8(sdr);
+        // Load 4 RGBA pixels (16 bytes) — safe: only reads 4 pixels.
+        // vld4_u8 would read 8 pixels (32 bytes) and overrun the row.
+        let rgba = vld1q_u8(sdr);
+        // Extract A at bytes 3, 7, 11, 15 via lookup.
+        let a_u8 = vqtbl1_u8(rgba, vcreate_u8(0x0F0B0703));
         let a = vmulq_f32(
-            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(rgbe.3)))),
+            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(a_u8)))),
             scale,
         );
         vst4q_f32(dst, float32x4x4_t(r, g, b, a));

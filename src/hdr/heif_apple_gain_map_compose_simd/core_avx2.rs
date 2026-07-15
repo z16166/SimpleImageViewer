@@ -119,7 +119,7 @@ unsafe fn gather_gain_rgb8_avx2(
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn srgb_to_linear8_avx2(v: __m256) -> __m256 {
     unsafe {
         let zero = _mm256_setzero_ps();
@@ -137,7 +137,7 @@ unsafe fn srgb_to_linear8_avx2(v: __m256) -> __m256 {
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn bt709_to_linear8_avx2(v: __m256) -> __m256 {
     unsafe {
         let zero = _mm256_setzero_ps();
@@ -155,33 +155,33 @@ unsafe fn bt709_to_linear8_avx2(v: __m256) -> __m256 {
     }
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn apply_display_p3_matrix8_avx2(
     r: __m256,
     g: __m256,
     b: __m256,
 ) -> (__m256, __m256, __m256) {
     let m = DISPLAY_P3_TO_LINEAR_SRGB;
-    let lr = _mm256_add_ps(
-        _mm256_add_ps(
+    let lr = _mm256_fmadd_ps(
+        b, _mm256_set1_ps(m[0][2]),
+        _mm256_fmadd_ps(
+            g, _mm256_set1_ps(m[0][1]),
             _mm256_mul_ps(r, _mm256_set1_ps(m[0][0])),
-            _mm256_mul_ps(g, _mm256_set1_ps(m[0][1])),
         ),
-        _mm256_mul_ps(b, _mm256_set1_ps(m[0][2])),
     );
-    let lg = _mm256_add_ps(
-        _mm256_add_ps(
+    let lg = _mm256_fmadd_ps(
+        b, _mm256_set1_ps(m[1][2]),
+        _mm256_fmadd_ps(
+            g, _mm256_set1_ps(m[1][1]),
             _mm256_mul_ps(r, _mm256_set1_ps(m[1][0])),
-            _mm256_mul_ps(g, _mm256_set1_ps(m[1][1])),
         ),
-        _mm256_mul_ps(b, _mm256_set1_ps(m[1][2])),
     );
-    let lb = _mm256_add_ps(
-        _mm256_add_ps(
+    let lb = _mm256_fmadd_ps(
+        b, _mm256_set1_ps(m[2][2]),
+        _mm256_fmadd_ps(
+            g, _mm256_set1_ps(m[2][1]),
             _mm256_mul_ps(r, _mm256_set1_ps(m[2][0])),
-            _mm256_mul_ps(g, _mm256_set1_ps(m[2][1])),
         ),
-        _mm256_mul_ps(b, _mm256_set1_ps(m[2][2])),
     );
     (lr, lg, lb)
 }
@@ -196,7 +196,7 @@ struct Avx2Gain8 {
     gain_b: __m256,
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn compose_gain8_avx2(
     inputs: Avx2Gain8,
     transform: ComposeRowTransform<'_>,
@@ -214,16 +214,16 @@ unsafe fn compose_gain8_avx2(
     let span = _mm256_set1_ps(transform.headroom_span);
     let w = _mm256_set1_ps(transform.weight);
     let zero = _mm256_setzero_ps();
-    let scale_r = _mm256_add_ps(one, _mm256_mul_ps(span, _mm256_mul_ps(gain_r, w)));
-    let scale_g = _mm256_add_ps(one, _mm256_mul_ps(span, _mm256_mul_ps(gain_g, w)));
-    let scale_b = _mm256_add_ps(one, _mm256_mul_ps(span, _mm256_mul_ps(gain_b, w)));
+    let scale_r = _mm256_fmadd_ps(_mm256_mul_ps(gain_r, w), span, one);
+    let scale_g = _mm256_fmadd_ps(_mm256_mul_ps(gain_g, w), span, one);
+    let scale_b = _mm256_fmadd_ps(_mm256_mul_ps(gain_b, w), span, one);
     let out_r = _mm256_max_ps(_mm256_mul_ps(linear_r, scale_r), zero);
     let out_g = _mm256_max_ps(_mm256_mul_ps(linear_g, scale_g), zero);
     let out_b = _mm256_max_ps(_mm256_mul_ps(linear_b, scale_b), zero);
     (out_r, out_g, out_b, alpha)
 }
 
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn apply_transfer8_avx2(
     r: __m256,
     g: __m256,

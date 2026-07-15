@@ -152,7 +152,7 @@ mod x86 {
         unsafe { exp_ps(x) }
     }
 
-    #[target_feature(enable = "avx2")]
+    #[target_feature(enable = "avx2", enable = "fma")]
     #[inline]
     unsafe fn log_ps_avx2(x: __m256) -> __m256 {
         let one = _mm256_set1_ps(1.0);
@@ -173,15 +173,16 @@ mod x86 {
         x = _mm256_add_ps(x, tmp);
 
         let z = _mm256_mul_ps(x, x);
+        // Horner polynomial evaluation via FMA (one instruction per step on Haswell+).
         let mut y = _mm256_set1_ps(7.037_683_6e-2);
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(-1.151_461e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(1.167_699_84e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(-1.242_014_1e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(1.424_932_3e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(-1.666_805_7e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(2.000_071_4e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(-2.499_999_4e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(3.333_333e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(-1.151_461e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.167_699_84e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(-1.242_014_1e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.424_932_3e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(-1.666_805_7e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(2.000_071_4e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(-2.499_999_4e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(3.333_333e-1));
         y = _mm256_mul_ps(_mm256_mul_ps(y, x), z);
 
         let mut tmp = _mm256_mul_ps(e, _mm256_set1_ps(LOG_Q1));
@@ -193,7 +194,7 @@ mod x86 {
         _mm256_add_ps(x, tmp)
     }
 
-    #[target_feature(enable = "avx2")]
+    #[target_feature(enable = "avx2", enable = "fma")]
     #[inline]
     unsafe fn exp_ps_avx2(x: __m256) -> __m256 {
         let one = _mm256_set1_ps(1.0);
@@ -214,12 +215,13 @@ mod x86 {
         x = _mm256_sub_ps(x, z);
         let z2 = _mm256_mul_ps(x, x);
 
+        // Horner polynomial evaluation via FMA.
         let mut y = _mm256_set1_ps(1.987_569_1e-4);
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(1.398_199_9e-3));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(8.333_452e-3));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(4.166_579_6e-2));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(1.666_666_6e-1));
-        y = _mm256_add_ps(_mm256_mul_ps(y, x), _mm256_set1_ps(5e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.398_199_9e-3));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(8.333_452e-3));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(4.166_579_6e-2));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.666_666_6e-1));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(5e-1));
         y = _mm256_add_ps(_mm256_mul_ps(y, z2), x);
         y = _mm256_add_ps(y, one);
 
@@ -230,7 +232,7 @@ mod x86 {
         _mm256_mul_ps(y, _mm256_castsi256_ps(imm0))
     }
 
-    #[target_feature(enable = "avx2")]
+    #[target_feature(enable = "avx2", enable = "fma")]
     #[inline]
     unsafe fn pow_ps_avx2(base: __m256, exponent: f32) -> __m256 {
         let zero = _mm256_setzero_ps();
@@ -240,13 +242,13 @@ mod x86 {
         _mm256_and_ps(pow, positive)
     }
 
-    #[target_feature(enable = "avx2")]
+    #[target_feature(enable = "avx2", enable = "fma")]
     #[inline]
     pub(super) unsafe fn pow8_avx2(base: __m256, exponent: f32) -> __m256 {
         unsafe { pow_ps_avx2(base, exponent) }
     }
 
-    #[target_feature(enable = "avx2")]
+    #[target_feature(enable = "avx2", enable = "fma")]
     #[inline]
     pub(super) unsafe fn exp2_8_avx2(exponents: __m256) -> __m256 {
         unsafe {
@@ -257,7 +259,7 @@ mod x86 {
         }
     }
 
-    #[target_feature(enable = "avx2")]
+    #[target_feature(enable = "avx2", enable = "fma")]
     #[inline]
     pub(super) unsafe fn exp8_avx2(x: __m256) -> __m256 {
         unsafe { exp_ps_avx2(x) }
