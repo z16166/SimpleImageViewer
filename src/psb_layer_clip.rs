@@ -671,6 +671,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 1,
                 rgba: &clip_rgba,
+                rgba_arc: None,
             },
         ];
 
@@ -751,6 +752,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 0,
                 rgba: &clip_rgba,
+                rgba_arc: None,
             },
         ];
 
@@ -772,6 +774,7 @@ mod tests {
             blend: *b"norm",
             clipping: 1,
             rgba: &clip_rgba,
+            rgba_arc: None,
         }];
 
         blend_layers_with_clipping(&mut canvas, 4, 4, &layers, None).unwrap();

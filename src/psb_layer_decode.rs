@@ -1444,6 +1444,8 @@ mod tests {
     };
     use crate::psb_layer_blend_simd::SeparableBlendKind;
     use crate::psb_layer_composite::{LayerChannel, LayerMaskInfo, LayerRecord};
+    use crate::psb_reader_util::SharedSlice;
+    use std::sync::Arc;
 
     /// Build a minimal `LayerRecord` for decode tests; mirrors
     /// `psb_layer_composite::tests::mk_layer`, but only the fields these
@@ -1840,11 +1842,11 @@ mod tests {
     fn layer_to_rgba8_cmyk_opacity_mask_numeric() {
         // 1x1 CMYK pixel (Adobe polarity 0=100% ink): c=204, m=153, y=102, k=204.
         // r = 204*204/255 = 163; g = 153*204/255 = 122; b = 102*204/255 = 81.
-        let color: [Option<Vec<u8>>; 4] = [
-            Some(vec![204]),
-            Some(vec![153]),
-            Some(vec![102]),
-            Some(vec![204]),
+        let color: [Option<SharedSlice>; 4] = [
+            Some(SharedSlice::new(Arc::from(vec![204]))),
+            Some(SharedSlice::new(Arc::from(vec![153]))),
+            Some(SharedSlice::new(Arc::from(vec![102]))),
+            Some(SharedSlice::new(Arc::from(vec![204]))),
         ];
         let alpha = vec![200u8];
         let mask = vec![128u8];
@@ -1869,7 +1871,12 @@ mod tests {
     fn layer_to_rgba8_rgb_opacity_mask_numeric() {
         // 1x1 RGB: (10,20,30), alpha=200, opacity=200, mask=128
         // a = 200*200/255 = 156; then 156*128/255 = 78
-        let color: [Option<Vec<u8>>; 4] = [Some(vec![10]), Some(vec![20]), Some(vec![30]), None];
+        let color: [Option<SharedSlice>; 4] = [
+            Some(SharedSlice::new(Arc::from(vec![10]))),
+            Some(SharedSlice::new(Arc::from(vec![20]))),
+            Some(SharedSlice::new(Arc::from(vec![30]))),
+            None,
+        ];
         let alpha = vec![200u8];
         let mask = vec![128u8];
         let rgba = layer_to_rgba8(LayerRgbaArgs {
@@ -1887,8 +1894,12 @@ mod tests {
 
     #[test]
     fn layer_to_rgba8_rgb_no_alpha_full_opacity() {
-        let color: [Option<Vec<u8>>; 4] =
-            [Some(vec![1, 2]), Some(vec![3, 4]), Some(vec![5, 6]), None];
+        let color: [Option<SharedSlice>; 4] = [
+            Some(SharedSlice::new(Arc::from(vec![1, 2]))),
+            Some(SharedSlice::new(Arc::from(vec![3, 4]))),
+            Some(SharedSlice::new(Arc::from(vec![5, 6]))),
+            None,
+        ];
         let rgba = layer_to_rgba8(LayerRgbaArgs {
             color_mode: 3,
             width: 2,
@@ -1905,7 +1916,12 @@ mod tests {
     #[test]
     fn layer_to_rgba8_rgb_missing_g_falls_back() {
         // Missing G plane: must not panic; scalar fallback zeros missing samples.
-        let color: [Option<Vec<u8>>; 4] = [Some(vec![9]), None, Some(vec![7]), None];
+        let color: [Option<SharedSlice>; 4] = [
+            Some(SharedSlice::new(Arc::from(vec![9]))),
+            None,
+            Some(SharedSlice::new(Arc::from(vec![7]))),
+            None,
+        ];
         let rgba = layer_to_rgba8(LayerRgbaArgs {
             color_mode: 3,
             width: 1,
