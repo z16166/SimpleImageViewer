@@ -83,7 +83,12 @@ fn stable_hash_bytes(bytes: &[u8], seed: u64) -> u64 {
 
 pub fn load_for_adapter(adapter: &wgpu::Adapter) -> Option<Vec<u8>> {
     let path = cache_path(adapter);
-    remove_stale_pipeline_cache_files(&path);
+    // Defer stale-file cleanup to a background thread so startup isn't blocked by I/O.
+    let cleanup_path = path.clone();
+    std::thread::Builder::new()
+        .name("wgpu-cache-cleanup".into())
+        .spawn(move || remove_stale_pipeline_cache_files(&cleanup_path))
+        .ok();
     match std::fs::read(&path) {
         Ok(data) => {
             log::info!(

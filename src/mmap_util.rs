@@ -45,20 +45,31 @@ pub(crate) fn reject_if_image_file_too_small(path: &Path) -> Result<(), String> 
     reject_len_below_image_minimum(len)
 }
 
+/// Memory-map an existing file whose length is already known (no redundant `metadata()` call).
+pub(crate) fn map_file_with_len(path: &Path, len: u64) -> Result<(memmap2::Mmap, u64), String> {
+    reject_len_below_image_minimum(len)?;
+    let file = File::open(path).map_err(|e| e.to_string())?;
+    let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
+    // Best-effort sequential-access hint (Unix: MADV_SEQUENTIAL; Windows: no-op).
+    #[cfg(unix)]
+    let _ = mmap.advise(memmap2::Advice::MadvSequential);
+    Ok((mmap, len))
+}
+
 /// Memory-map an existing file for read-only decoding paths (checklist: avoid `read_to_end` duplication).
 ///
 /// Returns `(mmap, len)` from a single `metadata()` call so callers need not re-stat for size checks.
 pub(crate) fn map_file(path: &Path) -> Result<(memmap2::Mmap, u64), String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     let len = file.metadata().map_err(|e| e.to_string())?.len();
-    reject_len_below_image_minimum(len)?;
-    let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
-    Ok((mmap, len))
+    map_file_with_len(path, len)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{image_file_too_small_error, map_file, reject_if_image_file_too_small};
+    use super::{
+        image_file_too_small_error, map_file, map_file_with_len, reject_if_image_file_too_small,
+    };
     use crate::constants::MIN_IMAGE_FILE_BYTES;
     use std::fs;
     use std::path::PathBuf;
@@ -88,6 +99,23 @@ mod tests {
 
         fs::write(&path, vec![0u8; MIN_IMAGE_FILE_BYTES as usize]).unwrap();
         assert!(reject_if_image_file_too_small(&path).is_ok());
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn map_file_with_len_skips_metadata() {
+        let path = temp_image_path("map_with_len");
+        let _ = fs::remove_file(&path);
+
+        fs::write(&path, [0u8; 4]).unwrap();
+        assert!(map_file_with_len(&path, 4).is_err());
+
+        let bytes = vec![0u8; MIN_IMAGE_FILE_BYTES as usize];
+        fs::write(&path, &bytes).unwrap();
+        let (mmap, len) = map_file_with_len(&path, bytes.len() as u64).expect("map_with_len");
+        assert_eq!(len, bytes.len() as u64);
+        assert_eq!(mmap.len(), bytes.len());
 
         let _ = fs::remove_file(&path);
     }
