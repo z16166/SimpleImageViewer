@@ -29,6 +29,7 @@
 //! following `clipping != 0` layers merge into the open group, then the group
 //! is masked by the base alpha silhouette and blended with the base mode.
 
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use crate::hdr::types::{
@@ -113,6 +114,10 @@ pub(crate) struct ClipLayerRefF32<'a> {
     /// 0 = base / unclipped; non-zero = clipped to nearest base below.
     pub(crate) clipping: u8,
     pub(crate) rgba: &'a [f32],
+    /// When the rgba data lives in an `Arc<[f32]>`, this field provides a
+    /// borrow so that clip groups can clone the Arc (cheap refcount bump)
+    /// instead of copying the pixel data.
+    pub(crate) rgba_arc: Option<&'a Arc<[f32]>>,
 }
 
 /// Snapshot base-layer alpha into a full-canvas plane (0 outside the base rect).
@@ -414,9 +419,11 @@ struct OpenClipGroupF32 {
     base_width: u32,
     base_height: u32,
     base_blend: [u8; 4],
-    /// Owned copy of the base pixels while the group is still unmaterialized.
+    /// Owned/shared copy of the base pixels while the group is still unmaterialized.
     /// Dropped after `temp` + `base_alpha` have captured everything needed.
-    base_rgba: Option<Vec<f32>>,
+    /// Uses `Arc<[f32]>` so the same allocation can be shared across multiple
+    /// clip groups when they reference the same base layer data.
+    base_rgba: Option<Arc<[f32]>>,
     /// Full-canvas group content once a clip layer has been merged in.
     temp: Option<Vec<f32>>,
     base_alpha: Option<Vec<f32>>,
@@ -424,13 +431,16 @@ struct OpenClipGroupF32 {
 
 impl OpenClipGroupF32 {
     fn new(base: &ClipLayerRefF32<'_>) -> Self {
+        let base_rgba = base
+            .rgba_arc
+            .map_or_else(|| Arc::from(base.rgba), |a| Arc::clone(a));
         Self {
             base_left: base.left,
             base_top: base.top,
             base_width: base.width,
             base_height: base.height,
             base_blend: base.blend,
-            base_rgba: Some(base.rgba.to_vec()),
+            base_rgba: Some(base_rgba),
             temp: None,
             base_alpha: None,
         }
@@ -451,7 +461,7 @@ impl OpenClipGroupF32 {
             let base_rgba = self
                 .base_rgba
                 .as_deref()
-                .expect("base_rgba is present until temp is initialized");
+                .ok_or_else(|| "PSD/PSB HDR clip group base pixels are missing".to_string())?;
             // Build group content: base first (Normal into empty), then clips with their modes.
             blend_f32_layer_onto(
                 &mut temp,
@@ -475,13 +485,16 @@ impl OpenClipGroupF32 {
                     blend: self.base_blend,
                     clipping: 0,
                     rgba: base_rgba,
+                    rgba_arc: None,
                 },
             )?);
             self.base_rgba = None;
             self.temp = Some(temp);
         }
         blend_f32_layer_onto(
-            self.temp.as_mut().expect("temp initialized above"),
+            self.temp
+                .as_mut()
+                .ok_or_else(|| "PSD/PSB HDR clip group temp buffer is missing".to_string())?,
             canvas_w,
             canvas_h,
             clip.rgba,
@@ -494,7 +507,7 @@ impl OpenClipGroupF32 {
         Ok(())
     }
 
-    fn finalize(self, canvas: &mut [f32], canvas_w: u32, canvas_h: u32) {
+    fn finalize(self, canvas: &mut [f32], canvas_w: u32, canvas_h: u32) -> Result<(), DecodeError> {
         let OpenClipGroupF32 {
             base_left,
             base_top,
@@ -511,9 +524,9 @@ impl OpenClipGroupF32 {
                     canvas,
                     canvas_w,
                     canvas_h,
-                    base_rgba
-                        .as_deref()
-                        .expect("base_rgba is present until temp is initialized"),
+                    base_rgba.as_deref().ok_or_else(|| {
+                        "PSD/PSB HDR clip group base pixels are missing".to_string()
+                    })?,
                     base_left,
                     base_top,
                     base_width,
@@ -522,7 +535,8 @@ impl OpenClipGroupF32 {
                 );
             }
             Some(mut temp) => {
-                let base_alpha = base_alpha.expect("base_alpha is set whenever temp is set");
+                let base_alpha = base_alpha
+                    .ok_or_else(|| "PSD/PSB HDR clip group base_alpha is missing".to_string())?;
                 apply_base_alpha_mask_f32(&mut temp, &base_alpha);
                 blend_f32_layer_onto(
                     canvas,
@@ -537,6 +551,7 @@ impl OpenClipGroupF32 {
                 );
             }
         }
+        Ok(())
     }
 }
 
@@ -588,7 +603,7 @@ impl ClipBlendStateF32 {
     ) -> Result<(), DecodeError> {
         crate::psb_reader::check_decode_cancel(cancel)?;
         if let Some(open) = self.open.take() {
-            open.finalize(canvas, self.canvas_w, self.canvas_h);
+            open.finalize(canvas, self.canvas_w, self.canvas_h)?;
         }
         Ok(())
     }
@@ -627,7 +642,7 @@ pub(crate) struct LayerF32DecodeArgs<'a> {
 
 pub(crate) fn decode_layer_to_f32(
     args: LayerF32DecodeArgs<'_>,
-) -> Result<Option<Vec<f32>>, DecodeError> {
+) -> Result<Option<Arc<[f32]>>, DecodeError> {
     let LayerF32DecodeArgs {
         channel_data,
         record,
@@ -666,7 +681,7 @@ pub(crate) fn decode_layer_to_f32(
         match ch.id {
             PSD_CHANNEL_ID_ALPHA => {
                 // Alpha channel: linear, no transfer decode.
-                match decode_channel_image(slice, width, height, depth, is_psb, cancel) {
+                match decode_channel_image(slice, None, width, height, depth, is_psb, cancel) {
                     Ok(raw) => {
                         alpha = Some(channel_samples_to_f32(&raw, depth, linear, sdr_white_nits)?)
                     }
@@ -693,6 +708,7 @@ pub(crate) fn decode_layer_to_f32(
                 if let Some(mi) = mask_info {
                     match decode_mask_channel_to_layer(
                         slice,
+                        None, // HDR path doesn't have channel backing yet
                         mi,
                         record.left,
                         record.top,
@@ -733,7 +749,7 @@ pub(crate) fn decode_layer_to_f32(
             }
             0..=3 => {
                 let idx = ch.id as usize;
-                match decode_channel_image(slice, width, height, depth, is_psb, cancel) {
+                match decode_channel_image(slice, None, width, height, depth, is_psb, cancel) {
                     Ok(raw) => {
                         color[idx] = Some(channel_samples_to_f32(
                             &raw,
@@ -780,7 +796,7 @@ pub(crate) fn decode_layer_to_f32(
         record.effective_fill_opacity(),
     );
 
-    Ok(Some(rgba))
+    Ok(Some(rgba.into()))
 }
 
 // -- public entry point -------------------------------------------------------
@@ -905,6 +921,7 @@ fn composite_layers_hdr_with_visibility(
                     blend: record.blend,
                     clipping: record.clipping,
                     rgba: &rgba_f32,
+                    rgba_arc: Some(&rgba_f32),
                 };
                 clip_state.push_layer(&mut canvas, &clip_ref, cancel)?;
             }
@@ -1014,6 +1031,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 0,
                 rgba: &base_rgba,
+                rgba_arc: None,
             },
             ClipLayerRefF32 {
                 left: 2,
@@ -1023,6 +1041,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 1,
                 rgba: &clip_rgba,
+                rgba_arc: None,
             },
         ];
 

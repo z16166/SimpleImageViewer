@@ -29,6 +29,10 @@ use crate::psb_layer_composite::{
     CompositeTiming, LayerInfo, LayerMaskInfo, LayerRecord, accumulate_decoded_layer_bytes,
     checked_layer_pixel_count, dimensions_within_limit, layer_will_decode,
 };
+use std::sync::Arc;
+
+use crate::psb_reader_util::SharedSlice;
+
 use crate::psb_reader::{
     PSD_CHANNEL_ID_ALPHA, PSD_CHANNEL_ID_COLOR_MAX, PSD_CHANNEL_ID_REAL_USER_MASK,
     PSD_CHANNEL_ID_USER_MASK, PSD_COLOR_MODE_BITMAP, PSD_COLOR_MODE_CMYK, PSD_COLOR_MODE_DUOTONE,
@@ -45,15 +49,18 @@ const RLE_ROW_CANCEL_POLL_INTERVAL: usize = 64;
 ///
 /// `data` must be exactly the channel's declared byte range. `depth` controls
 /// bytes-per-sample: 8 → 1 byte, 16 → 2 bytes BE, 32 → 4 bytes BE (f32 planes).
-/// The returned `Vec<u8>` is `width * height * bps` bytes in raster order.
+/// The returned `SharedSlice` is `width * height * bps` bytes in raster order.
+/// When `backing` is provided and covers the same range as `data`, the RAW
+/// path returns a zero-copy sub-slice of the backing store.
 pub(crate) fn decode_channel_image(
     data: &[u8],
+    backing: Option<&SharedSlice>,
     width: u32,
     height: u32,
     depth: u16,
     is_psb: bool,
     cancel: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<Vec<u8>, crate::loader::DecodeError> {
+) -> Result<SharedSlice, crate::loader::DecodeError> {
     let bps = crate::psb_reader::bytes_per_sample(depth)?;
     let mut r = std::io::Cursor::new(data);
     let compression = crate::psb_reader::read_u16(&mut r)?;
@@ -75,10 +82,16 @@ pub(crate) fn decode_channel_image(
                 )
                 .into());
             }
+            // Zero-copy RAW: when a backing store is available, return a
+            // sub-slice of the shared allocation.
             let raw = data
                 .get(2..2 + total_raw_bytes)
                 .ok_or_else(|| "PSD/PSB layer channel raw payload out of bounds".to_string())?;
-            Ok(raw.to_vec())
+            if let Some(backing) = backing {
+                Ok(backing.sub_slice(2, 2 + total_raw_bytes))
+            } else {
+                Ok(SharedSlice::new(Arc::from(raw)))
+            }
         }
         PSD_COMPRESSION_RLE => {
             let mut row_counts = Vec::with_capacity(height as usize);
@@ -125,7 +138,7 @@ pub(crate) fn decode_channel_image(
                     .copy_from_slice(&row_buf[..row_raw_bytes]);
                 r.set_position(end as u64);
             }
-            Ok(out)
+            Ok(out.into())
         }
         PSD_COMPRESSION_ZIP | PSD_COMPRESSION_ZIP_PREDICTION => {
             crate::psb_reader::check_decode_cancel(cancel)?;
@@ -139,6 +152,7 @@ pub(crate) fn decode_channel_image(
                 depth,
                 compression == PSD_COMPRESSION_ZIP_PREDICTION,
             )
+            .map(SharedSlice::from)
             .map_err(Into::into)
         }
         _ => Err(format!("Unsupported layer channel compression: {compression}").into()),
@@ -155,19 +169,19 @@ pub(crate) struct LayerRgbaArgs<'a> {
     pub(crate) color_mode: u16,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) color: &'a [Option<Vec<u8>>; 4],
+    pub(crate) color: &'a [Option<SharedSlice>; 4],
     pub(crate) alpha: Option<&'a [u8]>,
     pub(crate) mask: Option<&'a [u8]>,
     pub(crate) opacity: u8,
     pub(crate) cmyk_icc: &'a [u8],
 }
 
-pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
+pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Arc<[u8]> {
     let Some(pixel_count) = checked_layer_pixel_count(args.width, args.height) else {
-        return Vec::new();
+        return Arc::new([]);
     };
     let Some(rgba_len) = pixel_count.checked_mul(4) else {
-        return Vec::new();
+        return Arc::new([]);
     };
     let opacity = args.opacity as u32;
 
@@ -198,7 +212,7 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
                 args.opacity,
                 args.mask,
             );
-            return rgba;
+            return rgba.into();
         }
     }
 
@@ -228,7 +242,7 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
             args.opacity,
             args.mask,
         );
-        return rgba;
+        return rgba.into();
     }
 
     // RGB fast path: planar R/G/B -> interleaved via SIMD, then fold opacity/mask.
@@ -262,12 +276,13 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
             args.opacity,
             args.mask,
         );
-        return rgba;
+        return rgba.into();
     }
 
     let mut rgba = vec![0u8; rgba_len];
-    let sample =
-        |ch: &Option<Vec<u8>>, i: usize| ch.as_deref().and_then(|d| d.get(i)).copied().unwrap_or(0);
+    let sample = |ch: &Option<SharedSlice>, i: usize| {
+        ch.as_deref().and_then(|d| d.get(i)).copied().unwrap_or(0)
+    };
 
     for i in 0..pixel_count {
         let (r, g, b) = match args.color_mode {
@@ -312,7 +327,7 @@ pub(crate) fn layer_to_rgba8(args: LayerRgbaArgs<'_>) -> Vec<u8> {
         rgba[off + 3] = a as u8;
     }
 
-    rgba
+    rgba.into()
 }
 
 // -- HDR f32 channel helpers -------------------------------------------------
@@ -386,12 +401,12 @@ pub(crate) fn layer_planes_to_rgba_f32(
     alpha: Option<&[f32]>,
     mask: Option<&[f32]>,
     opacity: u8,
-) -> Vec<f32> {
+) -> Arc<[f32]> {
     let Some(pixel_count) = checked_layer_pixel_count(width, height) else {
-        return Vec::new();
+        return Arc::new([]);
     };
     let Some(rgba_len) = pixel_count.checked_mul(4) else {
-        return Vec::new();
+        return Arc::new([]);
     };
     let mut out = Vec::with_capacity(rgba_len);
     // Caller should pass `LayerRecord::effective_fill_opacity()` so fill
@@ -443,7 +458,7 @@ pub(crate) fn layer_planes_to_rgba_f32(
         out.push(a.clamp(0.0, 1.0));
     }
 
-    out
+    out.into()
 }
 
 /// Decode a user/real mask channel into a layer-sized alpha matte, or `None`
@@ -453,6 +468,7 @@ pub(crate) fn layer_planes_to_rgba_f32(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_mask_channel_to_layer(
     slice: &[u8],
+    backing: Option<&SharedSlice>,
     mask_info: &LayerMaskInfo,
     layer_left: i32,
     layer_top: i32,
@@ -489,7 +505,7 @@ pub(crate) fn decode_mask_channel_to_layer(
         );
         return Ok(None);
     }
-    let mask_pixels = decode_channel_image(slice, mask_w, mask_h, depth, is_psb, cancel)?;
+    let mask_pixels = decode_channel_image(slice, backing, mask_w, mask_h, depth, is_psb, cancel)?;
     let mut layer_mask = build_layer_sized_mask(
         mask_info,
         &mask_pixels,
@@ -693,7 +709,9 @@ pub(crate) struct DecodedLayer {
     pub(crate) blend: [u8; 4],
     /// 0 = base / unclipped; non-zero = clipped to nearest base below.
     pub(crate) clipping: u8,
-    pub(crate) rgba: Vec<u8>,
+    /// Layer RGBA pixel data, shared via `Arc<[u8]>` so clip groups can clone
+    /// the Arc (cheap refcount bump) instead of copying the entire buffer.
+    pub(crate) rgba: Arc<[u8]>,
 }
 
 pub(crate) struct LayerDecodeParams<'a> {
@@ -708,6 +726,10 @@ pub(crate) struct LayerDecodeParams<'a> {
     /// fractional-to-pixel coordinate conversion.
     pub(crate) image_width: u32,
     pub(crate) image_height: u32,
+    /// Shared backing for the channel data section of the PSD/PSB file.
+    /// When present, RAW-compressed channels return a zero-copy sub-slice
+    /// instead of copying from the mmap.
+    pub(crate) channel_backing: Option<SharedSlice>,
 }
 
 /// Decode one layer's channels from `channel_data[*cursor..]`, advancing `*cursor`
@@ -738,8 +760,8 @@ pub(crate) fn decode_one_layer(
     }
     let can_decode = has_bounds && dimensions_within_limit(width, height);
 
-    let mut color: [Option<Vec<u8>>; 4] = [None, None, None, None];
-    let mut alpha: Option<Vec<u8>> = None;
+    let mut color: [Option<SharedSlice>; 4] = [None, None, None, None];
+    let mut alpha: Option<SharedSlice> = None;
     let mut mask: Option<Vec<u8>> = None;
     let mut layer_failed = false;
 
@@ -761,6 +783,11 @@ pub(crate) fn decode_one_layer(
         match ch.id {
             PSD_CHANNEL_ID_ALPHA => match decode_channel_image(
                 slice,
+                params
+                    .channel_backing
+                    .as_ref()
+                    .map(|b| b.sub_slice(start, end))
+                    .as_ref(),
                 width,
                 height,
                 params.depth,
@@ -796,6 +823,11 @@ pub(crate) fn decode_one_layer(
                 if let Some(mask_info) = mask_info {
                     match decode_mask_channel_to_layer(
                         slice,
+                        params
+                            .channel_backing
+                            .as_ref()
+                            .map(|b| b.sub_slice(start, end))
+                            .as_ref(),
                         mask_info,
                         record.left,
                         record.top,
@@ -822,6 +854,11 @@ pub(crate) fn decode_one_layer(
                 let idx = ch.id as usize;
                 match decode_channel_image(
                     slice,
+                    params
+                        .channel_backing
+                        .as_ref()
+                        .map(|b| b.sub_slice(start, end))
+                        .as_ref(),
                     width,
                     height,
                     params.depth,
@@ -1076,6 +1113,10 @@ pub(crate) fn decode_layers_for_composite(
                 cmyk_icc: info.cmyk_icc.as_slice(),
                 image_width: info.width,
                 image_height: info.height,
+                channel_backing: info
+                    .channel_data_shared
+                    .as_ref()
+                    .map(|s| s.sub_slice(start, end)),
             },
         )
     };
@@ -1150,6 +1191,7 @@ pub(crate) fn run_composite_pass_gpu_batch(
             blend: l.blend,
             clipping: l.clipping,
             rgba: &l.rgba,
+            rgba_arc: Some(&l.rgba),
         })
         .collect();
     // Re-verified from the decoded layers themselves (not just the metadata
@@ -1260,6 +1302,10 @@ pub(crate) fn run_composite_pass_cpu_streaming(
                 cmyk_icc: info.cmyk_icc.as_slice(),
                 image_width: info.width,
                 image_height: info.height,
+                channel_backing: info
+                    .channel_data_shared
+                    .as_ref()
+                    .map(|s| s.sub_slice(start, end)),
             },
         )
     };
@@ -1301,6 +1347,7 @@ pub(crate) fn run_composite_pass_cpu_streaming(
             blend: layer.blend,
             clipping: layer.clipping,
             rgba: &layer.rgba,
+            rgba_arc: Some(&layer.rgba),
         };
 
         let (next_result, blend_result) = if next_idx < record_count {
@@ -1397,6 +1444,8 @@ mod tests {
     };
     use crate::psb_layer_blend_simd::SeparableBlendKind;
     use crate::psb_layer_composite::{LayerChannel, LayerMaskInfo, LayerRecord};
+    use crate::psb_reader_util::SharedSlice;
+    use std::sync::Arc;
 
     /// Build a minimal `LayerRecord` for decode tests; mirrors
     /// `psb_layer_composite::tests::mk_layer`, but only the fields these
@@ -1430,8 +1479,8 @@ mod tests {
     #[test]
     fn decode_channel_image_rejects_oversized_dims() {
         let data = [0u8, 0u8]; // compression = Raw
-        let err =
-            decode_channel_image(&data, u32::MAX, u32::MAX, 8, false, None).expect_err("oversized");
+        let err = decode_channel_image(&data, None, u32::MAX, u32::MAX, 8, false, None)
+            .expect_err("oversized");
         assert!(
             err.as_str().contains("exceeds limit"),
             "unexpected err: {err}"
@@ -1441,22 +1490,23 @@ mod tests {
     #[test]
     fn decode_channel_image_raw_short_input_no_panic() {
         // Shorter than the compression header: fail at read_u16, never slice.
-        assert!(decode_channel_image(&[], 1, 1, 8, false, None).is_err());
-        assert!(decode_channel_image(&[0], 1, 1, 8, false, None).is_err());
+        assert!(decode_channel_image(&[], None, 1, 1, 8, false, None).is_err());
+        assert!(decode_channel_image(&[0], None, 1, 1, 8, false, None).is_err());
         // Header only / truncated payload must fail closed (no silent zero-fill).
-        let err = decode_channel_image(&[0, 0], 1, 1, 8, false, None).expect_err("truncated raw");
+        let err =
+            decode_channel_image(&[0, 0], None, 1, 1, 8, false, None).expect_err("truncated raw");
         assert!(err.as_str().contains("truncated"), "unexpected err: {err}");
         // Partial payload shorter than width*height*bps.
-        let err = decode_channel_image(&[0, 0, 0xAB], 2, 1, 8, false, None)
+        let err = decode_channel_image(&[0, 0, 0xAB], None, 2, 1, 8, false, None)
             .expect_err("partial raw plane");
         assert!(err.as_str().contains("truncated"), "unexpected err: {err}");
     }
 
     #[test]
     fn decode_channel_image_raw_exact_length_ok() {
-        let out = decode_channel_image(&[0, 0, 0x11, 0x22], 2, 1, 8, false, None)
+        let out = decode_channel_image(&[0, 0, 0x11, 0x22], None, 2, 1, 8, false, None)
             .expect("exact raw payload");
-        assert_eq!(out, vec![0x11, 0x22]);
+        assert_eq!(&*out, &[0x11, 0x22][..]);
     }
 
     #[test]
@@ -1464,7 +1514,7 @@ mod tests {
         // compression=1, one row claiming 2 compressed bytes (within per-row cap
         // for width=1) while only 1 byte remains after the row-count table.
         let data = vec![0u8, 1u8, 0u8, 2u8, 0x00];
-        let err = decode_channel_image(&data, 1, 1, 8, false, None)
+        let err = decode_channel_image(&data, None, 1, 1, 8, false, None)
             .expect_err("RLE total must not exceed remaining channel bytes");
         assert!(
             err.as_str().contains("exceeds remaining"),
@@ -1546,6 +1596,7 @@ mod tests {
                 cmyk_icc: &[],
                 image_width: 100,
                 image_height: 100,
+                channel_backing: None,
             },
         );
 
@@ -1599,6 +1650,7 @@ mod tests {
                 cmyk_icc: &[],
                 image_width: 100,
                 image_height: 100,
+                channel_backing: None,
             },
         );
 
@@ -1650,6 +1702,7 @@ mod tests {
                 cmyk_icc: &[],
                 image_width: 100,
                 image_height: 100,
+                channel_backing: None,
             },
         );
         assert!(
@@ -1790,11 +1843,11 @@ mod tests {
     fn layer_to_rgba8_cmyk_opacity_mask_numeric() {
         // 1x1 CMYK pixel (Adobe polarity 0=100% ink): c=204, m=153, y=102, k=204.
         // r = 204*204/255 = 163; g = 153*204/255 = 122; b = 102*204/255 = 81.
-        let color: [Option<Vec<u8>>; 4] = [
-            Some(vec![204]),
-            Some(vec![153]),
-            Some(vec![102]),
-            Some(vec![204]),
+        let color: [Option<SharedSlice>; 4] = [
+            Some(SharedSlice::new(Arc::from(vec![204]))),
+            Some(SharedSlice::new(Arc::from(vec![153]))),
+            Some(SharedSlice::new(Arc::from(vec![102]))),
+            Some(SharedSlice::new(Arc::from(vec![204]))),
         ];
         let alpha = vec![200u8];
         let mask = vec![128u8];
@@ -1812,14 +1865,19 @@ mod tests {
         });
 
         // a = 200 * 200 / 255 = 156, then 156 * 128 / 255 = 78.
-        assert_eq!(rgba, vec![163, 122, 81, 78]);
+        assert_eq!(rgba, vec![163, 122, 81, 78].into());
     }
 
     #[test]
     fn layer_to_rgba8_rgb_opacity_mask_numeric() {
         // 1x1 RGB: (10,20,30), alpha=200, opacity=200, mask=128
         // a = 200*200/255 = 156; then 156*128/255 = 78
-        let color: [Option<Vec<u8>>; 4] = [Some(vec![10]), Some(vec![20]), Some(vec![30]), None];
+        let color: [Option<SharedSlice>; 4] = [
+            Some(SharedSlice::new(Arc::from(vec![10]))),
+            Some(SharedSlice::new(Arc::from(vec![20]))),
+            Some(SharedSlice::new(Arc::from(vec![30]))),
+            None,
+        ];
         let alpha = vec![200u8];
         let mask = vec![128u8];
         let rgba = layer_to_rgba8(LayerRgbaArgs {
@@ -1832,13 +1890,17 @@ mod tests {
             opacity: 200,
             cmyk_icc: &[],
         });
-        assert_eq!(rgba, vec![10, 20, 30, 78]);
+        assert_eq!(rgba, vec![10, 20, 30, 78].into());
     }
 
     #[test]
     fn layer_to_rgba8_rgb_no_alpha_full_opacity() {
-        let color: [Option<Vec<u8>>; 4] =
-            [Some(vec![1, 2]), Some(vec![3, 4]), Some(vec![5, 6]), None];
+        let color: [Option<SharedSlice>; 4] = [
+            Some(SharedSlice::new(Arc::from(vec![1, 2]))),
+            Some(SharedSlice::new(Arc::from(vec![3, 4]))),
+            Some(SharedSlice::new(Arc::from(vec![5, 6]))),
+            None,
+        ];
         let rgba = layer_to_rgba8(LayerRgbaArgs {
             color_mode: 3,
             width: 2,
@@ -1849,13 +1911,18 @@ mod tests {
             opacity: 255,
             cmyk_icc: &[],
         });
-        assert_eq!(rgba, vec![1, 3, 5, 255, 2, 4, 6, 255]);
+        assert_eq!(rgba, vec![1, 3, 5, 255, 2, 4, 6, 255].into());
     }
 
     #[test]
     fn layer_to_rgba8_rgb_missing_g_falls_back() {
         // Missing G plane: must not panic; scalar fallback zeros missing samples.
-        let color: [Option<Vec<u8>>; 4] = [Some(vec![9]), None, Some(vec![7]), None];
+        let color: [Option<SharedSlice>; 4] = [
+            Some(SharedSlice::new(Arc::from(vec![9]))),
+            None,
+            Some(SharedSlice::new(Arc::from(vec![7]))),
+            None,
+        ];
         let rgba = layer_to_rgba8(LayerRgbaArgs {
             color_mode: 3,
             width: 1,
@@ -1866,7 +1933,7 @@ mod tests {
             opacity: 255,
             cmyk_icc: &[],
         });
-        assert_eq!(rgba, vec![9, 0, 7, 255]);
+        assert_eq!(rgba, vec![9, 0, 7, 255].into());
     }
 
     #[test]
@@ -1885,7 +1952,7 @@ mod tests {
             height: 32_768,
             blend: *b"norm",
             clipping: 0,
-            rgba: Vec::new(),
+            rgba: Arc::new([]),
         };
         assert!(
             crate::psb_layer_composite::check_streaming_pair_budget(&current, 32_768, 32_768)

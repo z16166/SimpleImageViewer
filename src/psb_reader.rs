@@ -180,6 +180,7 @@ pub fn read_composite_from_index(
                 crate::psb_color_convert::bitmap_expand_bits_to_u8(&mut ch_u8, &packed);
             }
             PSD_COMPRESSION_RLE => {
+                let mut packed_row_buf = Vec::new();
                 for row in 0..height as usize {
                     if row & RLE_ROW_DECODE_CANCEL_POLL_INTERVAL == 0 {
                         check_decode_cancel(cancel)?;
@@ -194,7 +195,6 @@ pub fn read_composite_from_index(
                         file_size,
                         "bitmap RLE row",
                     )?;
-                    let mut packed_row_buf = Vec::new();
                     let mut compressed = vec![0u8; compressed_len];
                     r.read_exact(&mut compressed)
                         .map_err(|e| format!("Read bitmap RLE: {e}"))?;

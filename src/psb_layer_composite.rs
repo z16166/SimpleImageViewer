@@ -28,12 +28,14 @@
 //! u8 entry points keep the depth==8 guard.
 
 use std::io::Read;
+use std::sync::Arc;
 
 use crate::psb_layer_decode::{
     StreamingPeakTracker, gpu_batch_eligible_decoded_bytes, run_composite_pass_cpu_streaming,
     run_composite_pass_gpu_batch,
 };
 use crate::psb_reader::PSD_COLOR_MODE_CMYK;
+use crate::psb_reader_util::SharedSlice;
 
 const PSD_BLEND_SIGNATURE: &[u8; 4] = b"8BIM";
 const PSB_BLOCK_SIGNATURE: &[u8; 4] = b"8B64";
@@ -912,9 +914,12 @@ pub(crate) fn check_streaming_pair_budget(
 }
 
 #[derive(Debug)]
-pub struct LayerInfo<'a> {
+pub(crate) struct LayerInfo<'a> {
     pub records: Vec<LayerRecord>,
     pub channel_data: &'a [u8],
+    /// Shared ownership of the channel data section, enabling zero-copy
+    /// sub-slicing for RAW-compressed channels.
+    pub channel_data_shared: Option<SharedSlice>,
     pub width: u32,
     pub height: u32,
     pub depth: u16,
@@ -924,7 +929,7 @@ pub struct LayerInfo<'a> {
     pub cmyk_icc: Vec<u8>,
 }
 
-pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
+pub(crate) fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
     let index = crate::psb_section_index::PsdSectionIndex::parse(bytes)?;
     parse_layer_records_from_index(&index, bytes)
 }
@@ -932,7 +937,7 @@ pub fn parse_layer_records(bytes: &[u8]) -> Result<LayerInfo<'_>, String> {
 /// Same as [`parse_layer_records`], but reuses an already-parsed
 /// [`crate::psb_section_index::PsdSectionIndex`] instead of re-walking the
 /// header, color mode data, and image resources sections.
-pub fn parse_layer_records_from_index<'a>(
+pub(crate) fn parse_layer_records_from_index<'a>(
     index: &crate::psb_section_index::PsdSectionIndex,
     bytes: &'a [u8],
 ) -> Result<LayerInfo<'a>, String> {
@@ -957,6 +962,7 @@ pub fn parse_layer_records_from_index<'a>(
         return Ok(LayerInfo {
             records: Vec::new(),
             channel_data: empty,
+            channel_data_shared: None,
             width,
             height,
             depth,
@@ -986,6 +992,7 @@ pub fn parse_layer_records_from_index<'a>(
         return Ok(LayerInfo {
             records: Vec::new(),
             channel_data: empty,
+            channel_data_shared: None,
             width,
             height,
             depth,
@@ -1012,6 +1019,7 @@ pub fn parse_layer_records_from_index<'a>(
     Ok(LayerInfo {
         records,
         channel_data,
+        channel_data_shared: Some(SharedSlice::new(Arc::from(channel_data))),
         width,
         height,
         depth,
@@ -2172,6 +2180,7 @@ mod tests {
         LayerInfo {
             records,
             channel_data,
+            channel_data_shared: None,
             width,
             height,
             depth: 8,
@@ -2953,6 +2962,7 @@ mod tests {
                 blend: l.blend,
                 clipping: l.clipping,
                 rgba: &l.rgba,
+                rgba_arc: Some(&l.rgba),
             })
             .collect();
         let mut batch = vec![0u8; (width * height * 4) as usize];

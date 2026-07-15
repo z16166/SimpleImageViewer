@@ -174,6 +174,7 @@ pub(crate) fn composite_hdr_tile_with_visibility(
                     blend: record.blend,
                     clipping: record.clipping,
                     rgba: &rgba_f32,
+                    rgba_arc: Some(&rgba_f32),
                 };
                 clip_state.push_layer(&mut canvas, &clip_ref, cancel)?;
             }

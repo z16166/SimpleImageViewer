@@ -22,6 +22,7 @@
 //! blend mode.
 
 use crate::psb_layer_blend_simd::{SeparableBlendKind, blend_separable_span};
+use std::sync::Arc;
 
 /// Decoded layer view for clip-aware blending (bottom-to-top order).
 pub(crate) struct ClipLayerRef<'a> {
@@ -33,6 +34,11 @@ pub(crate) struct ClipLayerRef<'a> {
     /// 0 = base / unclipped; non-zero = clipped to nearest base below.
     pub clipping: u8,
     pub rgba: &'a [u8],
+    /// When the rgba data lives in an `Arc<[u8]>`, this field provides a borrow
+    /// so that clip groups can clone the Arc (cheap refcount bump) instead of
+    /// copying the pixel data. `None` when constructed from a non-Arc source
+    /// (e.g. test `Vec<u8>`).
+    pub(crate) rgba_arc: Option<&'a Arc<[u8]>>,
 }
 
 pub(crate) fn any_layer_clipped(layers: &[ClipLayerRef<'_>]) -> bool {
@@ -380,7 +386,7 @@ struct OpenClipGroup {
     base_blend: [u8; 4],
     /// Owned copy of the base pixels while the group is still unmaterialized.
     /// Dropped after `temp` + `base_alpha` have captured everything needed.
-    base_rgba: Option<Vec<u8>>,
+    base_rgba: Option<Arc<[u8]>>,
     /// Full-canvas group content once a clip layer has been merged in.
     temp: Option<Vec<u8>>,
     base_alpha: Option<Vec<u8>>,
@@ -388,13 +394,16 @@ struct OpenClipGroup {
 
 impl OpenClipGroup {
     fn new(base: &ClipLayerRef<'_>) -> Self {
+        let base_rgba = base
+            .rgba_arc
+            .map_or_else(|| Arc::from(base.rgba), |a| Arc::clone(a));
         Self {
             base_left: base.left,
             base_top: base.top,
             base_width: base.width,
             base_height: base.height,
             base_blend: base.blend,
-            base_rgba: Some(base.rgba.to_vec()),
+            base_rgba: Some(base_rgba),
             temp: None,
             base_alpha: None,
         }
@@ -439,6 +448,7 @@ impl OpenClipGroup {
                     blend: self.base_blend,
                     clipping: 0,
                     rgba: base_rgba,
+                    rgba_arc: None,
                 },
             )?);
             self.base_rgba = None;
@@ -651,6 +661,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 0,
                 rgba: &base_rgba,
+                rgba_arc: None,
             },
             ClipLayerRef {
                 left: 2,
@@ -660,6 +671,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 1,
                 rgba: &clip_rgba,
+                rgba_arc: None,
             },
         ];
 
@@ -690,6 +702,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 0,
                 rgba: &base_rgba,
+                rgba_arc: None,
             },
             ClipLayerRef {
                 left: 2,
@@ -699,6 +712,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 1,
                 rgba: &clip_rgba,
+                rgba_arc: None,
             },
         ];
 
@@ -728,6 +742,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 0,
                 rgba: &base_rgba,
+                rgba_arc: None,
             },
             ClipLayerRef {
                 left: 2,
@@ -737,6 +752,7 @@ mod tests {
                 blend: *b"norm",
                 clipping: 0,
                 rgba: &clip_rgba,
+                rgba_arc: None,
             },
         ];
 
@@ -758,6 +774,7 @@ mod tests {
             blend: *b"norm",
             clipping: 1,
             rgba: &clip_rgba,
+            rgba_arc: None,
         }];
 
         blend_layers_with_clipping(&mut canvas, 4, 4, &layers, None).unwrap();
