@@ -557,6 +557,7 @@ fn gain_map_rgb_at_row(row: &[u8], x: u32) -> [f32; 3] {
 }
 
 #[inline]
+#[allow(dead_code)]
 fn bilinear_rgb_taps_encoded(
     c00: [f32; 3],
     c10: [f32; 3],
@@ -636,6 +637,7 @@ pub(crate) fn precompute_gain_map_x_upsampled(
 /// Output is planar `[R0..Rn, G0..Gn, B0..Bn]` for SIMD channel loads.
 /// **Keep in sync** with
 /// [`sample_gain_map_row_nonlinear`](crate::hdr::heif_apple_gain_map_compose_simd::sample_gain_map_row_nonlinear).
+#[allow(dead_code)]
 pub(crate) fn precompute_gain_map_row_encoded(
     gain_rgba: &[u8],
     gain_width: u32,

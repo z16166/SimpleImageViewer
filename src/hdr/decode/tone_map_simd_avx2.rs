@@ -16,7 +16,9 @@
 
 //! AVX2 8-pixel strip tone-map kernels (x86_64).
 //!
-//! Bit-identical to the SSE4.1 4-pixel path after packing to RGBA8.
+//! Matches the SSE4.1 4-pixel path within ±1 u8 after packing to RGBA8 (AVX2 uses
+//! FMA which fuses multiply+add in one rounding step, differing from SSE4.1/scalar
+//! mul+add two-rounding steps in the lowest mantissa bits).
 
 use super::super::constants::{INVERSE_DISPLAY_GAMMA, MAX_HDR_TONE_MAP_INPUT};
 use super::{

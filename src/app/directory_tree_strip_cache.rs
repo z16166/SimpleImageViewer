@@ -617,6 +617,7 @@ impl DirectoryTreeStripCache {
     }
 
     fn evict_if_needed(&mut self) {
+        let mut evicted = false;
         while self.textures.len() > DIRECTORY_TREE_STRIP_CACHE_MAX {
             let Some(((_, victim), _)) = self.lru_tick.pop_first() else {
                 break;
@@ -632,6 +633,11 @@ impl DirectoryTreeStripCache {
             self.preview_stage.remove(&victim);
             self.texture_names.remove(&victim);
             // Keep logical_sizes so visible rows can cold-regenerate after LRU eviction.
+            evicted = true;
+        }
+        // Batch-bump once after all evictions rather than per-entry, avoiding
+        // unnecessary GPU-revision churn that could trigger extra UI re-projection.
+        if evicted {
             self.bump_gpu_revision();
         }
     }

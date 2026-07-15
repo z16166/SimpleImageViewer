@@ -17,6 +17,8 @@
 use std::sync::Arc;
 
 use crate::hdr::types::{DEFAULT_SDR_WHITE_NITS, HdrImageBuffer, HdrToneMapSettings};
+#[cfg(test)]
+use crate::hdr::types::{GAIN_MAP_SOURCE_AVIF, GAIN_MAP_SOURCE_HEIF, GAIN_MAP_SOURCE_JPEG_R};
 use crate::loader::DecodedImage;
 
 /// True when the HDR buffer carries a deferred ISO gain map (Ultra HDR / AVIF JPEG-R, etc.).
@@ -506,7 +508,7 @@ mod tests {
         let iso_sdr = vec![128_u8, 64, 32, 255];
         let metadata = HdrImageMetadata {
             gain_map: Some(HdrGainMapMetadata {
-                source: "JPEG_R",
+                source: GAIN_MAP_SOURCE_JPEG_R,
                 target_hdr_capacity: Some(4.0),
                 diagnostic: String::new(),
                 capped_display_referred: false,
@@ -570,7 +572,7 @@ mod tests {
         let iso_sdr = Arc::new(vec![32_u8; 4 * 4 * 4]);
         let metadata = HdrImageMetadata {
             gain_map: Some(HdrGainMapMetadata {
-                source: "AVIF",
+                source: GAIN_MAP_SOURCE_AVIF,
                 target_hdr_capacity: Some(4.0),
                 diagnostic: String::new(),
                 capped_display_referred: false,
@@ -619,7 +621,7 @@ mod tests {
         let iso_gain = Arc::new(vec![200_u8; pixel_count]);
         let metadata = HdrImageMetadata {
             gain_map: Some(HdrGainMapMetadata {
-                source: "AVIF",
+                source: GAIN_MAP_SOURCE_AVIF,
                 target_hdr_capacity: Some(4.0),
                 diagnostic: String::new(),
                 capped_display_referred: false,
@@ -662,7 +664,7 @@ mod tests {
         let iso_sdr = vec![64_u8, 128, 192, 255];
         let metadata = HdrImageMetadata {
             gain_map: Some(HdrGainMapMetadata {
-                source: "JPEG_R",
+                source: GAIN_MAP_SOURCE_JPEG_R,
                 target_hdr_capacity: Some(4.0),
                 diagnostic: String::new(),
                 capped_display_referred: false,
@@ -766,7 +768,7 @@ mod tests {
     fn sdr_fallback_never_tone_maps_apple_deferred_encoded_primary() {
         let metadata = HdrImageMetadata {
             gain_map: Some(HdrGainMapMetadata {
-                source: "HEIF",
+                source: GAIN_MAP_SOURCE_HEIF,
                 target_hdr_capacity: Some(4.0),
                 diagnostic: String::new(),
                 capped_display_referred: false,
@@ -899,7 +901,7 @@ mod tests {
     fn full_iso_deferred_is_not_embedded_sdr_master_display() {
         let metadata = HdrImageMetadata {
             gain_map: Some(HdrGainMapMetadata {
-                source: "AVIF",
+                source: GAIN_MAP_SOURCE_AVIF,
                 target_hdr_capacity: Some(4.0),
                 diagnostic: String::new(),
                 capped_display_referred: false,
@@ -958,7 +960,7 @@ mod tests {
     fn heif_tone_mapped_primary_float_is_gain_map_sdr_display_sensitive() {
         let metadata = HdrImageMetadata {
             gain_map: Some(HdrGainMapMetadata {
-                source: "HEIF",
+                source: GAIN_MAP_SOURCE_HEIF,
                 target_hdr_capacity: None,
                 diagnostic: "#63 urn:com:apple:photo:2020:aux:hdrgainmap (AppleHdrGainMap)"
                     .to_string(),
@@ -985,7 +987,7 @@ mod tests {
     fn apple_heic_deferred_is_gain_map_sdr_display_sensitive() {
         let metadata = HdrImageMetadata {
             gain_map: Some(HdrGainMapMetadata {
-                source: "HEIF",
+                source: GAIN_MAP_SOURCE_HEIF,
                 target_hdr_capacity: Some(2.0),
                 diagnostic: String::new(),
                 capped_display_referred: false,

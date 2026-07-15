@@ -41,7 +41,7 @@ fn log_approx_scalar(x: f32) -> f32 {
 
     let x = x.max(f32::MIN_POSITIVE);
     let bits = x.to_bits();
-    let mut imm0 = (bits >> 23) as i32 - EXP_BIAS;
+    let imm0 = (bits >> 23) as i32 - EXP_BIAS;
     let mut x = f32::from_bits((bits & INV_MANT_MASK) | 0x3f00_0000);
     let mut e = imm0 as f32 + 1.0;
 

@@ -323,6 +323,7 @@ fn gather_alpha_row(dst: &mut [u8], src_rgba: &[u8]) {
         return;
     }
 
+    #[cfg(target_arch = "x86_64")]
     gather_alpha_row_scalar(dst, src_rgba, n);
 }
 

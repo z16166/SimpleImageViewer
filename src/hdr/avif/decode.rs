@@ -18,7 +18,7 @@
 
 use std::ffi::CStr;
 
-use crate::hdr::types::HdrImageBuffer;
+use crate::hdr::types::{GAIN_MAP_SOURCE_AVIF, HdrImageBuffer};
 
 pub(crate) fn avif_ftyp_major_brand(bytes: &[u8]) -> Option<[u8; 4]> {
     if bytes.len() < 12 {
@@ -162,7 +162,9 @@ pub(crate) fn decode_avif_static_with_optional_embedded_sdr(
                 if crate::loader::embedded_sdr_fallback::avif_embedded_sdr_ineligible(&err) =>
             {
                 crate::loader::embedded_sdr_fallback::log_embedded_sdr_master_fallback(
-                    "AVIF", path, &err,
+                    GAIN_MAP_SOURCE_AVIF,
+                    path,
+                    &err,
                 );
             }
             Err(err) => return Err(err),

@@ -61,6 +61,11 @@ thread_local! {
 /// SAFETY: called from within a single rayon thread (`thread_local!`), single-borrow,
 /// never re-entered because `compose_iso_row` and its callees do not recurse into
 /// [`compose_iso_deferred_cpu_pixels_simd`].
+///
+/// We use `UnsafeCell` rather than `RefCell` (cf. Apple HEIF path) because no borrow-check
+/// is needed at runtime — the access pattern is strictly non-reentrant within one rayon
+/// worker. This avoids the (negligible) runtime cost of `RefCell` bookkeeping and keeps the
+/// hot row loop free of panicking paths.
 fn with_gain_scratch<R>(f: impl FnOnce(&mut Vec<f32>) -> R) -> R {
     GAIN_ROW_SCRATCH.with(|cell| {
         // SAFETY: thread-local, no other borrow exists at this call site.

@@ -24,7 +24,7 @@ use crate::hdr::gain_map::iso_gain_map_skips_forward_compose;
 use crate::hdr::jpeg_gain_map_gpu::{
     attach_iso_gain_map_hdr_base_from_primary_rgba8, attach_jpeg_gain_map_gpu_deferred,
 };
-use crate::hdr::types::HdrImageBuffer;
+use crate::hdr::types::{GAIN_MAP_SOURCE_JPEG_R, HdrImageBuffer};
 use crate::hdr::ultra_hdr::{
     extract_gain_map_jpeg_bytes, gain_map_metadata, inspect_ultra_hdr_jpeg_bytes,
 };
@@ -83,7 +83,11 @@ fn finish_ultra_hdr_from_primary_rgba(
         );
         crate::loader::check_decode_cancel_str(cancel)?;
         return attach_iso_gain_map_hdr_base_from_primary_rgba8(
-            "JPEG_R", width, height, sdr_rgba, metadata,
+            GAIN_MAP_SOURCE_JPEG_R,
+            width,
+            height,
+            sdr_rgba,
+            metadata,
         );
     }
 
@@ -141,7 +145,7 @@ pub(crate) fn decode_ultra_hdr_jpeg_with_optional_embedded_sdr_master(
             }
         } else {
             match crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only(
-                "JPEG_R",
+                GAIN_MAP_SOURCE_JPEG_R,
                 primary.width,
                 primary.height,
                 primary.sdr_rgba.clone(),

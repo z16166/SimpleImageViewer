@@ -24,7 +24,8 @@ use crate::hdr::jpeg_gain_map_gpu::{
     IsoGainMapDeferredArcInput, attach_iso_gain_map_gpu_deferred_arcs,
 };
 use crate::hdr::types::{
-    DEFAULT_SDR_WHITE_NITS, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrLuminanceMetadata,
+    DEFAULT_SDR_WHITE_NITS, GAIN_MAP_SOURCE_AVIF, HdrColorSpace, HdrImageBuffer, HdrImageMetadata,
+    HdrLuminanceMetadata,
 };
 use std::sync::Arc;
 
@@ -138,7 +139,7 @@ pub(crate) fn attach_avif_gain_map_gpu_deferred_arcs(
         gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity)
     );
     let mut buffer = attach_iso_gain_map_gpu_deferred_arcs(IsoGainMapDeferredArcInput {
-        source: "AVIF",
+        source: GAIN_MAP_SOURCE_AVIF,
         width,
         height,
         sdr_rgba,
@@ -232,7 +233,7 @@ mod tests {
         let metadata = HdrImageMetadata {
             luminance: container_luminance,
             gain_map: Some(HdrGainMapMetadata {
-                source: "AVIF",
+                source: GAIN_MAP_SOURCE_AVIF,
                 target_hdr_capacity: Some(target_hdr_capacity),
                 diagnostic: gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity),
                 capped_display_referred: false,

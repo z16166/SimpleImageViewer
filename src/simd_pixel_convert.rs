@@ -18,6 +18,12 @@
 //!
 //! Dispatch follows [`crate::simd_swizzle`]: runtime feature detection on x86_64
 //! (AVX2 -> SSE4.1 -> scalar), NEON on aarch64, scalar fallback.
+//!
+//! Many functions/paths are only compiled when the corresponding feature (avif-native,
+//! heif-native, jpegxl, etc.) or architecture is enabled, which the compiler may flag
+//! as dead code on certain build configurations — the `#[allow(dead_code)]` attribute
+//! is intentional for this modular dispatch module.
+#![allow(dead_code)]
 
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;

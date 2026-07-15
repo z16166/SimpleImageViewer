@@ -19,6 +19,8 @@
 #[cfg(test)]
 use crate::hdr::heif_apple_gain_map_compose_simd::compose_apple_gain_map_pixels;
 #[cfg(test)]
+use crate::hdr::types::GAIN_MAP_SOURCE_HEIF;
+#[cfg(test)]
 use crate::hdr::types::{
     HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
 };
@@ -148,7 +150,7 @@ pub(crate) fn apply_apple_gain_map_composition(
     let mut final_metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
     final_metadata.luminance = hdr.metadata.luminance;
     final_metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "HEIF",
+        source: GAIN_MAP_SOURCE_HEIF,
         target_hdr_capacity: Some(hdr_target_capacity),
         diagnostic: format!(
             "Apple HDR Gain Map ({}x{} pixels, stops: {:.2}, weight: {:.2})",

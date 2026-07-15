@@ -23,7 +23,7 @@ use super::thumbnail::{
     decode_heif_handle_to_rgba8, decode_heif_primary_sdr_from_handle, primary_logical_size,
 };
 
-use crate::hdr::types::{HdrColorProfile, HdrImageMetadata};
+use crate::hdr::types::{GAIN_MAP_SOURCE_HEIF, HdrColorProfile, HdrImageMetadata};
 #[cfg(feature = "heif-native")]
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 use crate::loader::preview_aspect_matches_logical;
@@ -191,7 +191,7 @@ pub(crate) fn load_heif_with_optional_embedded_sdr_from_bytes(
             Err(failure) => {
                 recovered_sdr = failure.recovered_sdr;
                 crate::loader::embedded_sdr_fallback::log_embedded_sdr_master_fallback(
-                    "HEIF",
+                    GAIN_MAP_SOURCE_HEIF,
                     path,
                     &failure.err,
                 );
@@ -548,7 +548,7 @@ mod tests {
 
         let metadata = HdrImageMetadata {
             gain_map: Some(HdrGainMapMetadata {
-                source: "HEIF",
+                source: GAIN_MAP_SOURCE_HEIF,
                 target_hdr_capacity: None,
                 diagnostic: String::new(),
                 capped_display_referred: false,

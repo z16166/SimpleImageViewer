@@ -23,6 +23,7 @@ use super::gain_map::avif_gain_map_to_metadata;
 use super::strip_baseline::decode_avif_strip_iso_gain_map_baseline_from_image;
 use crate::hdr::gain_map::iso_gain_map_skips_forward_compose;
 use crate::hdr::jpeg_gain_map_gpu::attach_iso_embedded_sdr_master_only;
+use crate::hdr::types::GAIN_MAP_SOURCE_AVIF;
 use crate::loader::{DecodedImage, ImageData, apply_exif_orientation_to_hdr_pair};
 
 #[cfg(feature = "avif-native")]
@@ -57,7 +58,13 @@ pub(crate) fn try_avif_embedded_sdr_from_decoded_image(
             }
         };
 
-    let hdr = attach_iso_embedded_sdr_master_only("AVIF", width, height, sdr_rgba, gain_metadata)?;
+    let hdr = attach_iso_embedded_sdr_master_only(
+        GAIN_MAP_SOURCE_AVIF,
+        width,
+        height,
+        sdr_rgba,
+        gain_metadata,
+    )?;
     let fallback = DecodedImage::new(width, height, {
         hdr.metadata
             .gain_map

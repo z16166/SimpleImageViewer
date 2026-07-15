@@ -124,6 +124,7 @@ pub(crate) unsafe fn mul_div255_u8x16_neon(
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
+#[allow(dead_code)]
 pub(crate) unsafe fn mul_div255_u8x8_neon(
     c: core::arch::aarch64::uint8x8_t,
     k: core::arch::aarch64::uint8x8_t,
