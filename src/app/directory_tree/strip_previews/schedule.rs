@@ -602,7 +602,7 @@ impl ImageViewerApp {
             #[cfg(not(target_os = "windows"))]
             let com_ok = true;
 
-            let mut decode_out: Option<(DecodedImage, (u32, u32), Option<DecodedImage>, StripPreviewBufferTag)> = None;
+            let mut decode_out: Option<(DecodedImage, Option<DecodedImage>, StripPreviewBufferTag)> = None;
             let mut cold_deferred_to_main_loader = false;
             let mut logical = (0u32, 0u32);
             let stage = PreviewStage::Initial;
@@ -624,7 +624,7 @@ impl ImageViewerApp {
                             StripPreviewBufferTag::StripDecodedPixels
                         };
                         logical = strip_decode.logical_size;
-                        decode_out = Some((strip_decode.preview, strip_decode.logical_size, strip_decode.reusable_full, buffer_tag));
+                        decode_out = Some((strip_decode.preview, strip_decode.reusable_full, buffer_tag));
                     }
                     Err(err) if err == crate::loader::DECODE_CANCELLED => {
                         send_strip_inflight_release(
@@ -713,7 +713,7 @@ impl ImageViewerApp {
             }
 
             // Success path: decode output is guaranteed.
-            let (decoded, _, reusable_full_decoded, buffer_tag) =
+            let (decoded, reusable_full_decoded, buffer_tag) =
                 decode_out.expect("success path must have decode output");
 
             #[cfg(feature = "preload-debug")]
