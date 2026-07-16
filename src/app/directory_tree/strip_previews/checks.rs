@@ -496,14 +496,23 @@ impl ImageViewerApp {
     /// AVIF/HEIF/JXL are handled by embedded-SDR / ISO gain-map sharing instead. HDR/EXR are
     /// excluded because their strip reusable buffer is only a tone-mapped SDR fallback.
     pub(crate) fn strip_path_provides_reusable_static_full_decode(
-        &self,
+        &mut self,
         path: &std::path::Path,
     ) -> bool {
-        crate::loader::strip_path_provides_reusable_static_full_decode(path)
+        if let Some(&cached) = self
+            .directory_tree_strip_reusable_full_decode_cache
+            .get(path)
+        {
+            return cached;
+        }
+        let result = crate::loader::strip_path_provides_reusable_static_full_decode(path);
+        self.directory_tree_strip_reusable_full_decode_cache
+            .insert(path.to_path_buf(), result);
+        result
     }
 
     pub(crate) fn strip_cold_static_full_decode_can_share_with_main(
-        &self,
+        &mut self,
         index: usize,
         path: &std::path::Path,
     ) -> bool {

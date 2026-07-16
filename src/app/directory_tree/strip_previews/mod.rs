@@ -840,6 +840,7 @@ impl ImageViewerApp {
         self.directory_tree_strip_inflight_cancel.clear();
         self.directory_tree_strip_static_full_decode_inflight
             .clear();
+        self.directory_tree_strip_reusable_full_decode_cache.clear();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
         self.directory_tree_strip_cold_awaiting_main_loader.clear();
@@ -882,6 +883,7 @@ impl ImageViewerApp {
         self.directory_tree_strip_cache.clear_gpu_textures();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
+        self.directory_tree_strip_reusable_full_decode_cache.clear();
         self.directory_tree_strip_cold_awaiting_main_loader.clear();
         domains::clear_preview_snapshot(&self.directory_tree.preview_snapshot);
         view::assemble_directory_tree_view(
