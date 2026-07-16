@@ -16,8 +16,9 @@
 
 //! SIMD/NEON HDR -> SDR tone-map for directory-tree strip previews (<=128px).
 //!
-//! Bit-identical to [`super::tone_map::hdr_to_sdr_rgba8_with_tone_settings`] on supported fast paths;
-//! rare color/transfer combinations fall back to the scalar loop.
+//! Matches [`super::tone_map::hdr_to_sdr_rgba8_with_tone_settings`] within ±1 LSB on the final u8
+//! (the vectorised minimax pow approximation may produce ~2 ULP relative error vs scalar, which
+//! can flip a byte at integer boundaries); rare color/transfer combinations fall back to the scalar loop.
 
 use super::constants::{INVERSE_DISPLAY_GAMMA, MAX_HDR_TONE_MAP_INPUT};
 use super::tone_map::{

@@ -579,9 +579,9 @@ unsafe fn ycbcr_studio_swing_row_444_u16_neon(
 
     unsafe {
         while *x + PIXELS_PER_NEON_STEP <= row.width {
-            let y = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.y.as_ptr().add(*x)))));
-            let cb = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.cb.as_ptr().add(*x)))));
-            let cr = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.cr.as_ptr().add(*x)))));
+            let y = vcvtq_f32_u32(vmovl_u16(vld1_u16(row.y.as_ptr().add(*x))));
+            let cb = vcvtq_f32_u32(vmovl_u16(vld1_u16(row.cb.as_ptr().add(*x))));
+            let cr = vcvtq_f32_u32(vmovl_u16(vld1_u16(row.cr.as_ptr().add(*x))));
 
             let yy = vmulq_f32(vsubq_f32(y, luma_floor), luma_inv);
             let pb = vmulq_f32(vsubq_f32(cb, chroma_mid), chroma_inv);
@@ -629,16 +629,14 @@ unsafe fn ycbcr_studio_swing_row_420_u16_neon(
     let chroma_len = row.width.div_ceil(2);
     unsafe {
         while *x < row.width {
-            if *x + PIXELS_PER_NEON_STEP <= row.width && ycbcr420_chroma_load4_fits(*x, chroma_len)
+            if *x + PIXELS_PER_NEON_STEP <= row.width && ycbcr420_chroma_load2_fits(*x, chroma_len)
             {
                 let xc = *x / 2;
-                let y = vcvtq_f32_u32(vmovl_u16(vget_low_u16(vld1q_u16(row.y.as_ptr().add(*x)))));
-                let cb = vcvtq_f32_u32(vmovl_u16(load_u16x4_420_chroma_neon(
-                    row.cb.as_ptr().add(xc),
-                )));
-                let cr = vcvtq_f32_u32(vmovl_u16(load_u16x4_420_chroma_neon(
-                    row.cr.as_ptr().add(xc),
-                )));
+                let y = vcvtq_f32_u32(vmovl_u16(vld1_u16(row.y.as_ptr().add(*x))));
+                let cb =
+                    vcvtq_f32_u32(vmovl_u16(upsample_420_chroma_neon(row.cb.as_ptr().add(xc))));
+                let cr =
+                    vcvtq_f32_u32(vmovl_u16(upsample_420_chroma_neon(row.cr.as_ptr().add(xc))));
 
                 let yy = vmulq_f32(vsubq_f32(y, luma_floor), luma_inv);
                 let pb = vmulq_f32(vsubq_f32(cb, chroma_mid), chroma_inv);
@@ -829,17 +827,24 @@ fn store_rgba_f32x4(dst: &mut [f32], x: usize, r: [f32; 4], g: [f32; 4], b: [f32
     }
 }
 
-/// 4:2:0 AVX2/NEON loads four chroma samples from `cb_row[xc..]` for an 8-luma step.
+/// 4:2:0 AVX2 loads four chroma samples from `cb_row[xc..]` for an 8-luma step.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[inline]
 fn ycbcr420_chroma_load4_fits(x: usize, chroma_len: usize) -> bool {
     x / 2 + 4 <= chroma_len
 }
 
-/// 4:2:0 chroma upsample: `[c0, c0, c1, c1]` as `uint16x4_t`.
+/// 4:2:0 NEON chroma loads (`upsample_420_chroma_neon`) read 2 u16 from `cb_row[xc..]`.
 #[cfg(target_arch = "aarch64")]
 #[inline]
-unsafe fn load_u16x4_420_chroma_neon(ptr: *const u16) -> uint16x4_t {
+fn ycbcr420_chroma_load2_fits(x: usize, chroma_len: usize) -> bool {
+    x / 2 + 2 <= chroma_len
+}
+
+/// 4:2:0 chroma horizontal upsample: read 2 u16 from `ptr`, return `[c0, c0, c1, c1]`.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn upsample_420_chroma_neon(ptr: *const u16) -> uint16x4_t {
     unsafe {
         let c0 = *ptr;
         let c1 = *ptr.add(1);
@@ -1213,12 +1218,12 @@ unsafe fn ycbcr_full_range_row_420_u16_neon(
         let zero = vdupq_n_f32(0.0);
         let one = vdupq_n_f32(1.0);
 
-        while *x + PIXELS_PER_NEON_STEP <= row.width && ycbcr420_chroma_load4_fits(*x, row.cb.len())
+        while *x + PIXELS_PER_NEON_STEP <= row.width && ycbcr420_chroma_load2_fits(*x, row.cb.len())
         {
             let xc = *x / 2;
             let y = vld1_u16(row.y.as_ptr().add(*x));
-            let cb = load_u16x4_420_chroma_neon(row.cb.as_ptr().add(xc));
-            let cr = load_u16x4_420_chroma_neon(row.cr.as_ptr().add(xc));
+            let cb = upsample_420_chroma_neon(row.cb.as_ptr().add(xc));
+            let cr = upsample_420_chroma_neon(row.cr.as_ptr().add(xc));
 
             let yy = vmulq_f32(vcvtq_f32_u32(vmovl_u16(y)), inv_y);
             let pb = vsubq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(cb)), inv_cb), center);
