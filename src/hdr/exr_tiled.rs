@@ -224,13 +224,33 @@ impl ExrTiledImageSource {
 
             let mut tiles = Vec::with_capacity(keys.len());
             for (tile_x, tile_y, tile_width, tile_height) in keys {
-                let mut rgba = Vec::with_capacity(tile_width as usize * tile_height as usize * 4);
-                let start_x = tile_x as usize * 4;
-                let row_len = tile_width as usize * 4;
-                let source_stride = band.width as usize * 4;
+                let cap = (tile_width as usize)
+                    .checked_mul(tile_height as usize)
+                    .and_then(|p| p.checked_mul(4))
+                    .ok_or_else(|| {
+                        format!(
+                            "EXR tile {}x{} capacity overflow at ({tile_x},{tile_y})",
+                            tile_width, tile_height
+                        )
+                    })?;
+                let mut rgba = Vec::with_capacity(cap);
+                let start_x = (tile_x as usize)
+                    .checked_mul(4)
+                    .ok_or_else(|| format!("EXR tile start_x overflow at ({tile_x},{tile_y})"))?;
+                let row_len = (tile_width as usize).checked_mul(4).ok_or_else(|| {
+                    format!("EXR tile row_len overflow at ({tile_x},{tile_y}) w={tile_width}")
+                })?;
+                let source_stride = (band.width as usize).checked_mul(4).ok_or_else(|| {
+                    format!("EXR tile source_stride overflow for width={}", band.width)
+                })?;
                 for row in 0..tile_height as usize {
-                    let start = row * source_stride + start_x;
-                    let end = start + row_len;
+                    let start = row
+                        .checked_mul(source_stride)
+                        .and_then(|p| p.checked_add(start_x))
+                        .ok_or_else(|| format!("EXR tile start index overflow at row {row}"))?;
+                    let end = start
+                        .checked_add(row_len)
+                        .ok_or_else(|| format!("EXR tile end index overflow at row {row}"))?;
                     rgba.extend_from_slice(&band.rgba[start..end]);
                 }
                 tiles.push((

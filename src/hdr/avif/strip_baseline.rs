@@ -111,14 +111,19 @@ pub(crate) fn decode_avif_strip_iso_gain_map_baseline_from_image(
             }
         };
 
-    let baseline = avif_build_iso_sdr_baseline_rgba8(
+    let baseline = match avif_build_iso_sdr_baseline_rgba8(
         &rgba_u16,
         rgb_out_depth,
         width,
         height,
         &metadata,
         color_space,
-    );
+    ) {
+        Ok(v) => v,
+        Err(err) => {
+            return Some(Err(format!("{path:?}: AVIF ISO SDR baseline: {err}")));
+        }
+    };
     Some(Ok((baseline, width, height)))
 }
 

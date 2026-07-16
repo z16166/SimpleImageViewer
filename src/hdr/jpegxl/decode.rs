@@ -1014,7 +1014,15 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 if captured_frames.is_empty() && rgba_f32.is_empty() {
                     return Err("libjxl decode completed without an image".to_string());
                 }
-                let expected_len = info.xsize as usize * info.ysize as usize * 4;
+                let expected_len = (info.xsize as usize)
+                    .checked_mul(info.ysize as usize)
+                    .and_then(|p| p.checked_mul(4))
+                    .ok_or_else(|| {
+                        format!(
+                            "JPEG XL output buffer length overflow for {}x{}",
+                            info.xsize, info.ysize
+                        )
+                    })?;
                 if captured_frames.len() > 1 {
                     for (buf, _) in &captured_frames {
                         if buf.len() != expected_len {
@@ -1128,9 +1136,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                     "read JPEG XL basic info",
                 )?;
                 let info = unsafe { info.assume_init() };
-                if info.xsize == 0 || info.ysize == 0 {
-                    return Err("libjxl decoded zero-sized image".to_string());
-                }
+                crate::constants::validate_static_decode_dimensions(info.xsize, info.ysize)?;
                 metadata.luminance.mastering_max_nits =
                     (info.intensity_target > 0.0).then_some(info.intensity_target);
                 metadata.luminance.mastering_min_nits =
@@ -1207,6 +1213,27 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 if !size.is_multiple_of(std::mem::size_of::<f32>()) {
                     return Err("libjxl preview buffer size is not float-aligned".to_string());
                 }
+                // Validate preview buffer size before allocation (DoS guard).
+                let info = basic_info.ok_or("JXL_NEED_PREVIEW_OUT_BUFFER before basic info")?;
+                crate::constants::validate_static_decode_dimensions(
+                    info.preview.xsize,
+                    info.preview.ysize,
+                )?;
+                let expected = (info.preview.xsize as usize)
+                    .checked_mul(info.preview.ysize as usize)
+                    .and_then(|p| p.checked_mul(4))
+                    .and_then(|p| p.checked_mul(std::mem::size_of::<f32>()))
+                    .ok_or_else(|| {
+                        format!(
+                            "JPEG XL preview buffer size overflow for {}x{}",
+                            info.preview.xsize, info.preview.ysize
+                        )
+                    })?;
+                if size < expected {
+                    return Err(format!(
+                        "JPEG XL preview buffer size {size} is smaller than expected {expected}"
+                    ));
+                }
                 preview_scratch.resize(size, 0);
                 ensure_jxl_success(
                     unsafe {
@@ -1250,6 +1277,24 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 if !size.is_multiple_of(std::mem::size_of::<f32>()) {
                     return Err("libjxl returned a misaligned float output size".to_string());
                 }
+                // Validate buffer size against basic info before allocation (DoS guard).
+                let info = basic_info.ok_or("JXL_NEED_IMAGE_OUT_BUFFER before basic info")?;
+                let expected = (info.xsize as usize)
+                    .checked_mul(info.ysize as usize)
+                    .and_then(|p| p.checked_mul(4))
+                    .and_then(|p| p.checked_mul(std::mem::size_of::<f32>()))
+                    .ok_or_else(|| {
+                        format!(
+                            "JPEG XL output buffer size overflow for {}x{}",
+                            info.xsize, info.ysize
+                        )
+                    })?;
+                if size < expected {
+                    return Err(format!(
+                        "JPEG XL output buffer size {size} is smaller than expected {expected} for {}x{}",
+                        info.xsize, info.ysize
+                    ));
+                }
                 rgba_f32 = vec![0.0; size / std::mem::size_of::<f32>()];
                 ensure_jxl_success(
                     unsafe {
@@ -1275,22 +1320,39 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                     if st == libjxl_sys::JXL_DEC_SUCCESS
                         && k_size.is_multiple_of(std::mem::size_of::<f32>())
                     {
-                        k_f32 = vec![0.0; k_size / std::mem::size_of::<f32>()];
-                        let set_st = unsafe {
-                            libjxl_sys::JxlDecoderSetExtraChannelBuffer(
-                                decoder.0,
-                                &extra_channel_format,
-                                k_f32.as_mut_ptr().cast(),
-                                k_size,
-                                idx,
-                            )
-                        };
-                        if set_st != libjxl_sys::JXL_DEC_SUCCESS {
+                        // Validate K plane buffer size before allocation.
+                        let expected_k = (info.xsize as usize)
+                            .checked_mul(info.ysize as usize)
+                            .and_then(|p| p.checked_mul(std::mem::size_of::<f32>()))
+                            .ok_or_else(|| {
+                                format!(
+                                    "JPEG XL K channel buffer size overflow for {}x{}",
+                                    info.xsize, info.ysize
+                                )
+                            })?;
+                        if k_size < expected_k {
                             log::warn!(
-                                "JxlDecoderSetExtraChannelBuffer for K returned {set_st}; CMYK K plane will be ignored"
+                                "JxlDecoderExtraChannelBufferSize for K returned k_size={k_size}, expected >= {expected_k}; CMYK K plane will be ignored"
                             );
-                            k_f32.clear();
                             k_extra_channel_index = None;
+                        } else {
+                            k_f32 = vec![0.0; k_size / std::mem::size_of::<f32>()];
+                            let set_st = unsafe {
+                                libjxl_sys::JxlDecoderSetExtraChannelBuffer(
+                                    decoder.0,
+                                    &extra_channel_format,
+                                    k_f32.as_mut_ptr().cast(),
+                                    k_size,
+                                    idx,
+                                )
+                            };
+                            if set_st != libjxl_sys::JXL_DEC_SUCCESS {
+                                log::warn!(
+                                    "JxlDecoderSetExtraChannelBuffer for K returned {set_st}; CMYK K plane will be ignored"
+                                );
+                                k_f32.clear();
+                                k_extra_channel_index = None;
+                            }
                         }
                     } else {
                         log::warn!(
@@ -1330,10 +1392,16 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                         },
                         "read JPEG XL jhgm box size",
                     )?;
-                    if box_size > usize::MAX as u64 {
-                        return Err("JPEG XL jhgm box too large".to_string());
+                    if box_size > crate::constants::JXL_MAX_GAIN_MAP_BOX_SIZE {
+                        return Err(format!(
+                            "JPEG XL jhgm box size {box_size} exceeds maximum ({} MB)",
+                            crate::constants::JXL_MAX_GAIN_MAP_BOX_SIZE / (1024 * 1024)
+                        ));
                     }
-                    current_box_buffer = vec![0_u8; box_size as usize];
+                    let box_bytes = usize::try_from(box_size).map_err(|_| {
+                        format!("JPEG XL jhgm box size {box_size} exceeds platform usize",)
+                    })?;
+                    current_box_buffer = vec![0_u8; box_bytes];
                     current_box_pos = 0;
                     ensure_jxl_success(
                         unsafe {
@@ -1376,7 +1444,15 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
             }
             libjxl_sys::JXL_DEC_FULL_IMAGE => {
                 let info = basic_info.ok_or("libjxl produced pixels before basic info")?;
-                let expected_len = info.xsize as usize * info.ysize as usize * 4;
+                let expected_len = (info.xsize as usize)
+                    .checked_mul(info.ysize as usize)
+                    .and_then(|p| p.checked_mul(4))
+                    .ok_or_else(|| {
+                        format!(
+                            "JPEG XL full image expected size overflow for {}x{}",
+                            info.xsize, info.ysize
+                        )
+                    })?;
                 if rgba_f32.len() != expected_len {
                     return Err(format!(
                         "libjxl output buffer length mismatch: got {}, expected {}",

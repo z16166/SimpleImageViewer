@@ -245,7 +245,7 @@ fn load_via_wic_inner(
                 let mut w = 0;
                 let mut h = 0;
                 if f.GetSize(&mut w, &mut h).is_ok() {
-                    let p = w as u64 * h as u64;
+                    let p = u64::from(w).checked_mul(u64::from(h)).unwrap_or(0);
                     if p > max_p {
                         max_p = p;
                         width = w;
@@ -259,6 +259,17 @@ fn load_via_wic_inner(
         let frame = decoder
             .GetFrame(best_frame_idx)
             .map_err(|e| format!("failed to get frame: {:?}", e))?;
+
+        if width == 0 || height == 0 {
+            return Err(format!("WIC image has zero dimensions ({width}x{height})"));
+        }
+        // Hard ceiling for WIC frame dimensions. Larger claims are treated as corrupt.
+        let max_side = crate::constants::WIC_ABSOLUTE_MAX_SIDE;
+        if width > max_side || height > max_side {
+            return Err(format!(
+                "WIC image dimensions {width}x{height} exceed maximum side {max_side}"
+            ));
+        }
 
         let orientation = orientation_override.unwrap_or_else(|| {
             mmap_out
@@ -282,6 +293,8 @@ fn load_via_wic_inner(
         let swap_wh = matches!(orientation, 5..=8);
         let logical_width = if swap_wh { height } else { width };
         let logical_height = if swap_wh { width } else { height };
+        // Validate total pixel count before any allocation or tiled source creation.
+        crate::constants::validate_static_decode_dimensions(logical_width, logical_height)?;
 
         let base_source: IWICBitmapSource =
             frame.cast().map_err(|e| format!("cast failed: {:?}", e))?;

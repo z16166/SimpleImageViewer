@@ -157,7 +157,8 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
     crate::hdr::decode::validate_hdr_fallback_budget(width, height)?;
     let data_offset = reader.position() as usize;
     let scanline_offsets = build_radiance_scanline_offsets(mmap, data_offset, &raster)?;
-    let n = width as usize * height as usize * 4;
+    let n = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+        .ok_or_else(|| format!("Radiance HDR buffer size overflow for {width}x{height}"))?;
     let mut rgba_f32 = vec![0.0f32; n];
     validate_scanline_offsets(raster.outer_len, &scanline_offsets)?;
 
@@ -172,8 +173,15 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
             }
             file_reader.set_position(scanline_offsets[ly as usize] as u64);
             read_scanline(&mut file_reader, &mut scanline)?;
-            let row_off = ly as usize * width as usize * 4;
-            let row_pixels = width as usize * 4;
+            let row_off = (ly as usize)
+                .checked_mul(width as usize)
+                .and_then(|p| p.checked_mul(4))
+                .ok_or_else(|| {
+                    format!("Radiance HDR row offset overflow: ly={ly} width={width}")
+                })?;
+            let row_pixels = (width as usize)
+                .checked_mul(4)
+                .ok_or_else(|| format!("Radiance HDR row pixel count overflow: width={width}"))?;
             rgbe_pixels_to_rgba32f(
                 &scanline[..width as usize],
                 &mut rgba_f32[row_off..row_off + row_pixels],
@@ -191,10 +199,16 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
                 file_reader.set_position(scanline_offsets[outer_i as usize] as u64);
                 read_scanline(&mut file_reader, &mut scanline)?;
                 let mut x = plan.x_start;
-                let row_off = y as usize * w * 4;
+                let row_off = (y as usize)
+                    .checked_mul(w)
+                    .and_then(|p| p.checked_mul(4))
+                    .ok_or_else(|| format!("Radiance HDR row offset overflow: y={y} width={w}"))?;
                 for pixel in scanline.iter().take(plan.inner_len as usize) {
                     let rgb = pixel.to_rgb_f32();
-                    let o = row_off + (x as usize) * 4;
+                    let x4 = (x as usize)
+                        .checked_mul(4)
+                        .ok_or_else(|| format!("Radiance HDR pixel offset overflow: x={x}"))?;
+                    let o = row_off + x4;
                     rgba_f32[o..o + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
                     x += plan.x_step;
                 }
@@ -212,7 +226,12 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
                 let mut y = plan.y_start;
                 for pixel in scanline.iter().take(plan.inner_len as usize) {
                     let rgb = pixel.to_rgb_f32();
-                    let o = ((y as usize) * w + xu) * 4;
+                    let yw = (y as usize)
+                        .checked_mul(w)
+                        .ok_or_else(|| format!("Radiance HDR row*pixels overflow: y={y} w={w}"))?;
+                    let o = (yw + xu)
+                        .checked_mul(4)
+                        .ok_or_else(|| format!("Radiance HDR pixel offset *4 overflow"))?;
                     rgba_f32[o..o + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
                     y += plan.y_step;
                 }

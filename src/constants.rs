@@ -26,6 +26,60 @@ pub const HQ_PREVIEW_MONITOR_HEADROOM: f32 = 1.1;
 /// We cap it at 8192 to be safe across different frameworks and platforms.
 pub const ABSOLUTE_MAX_TEXTURE_SIDE: u32 = 8192;
 
+/// Hard ceiling for a single WIC frame side. Larger claims are treated as corrupt headers.
+/// Allows tiled wide/tall images beyond GPU texture side, but bounds DoS from absurd sizes.
+pub const WIC_ABSOLUTE_MAX_SIDE: u32 = ABSOLUTE_MAX_TEXTURE_SIDE * 8;
+
+/// Maximum pixel count for static full-image decode into a contiguous RGBA buffer.
+/// Malformed headers that claim larger sizes are rejected before allocation (DoS protection).
+/// 256 megapixels * 4 bytes/pixel ~= 1 GiB RGBA upper bound.
+pub const MAX_STATIC_FULL_DECODE_PIXELS: u64 = 256 * 1024 * 1024;
+
+/// Reject zero / overflowing / oversized static decode dimensions before allocating pixels.
+///
+/// # Error convention
+///
+/// Returns English `format!`-based error strings (no `rust_i18n::t!`). These are
+/// **technical/developer-oriented** messages that flow through `Result<_, String>`
+/// to the loading orchestrator (which may translate them into user-visible OSD text).
+/// User-facing strings (settings labels, status bar, crash dialogs) use `rust_i18n::t!`
+/// and are translated; decode-layer technical errors are intentionally kept in English
+/// to avoid obscuring diagnostic information during debugging.
+///
+/// Returns `Ok(total_pixel_count)` on success — the caller can use the returned pixel count
+/// to pre-allocate buffers without re-computing `width * height`.
+#[inline]
+pub fn validate_static_decode_dimensions(width: u32, height: u32) -> Result<u64, String> {
+    if width == 0 || height == 0 {
+        return Err(format!("image dimensions {width}x{height} are zero"));
+    }
+    let Some(pixels) = (width as u64).checked_mul(height as u64) else {
+        return Err(format!("image dimensions {width}x{height} overflow"));
+    };
+    if pixels > MAX_STATIC_FULL_DECODE_PIXELS {
+        return Err(format!(
+            "image dimensions {width}x{height} ({pixels} pixels) exceed maximum {MAX_STATIC_FULL_DECODE_PIXELS} pixels"
+        ));
+    }
+    Ok(pixels)
+}
+
+/// RGBA8 buffer length for `width` x `height`; rejects dimension overflow.
+#[inline]
+pub fn checked_rgba8_len_u32(width: u32, height: u32) -> Option<usize> {
+    (width as u64)
+        .checked_mul(height as u64)?
+        .checked_mul(RGBA_CHANNELS as u64)?
+        .try_into()
+        .ok()
+}
+
+/// RGBA8 row stride (`width * 4`); rejects overflow.
+#[inline]
+pub fn checked_rgba8_stride_u32(width: u32) -> Option<u32> {
+    width.checked_mul(RGBA_CHANNELS as u32)
+}
+
 /// Standard number of color channels for RGB images.
 pub const RGB_CHANNELS: usize = 3;
 /// Standard number of color channels for RGBA images.
@@ -47,6 +101,12 @@ pub fn checked_rgba_row_len(width: usize) -> Option<usize> {
 #[inline]
 pub fn checked_rgba_buffer_len(width: usize, height: usize) -> Option<usize> {
     checked_rgba_row_len(width).and_then(|row_len| row_len.checked_mul(height))
+}
+
+/// Computes `width * height` without overflow.
+#[inline]
+pub fn checked_pixel_area(width: usize, height: usize) -> Option<usize> {
+    width.checked_mul(height)
 }
 
 /// Standard bit depth for 8-bit image formats.
@@ -257,6 +317,9 @@ pub const MAX_ICC_TAG_COUNT: usize = 4096;
 /// Iteration cap for JXL decoder event loops on probes to ensure early termination on bad inputs.
 pub const JXL_PROBE_ITERATION_CAP: usize = 4096;
 
+/// JPEG XL jhgm (gain map) box size limit for DoS protection.
+pub const JXL_MAX_GAIN_MAP_BOX_SIZE: u64 = 32 * 1024 * 1024;
+
 /// Minimum on-disk size that can hold a still-image container header (ISO BMFF `ftyp` is 12 bytes).
 pub const MIN_IMAGE_FILE_BYTES: u64 = 12;
 
@@ -285,3 +348,25 @@ pub const PIXEL_TOOLTIP_PADDING_Y: f32 = 4.0;
 pub const ZOOM_FACTOR_MAX: f32 = 20.0;
 /// Minimum zoom factor multiplier.
 pub const ZOOM_FACTOR_MIN: f32 = 0.05;
+
+#[cfg(test)]
+mod decode_dim_tests {
+    use super::{
+        MAX_STATIC_FULL_DECODE_PIXELS, checked_rgba8_len_u32, validate_static_decode_dimensions,
+    };
+
+    #[test]
+    fn validate_static_decode_dimensions_rejects_zero_and_oversize() {
+        assert!(validate_static_decode_dimensions(0, 10).is_err());
+        assert!(validate_static_decode_dimensions(10, 0).is_err());
+        assert_eq!(validate_static_decode_dimensions(8, 8).unwrap(), 64);
+        let side = ((MAX_STATIC_FULL_DECODE_PIXELS as f64).sqrt() as u32) + 1;
+        assert!(validate_static_decode_dimensions(side, side).is_err());
+    }
+
+    #[test]
+    fn checked_rgba8_len_u32_matches_area_times_four() {
+        assert_eq!(checked_rgba8_len_u32(3, 2), Some(24));
+        assert_eq!(checked_rgba8_len_u32(u32::MAX, u32::MAX), None);
+    }
+}

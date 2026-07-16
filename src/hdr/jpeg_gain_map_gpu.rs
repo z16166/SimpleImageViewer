@@ -454,7 +454,9 @@ pub(crate) fn compose_iso_deferred_cpu_pixels_scalar(
         deferred.gain_rgba.as_slice(),
     )?;
 
-    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    let rgba_len = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+        .ok_or_else(|| format!("JPEG gain map GPU buffer size overflow for {width}x{height}"))?;
+    let mut rgba_f32 = Vec::with_capacity(rgba_len);
     for y in 0..height {
         for x in 0..width {
             let sdr_index = (y as usize * width as usize + x as usize) * 4;
@@ -498,25 +500,23 @@ pub(crate) fn compose_iso_deferred_tile_cpu_pixels(
         deferred.gain_height,
         deferred.gain_rgba.as_slice(),
     )?;
-    Ok(
-        crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu(
-            crate::hdr::ultra_hdr_compose::UltraHdrTileRegionCompose {
-                tile_width,
-                tile_height,
-                origin_x: tile_ctx.origin_x,
-                origin_y: tile_ctx.origin_y,
-                physical_width: tile_ctx.physical_width,
-                physical_height: tile_ctx.physical_height,
-                orientation: tile_ctx.orientation,
-                sdr_rgba: deferred.sdr_rgba.as_slice(),
-                gain_rgba: deferred.gain_rgba.as_slice(),
-                gain_width: deferred.gain_width,
-                gain_height: deferred.gain_height,
-                metadata: deferred.metadata,
-                target_hdr_capacity,
-                display_to_physical: crate::hdr::ultra_hdr::display_to_physical_pixel,
-            },
-        ),
+    crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu(
+        crate::hdr::ultra_hdr_compose::UltraHdrTileRegionCompose {
+            tile_width,
+            tile_height,
+            origin_x: tile_ctx.origin_x,
+            origin_y: tile_ctx.origin_y,
+            physical_width: tile_ctx.physical_width,
+            physical_height: tile_ctx.physical_height,
+            orientation: tile_ctx.orientation,
+            sdr_rgba: deferred.sdr_rgba.as_slice(),
+            gain_rgba: deferred.gain_rgba.as_slice(),
+            gain_width: deferred.gain_width,
+            gain_height: deferred.gain_height,
+            metadata: deferred.metadata,
+            target_hdr_capacity,
+            display_to_physical: crate::hdr::ultra_hdr::display_to_physical_pixel,
+        },
     )
 }
 

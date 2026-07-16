@@ -204,6 +204,9 @@ pub(crate) fn load_jpeg_from_mapped(
 
     // Stage boundary before baseline turbo JPEG decode.
     crate::loader::check_decode_cancel_str(cancel)?;
+    // Validate dimensions before allocating the full RGBA buffer (DoS guard).
+    let (jpeg_w, jpeg_h) = libjpeg_turbo::decode_jpeg_dimensions(mmap)?;
+    crate::constants::validate_static_decode_dimensions(jpeg_w, jpeg_h)?;
     let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(mmap)?;
     crate::loader::check_decode_cancel_str(cancel)?;
 
@@ -214,6 +217,9 @@ pub(crate) fn load_jpeg_from_mapped(
         h = out_h;
         pixels = out_pixels;
     }
+
+    // Re-validate post-orientation final dimensions (orientation may swap w/h).
+    crate::constants::validate_static_decode_dimensions(w, h)?;
 
     Ok(make_image_data(DecodedImage::new(w, h, pixels)))
 }

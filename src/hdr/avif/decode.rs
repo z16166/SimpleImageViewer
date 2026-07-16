@@ -18,6 +18,7 @@
 
 use std::ffi::CStr;
 
+use crate::constants::{RGBA_CHANNELS, checked_pixel_area, checked_rgba_buffer_len};
 use crate::hdr::types::{GAIN_MAP_SOURCE_AVIF, HdrImageBuffer};
 
 pub(crate) fn avif_ftyp_major_brand(bytes: &[u8]) -> Option<[u8; 4]> {
@@ -260,6 +261,31 @@ fn avif_rgba_channel_bytes(depth_out: u32) -> usize {
     if depth_out > 8 { 2 } else { 1 }
 }
 
+/// File-derived AVIF dimensions as a pixel count (overflow-safe, capped at MAX_STATIC_FULL_DECODE_PIXELS).
+#[cfg(feature = "avif-native")]
+fn avif_checked_pixel_count(width: u32, height: u32) -> Result<usize, String> {
+    crate::constants::validate_static_decode_dimensions(width, height)?;
+    checked_pixel_area(width as usize, height as usize)
+        .ok_or_else(|| format!("AVIF dimensions overflow: {width}x{height}"))
+}
+
+/// File-derived AVIF dimensions as RGBA lane count (`pixel_count * 4`, overflow-safe, capped).
+#[cfg(feature = "avif-native")]
+fn avif_checked_rgba_lane_count(width: u32, height: u32) -> Result<usize, String> {
+    crate::constants::validate_static_decode_dimensions(width, height)?;
+    checked_rgba_buffer_len(width as usize, height as usize)
+        .ok_or_else(|| format!("AVIF RGBA buffer size overflow: {width}x{height}"))
+}
+
+/// Packed RGBA byte length for libavif output (`pixel_count * 4 * channel_bytes`).
+#[cfg(feature = "avif-native")]
+fn avif_checked_rgba_byte_len(pixel_count: usize, channel_bytes: usize) -> Result<usize, String> {
+    pixel_count
+        .checked_mul(RGBA_CHANNELS)
+        .and_then(|n| n.checked_mul(channel_bytes))
+        .ok_or_else(|| "AVIF RGBA byte length overflow".to_string())
+}
+
 /// Expand libavif packed RGBA bytes into `u16` lanes (one lane per channel sample).
 ///
 /// - **8-bit**: 1 byte per channel; lane holds 0..255.
@@ -271,16 +297,17 @@ pub(crate) fn avif_unpack_rgba_bytes_to_u16_lanes(
     pixel_count: usize,
 ) -> Result<Vec<u16>, String> {
     let channel_bytes = avif_rgba_channel_bytes(depth_out);
-    let expected = pixel_count
-        .checked_mul(4 * channel_bytes)
-        .ok_or_else(|| "AVIF RGBA byte length overflow".to_string())?;
+    let expected = avif_checked_rgba_byte_len(pixel_count, channel_bytes)?;
     if rgba_bytes.len() != expected {
         return Err(format!(
             "AVIF RGBA byte length mismatch: got {} expected {expected} for depth {depth_out}",
             rgba_bytes.len()
         ));
     }
-    let mut rgba_u16 = vec![0_u16; pixel_count * 4];
+    let lane_count = pixel_count
+        .checked_mul(RGBA_CHANNELS)
+        .ok_or_else(|| "AVIF RGBA lane count overflow".to_string())?;
+    let mut rgba_u16 = vec![0_u16; lane_count];
     if depth_out == 8 {
         simple_image_viewer::simd_pixel_convert::unpack_u8_to_u16_lanes(&mut rgba_u16, rgba_bytes);
     } else {
@@ -311,9 +338,7 @@ pub(crate) fn avif_quantize_rgba_bytes_to_u8(
     pixel_count: usize,
 ) -> Result<Vec<u8>, String> {
     let channel_bytes = avif_rgba_channel_bytes(depth);
-    let expected = pixel_count
-        .checked_mul(4 * channel_bytes)
-        .ok_or_else(|| "AVIF RGBA byte length overflow".to_string())?;
+    let expected = avif_checked_rgba_byte_len(pixel_count, channel_bytes)?;
     if rgba_bytes.len() != expected {
         return Err(format!(
             "AVIF RGBA byte length mismatch: got {} expected {expected} for depth {depth}",
@@ -324,7 +349,10 @@ pub(crate) fn avif_quantize_rgba_bytes_to_u8(
         return Ok(rgba_bytes);
     }
     let inv_denom = u8::MAX as f32 / rgb_channel_max_f(depth);
-    let mut out = vec![0_u8; pixel_count * 4];
+    let out_len = pixel_count
+        .checked_mul(RGBA_CHANNELS)
+        .ok_or_else(|| "AVIF RGBA u8 buffer size overflow".to_string())?;
+    let mut out = vec![0_u8; out_len];
     for (dst, chunk) in out.iter_mut().zip(rgba_bytes.chunks_exact(2)) {
         let value = u16::from_le_bytes([chunk[0], chunk[1]]);
         *dst = (value as f32 * inv_denom).round().clamp(0.0, 255.0) as u8;
@@ -541,10 +569,17 @@ fn try_avif_yuv_to_rgb_rgba(
     rgba_bytes: &mut [u8],
     params: AvifYuvToRgbParams,
 ) -> Result<u32, libavif_sys::avifResult> {
-    let pixel_count = image_ref.width as usize * image_ref.height as usize;
+    let pixel_count = match avif_checked_pixel_count(image_ref.width, image_ref.height) {
+        Ok(n) => n,
+        Err(_) => return Err(libavif_sys::AVIF_RESULT_REFORMAT_FAILED),
+    };
     let expected_depth = params.force_depth.unwrap_or(image_ref.depth);
     let channel_bytes = avif_rgba_channel_bytes(expected_depth);
-    if rgba_bytes.len() != pixel_count * 4 * channel_bytes {
+    let expected_len = match avif_checked_rgba_byte_len(pixel_count, channel_bytes) {
+        Ok(n) => n,
+        Err(_) => return Err(libavif_sys::AVIF_RESULT_REFORMAT_FAILED),
+    };
+    if rgba_bytes.len() != expected_len {
         return Err(libavif_sys::AVIF_RESULT_REFORMAT_FAILED);
     }
 
@@ -590,7 +625,15 @@ fn decode_avif_image_rgba_bytes<F: Fn(libavif_sys::avifResult) -> String>(
         avif_apply_yuv_to_rgb_image_fixes(image, &snap);
     }
     let params = avif_yuv_to_rgb_params(&snap, image_ref);
-    let pixel_count = image_ref.width as usize * image_ref.height as usize;
+    let pixel_count = match avif_checked_pixel_count(image_ref.width, image_ref.height) {
+        Ok(n) => n,
+        Err(err) => {
+            unsafe {
+                avif_restore_reformat_snap(image, &snap);
+            }
+            return Err(err);
+        }
+    };
     let depth_out = avif_yuv_to_rgb_output_depth(&snap, &params);
     if depth_out != 8 && depth_out != 10 && depth_out != 12 && depth_out != 16 {
         unsafe {
@@ -599,7 +642,16 @@ fn decode_avif_image_rgba_bytes<F: Fn(libavif_sys::avifResult) -> String>(
         return Err(format!("unsupported AVIF RGB output depth {depth_out}"));
     }
     let channel_bytes = avif_rgba_channel_bytes(depth_out);
-    let mut rgba_bytes = vec![0_u8; pixel_count * 4 * channel_bytes];
+    let byte_len = match avif_checked_rgba_byte_len(pixel_count, channel_bytes) {
+        Ok(n) => n,
+        Err(err) => {
+            unsafe {
+                avif_restore_reformat_snap(image, &snap);
+            }
+            return Err(err);
+        }
+    };
+    let mut rgba_bytes = vec![0_u8; byte_len];
 
     let result = try_avif_yuv_to_rgb_rgba(image_const, image_ref, &mut rgba_bytes, params);
     unsafe {
@@ -620,7 +672,8 @@ pub(crate) fn decode_avif_image_rgba_u16<F: Fn(libavif_sys::avifResult) -> Strin
     image_ref: &libavif_sys::avifImage,
     result_to_string: &F,
 ) -> Result<(Vec<u16>, u32), String> {
-    let pixel_count = image_ref.width as usize * image_ref.height as usize;
+    let lane_count = avif_checked_rgba_lane_count(image_ref.width, image_ref.height)?;
+    let pixel_count = lane_count / RGBA_CHANNELS;
     let snap = avif_reformat_snapshot(image_ref);
     let image_const: *const libavif_sys::avifImage = image;
 
@@ -635,7 +688,7 @@ pub(crate) fn decode_avif_image_rgba_u16<F: Fn(libavif_sys::avifResult) -> Strin
         }
         return Err(format!("unsupported AVIF RGB output depth {depth_out}"));
     }
-    let mut rgba_u16 = vec![0_u16; pixel_count * 4];
+    let mut rgba_u16 = vec![0_u16; lane_count];
     let decode_params = if depth_out == 8 {
         AvifYuvToRgbParams {
             force_depth: Some(16),
@@ -679,7 +732,7 @@ pub(crate) fn decode_avif_image_rgba_u8<F: Fn(libavif_sys::avifResult) -> String
     image_ref: &libavif_sys::avifImage,
     result_to_string: &F,
 ) -> Result<Vec<u8>, String> {
-    let pixel_count = image_ref.width as usize * image_ref.height as usize;
+    let pixel_count = avif_checked_pixel_count(image_ref.width, image_ref.height)?;
     let (rgba_bytes, rgb_depth) = decode_avif_image_rgba_bytes(image, image_ref, result_to_string)?;
     avif_quantize_rgba_bytes_to_u8(rgba_bytes, rgb_depth, pixel_count)
 }

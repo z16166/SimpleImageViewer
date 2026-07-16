@@ -60,6 +60,28 @@ impl std::fmt::Debug for DecodedImage {
     }
 }
 
+#[inline]
+fn assert_decoded_rgba_len(width: u32, height: u32, len: usize) {
+    // Check that the pixel buffer length matches width*height*4.
+    // Debug builds assert to catch development mistakes; release builds
+    // log a warning and proceed — dimension validation is expected to have
+    // happened at the decoder boundary via validate_static_decode_dimensions,
+    // so a mismatch in release is treated as recoverable.
+    if let Some(expected) = crate::constants::checked_rgba8_len_u32(width, height) {
+        debug_assert!(
+            len == expected,
+            "DecodedImage RGBA length mismatch: {width}x{height} expects {expected} bytes, got {len}"
+        );
+        if len != expected {
+            log::warn!(
+                "DecodedImage RGBA length mismatch: {width}x{height} expects {expected} bytes, got {len}"
+            );
+        }
+    } else {
+        log::warn!("DecodedImage RGBA dimensions overflow: {width}x{height}; length check skipped");
+    }
+}
+
 impl DecodedImage {
     #[inline]
     pub fn rgba(&self) -> &[u8] {
@@ -67,6 +89,7 @@ impl DecodedImage {
     }
 
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        assert_decoded_rgba_len(width, height, pixels.len());
         Self {
             width,
             height,
@@ -75,8 +98,28 @@ impl DecodedImage {
         }
     }
 
+    /// Create a new [`DecodedImage`], returning an error when the pixel buffer
+    /// does not match `width * height * 4`.
+    pub fn try_new(width: u32, height: u32, pixels: Vec<u8>) -> Result<Self, String> {
+        let expected = crate::constants::checked_rgba8_len_u32(width, height)
+            .ok_or_else(|| format!("DecodedImage dimensions overflow: {width}x{height}"))?;
+        if pixels.len() != expected {
+            return Err(format!(
+                "DecodedImage RGBA length mismatch: {width}x{height} expects {expected} bytes, got {}",
+                pixels.len()
+            ));
+        }
+        Ok(Self {
+            width,
+            height,
+            pixels: Arc::new(pixels),
+            sdr_deferred_placeholder: false,
+        })
+    }
+
     #[cfg(test)]
     pub fn new_sdr_deferred_placeholder(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        assert_decoded_rgba_len(width, height, pixels.len());
         Self {
             width,
             height,
@@ -87,6 +130,7 @@ impl DecodedImage {
 
     /// Wrap an existing RGBA8 buffer without copying.
     pub fn from_arc(width: u32, height: u32, pixels: Arc<Vec<u8>>) -> Self {
+        assert_decoded_rgba_len(width, height, pixels.len());
         Self {
             width,
             height,
@@ -95,11 +139,30 @@ impl DecodedImage {
         }
     }
 
+    /// Wrap an existing RGBA8 buffer without copying, returning an error on length mismatch.
+    pub fn try_from_arc(width: u32, height: u32, pixels: Arc<Vec<u8>>) -> Result<Self, String> {
+        let expected = crate::constants::checked_rgba8_len_u32(width, height)
+            .ok_or_else(|| format!("DecodedImage dimensions overflow: {width}x{height}"))?;
+        if pixels.len() != expected {
+            return Err(format!(
+                "DecodedImage RGBA length mismatch: {width}x{height} expects {expected} bytes, got {}",
+                pixels.len()
+            ));
+        }
+        Ok(Self {
+            width,
+            height,
+            pixels,
+            sdr_deferred_placeholder: false,
+        })
+    }
+
     pub fn from_arc_sdr_deferred_placeholder(
         width: u32,
         height: u32,
         pixels: Arc<Vec<u8>>,
     ) -> Self {
+        assert_decoded_rgba_len(width, height, pixels.len());
         Self {
             width,
             height,
@@ -113,6 +176,7 @@ impl DecodedImage {
         height: u32,
         fallback: super::hdr_fallback::HdrSdrFallbackRgba8,
     ) -> Self {
+        assert_decoded_rgba_len(width, height, fallback.pixels.len());
         Self {
             width,
             height,
@@ -293,6 +357,7 @@ impl AnimationFrame {
     }
 
     pub fn new(width: u32, height: u32, pixels: Vec<u8>, delay: std::time::Duration) -> Self {
+        assert_decoded_rgba_len(width, height, pixels.len());
         Self {
             width,
             height,
@@ -301,12 +366,37 @@ impl AnimationFrame {
         }
     }
 
+    /// Create a new [`AnimationFrame`], returning an error when the pixel buffer
+    /// does not match `width * height * 4`.
+    pub fn try_new(
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+        delay: std::time::Duration,
+    ) -> Result<Self, String> {
+        let expected = crate::constants::checked_rgba8_len_u32(width, height)
+            .ok_or_else(|| format!("AnimationFrame dimensions overflow: {width}x{height}"))?;
+        if pixels.len() != expected {
+            return Err(format!(
+                "AnimationFrame RGBA length mismatch: {width}x{height} expects {expected} bytes, got {}",
+                pixels.len()
+            ));
+        }
+        Ok(Self {
+            width,
+            height,
+            pixels: Arc::new(pixels),
+            delay,
+        })
+    }
+
     pub fn from_arc(
         width: u32,
         height: u32,
         pixels: Arc<Vec<u8>>,
         delay: std::time::Duration,
     ) -> Self {
+        assert_decoded_rgba_len(width, height, pixels.len());
         Self {
             width,
             height,

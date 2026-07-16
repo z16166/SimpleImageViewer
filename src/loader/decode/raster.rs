@@ -55,6 +55,8 @@ pub(crate) fn load_static_from_mmap(
 
     let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
     let (width, height) = decoder.dimensions();
+    // Malformed headers can claim multi-gigapixel sizes; reject before allocation.
+    crate::constants::validate_static_decode_dimensions(width, height)?;
     // Decode straight into the final RGBA8 buffer when the codec already emits
     // Rgba8/Rgb8, avoiding DynamicImage + into_rgba8 intermediate allocations.
     crate::loader::check_decode_cancel_str(cancel)?;
@@ -117,14 +119,15 @@ pub(crate) fn image_frame_to_static_image_data(
     frame: image::Frame,
     path: &Path,
     mmap: Option<&[u8]>,
-) -> ImageData {
+) -> Result<ImageData, String> {
     let buffer = frame.into_buffer();
     let (width, height) = buffer.dimensions();
-    apply_exif_orientation_to_image_data(
+    crate::constants::validate_static_decode_dimensions(width, height)?;
+    Ok(apply_exif_orientation_to_image_data(
         path,
         make_image_data(DecodedImage::new(width, height, buffer.into_raw())),
         mmap,
-    )
+    ))
 }
 
 pub(crate) fn process_animation_frames(
@@ -138,7 +141,7 @@ pub(crate) fn process_animation_frames(
     // to a full static decode when the decoder produced no frames at all.
     if raw_frames.len() <= 1 {
         if let Some(frame) = raw_frames.into_iter().next() {
-            return Ok(image_frame_to_static_image_data(frame, path, mmap));
+            return Ok(image_frame_to_static_image_data(frame, path, mmap)?);
         }
         if let Some(bytes) = mmap {
             return load_static_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map, None);
@@ -161,14 +164,15 @@ pub(crate) fn process_animation_frames(
             };
             let buffer = frame.into_buffer();
             let (width, height) = buffer.dimensions();
-            AnimationFrame::new(
+            crate::constants::validate_static_decode_dimensions(width, height)?;
+            Ok::<_, String>(AnimationFrame::new(
                 width,
                 height,
                 buffer.into_raw(),
                 Duration::from_millis(delay_ms as u64),
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(apply_exif_orientation_to_image_data(
         path,
@@ -757,7 +761,10 @@ fn feed_rgba8_absolute_blank_flags(
 /// Same limits as [`super::assemble::make_image_data`], applied to PSB header dims so
 /// multi-GB documents skip full-canvas decode.
 fn psd_header_requires_disk_tiled(width: u32, height: u32) -> bool {
-    let pixel_count = u64::from(width) * u64::from(height);
+    let Some(pixel_count) = (width as u64).checked_mul(height as u64) else {
+        // Overflow implies absurdly large dimensions → always force tiling.
+        return true;
+    };
     let max_side = width.max(height);
     pixel_count >= crate::tile_cache::get_tiled_threshold()
         || max_side > crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE

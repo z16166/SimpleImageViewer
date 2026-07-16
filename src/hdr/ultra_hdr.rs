@@ -164,19 +164,17 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_cpu_compose(
 
     let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
-    Ok(compose_ultra_hdr_cpu(
-        crate::hdr::ultra_hdr_compose::UltraHdrComposeInput {
-            width,
-            height,
-            sdr_rgba: &sdr_rgba,
-            gain_rgba: &gain_rgba,
-            gain_width,
-            gain_height,
-            metadata,
-            image_metadata: hdr_metadata_for_ultra_hdr_gain_map(metadata),
-            target_hdr_capacity,
-        },
-    ))
+    compose_ultra_hdr_cpu(crate::hdr::ultra_hdr_compose::UltraHdrComposeInput {
+        width,
+        height,
+        sdr_rgba: &sdr_rgba,
+        gain_rgba: &gain_rgba,
+        gain_width,
+        gain_height,
+        metadata,
+        image_metadata: hdr_metadata_for_ultra_hdr_gain_map(metadata),
+        target_hdr_capacity,
+    })
 }
 
 pub(crate) fn apply_orientation_to_hdr_buffer(
@@ -194,7 +192,13 @@ pub(crate) fn apply_orientation_to_hdr_buffer(
         );
     }
 
-    let expected_len = buffer.width as usize * buffer.height as usize * 4;
+    let expected_len = match (buffer.width as usize)
+        .checked_mul(buffer.height as usize)
+        .and_then(|p| p.checked_mul(4))
+    {
+        Some(len) => len,
+        None => return buffer,
+    };
     if buffer.rgba_f32.len() != expected_len {
         return buffer;
     }
@@ -204,7 +208,14 @@ pub(crate) fn apply_orientation_to_hdr_buffer(
     } else {
         (buffer.width, buffer.height)
     };
-    let mut out = vec![0.0_f32; out_w as usize * out_h as usize * 4];
+    let pixel_count = match (out_w as usize)
+        .checked_mul(out_h as usize)
+        .and_then(|p| p.checked_mul(4))
+    {
+        Some(count) => count,
+        None => return buffer,
+    };
+    let mut out = vec![0.0_f32; pixel_count];
 
     for y in 0..buffer.height {
         for x in 0..buffer.width {
@@ -396,7 +407,10 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
             return Err("HDR tiled preview dimensions must be non-zero".to_string());
         }
 
-        let pixel_count = preview_width as usize * preview_height as usize * 4;
+        let pixel_count = (preview_width as usize)
+            .checked_mul(preview_height as usize)
+            .and_then(|p| p.checked_mul(4))
+            .ok_or_else(|| "HDR preview dimensions overflow".to_string())?;
         let mut rgba_f32 = vec![0.0_f32; pixel_count];
         let sdr = self.sdr_rgba.as_slice();
         let gain = self.gain_rgba.as_slice();
@@ -700,8 +714,10 @@ fn downsample_ultra_hdr_sdr_base_nearest(
         return Err("Ultra HDR SDR preview dimensions must be non-zero".to_string());
     }
 
-    let expected_physical_len =
-        source.physical_width as usize * source.physical_height as usize * 4;
+    let expected_physical_len = (source.physical_width as usize)
+        .checked_mul(source.physical_height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or_else(|| "Ultra HDR buffer size overflow".to_string())?;
     if source.sdr_rgba.len() < expected_physical_len {
         return Err(format!(
             "Ultra HDR base JPEG RGBA length mismatch: expected at least {expected_physical_len} bytes, got {}",
@@ -721,10 +737,14 @@ fn downsample_ultra_hdr_sdr_base_nearest(
         downsample_oriented_ultra_hdr_sdr_base_nearest(source, preview_width, preview_height)?
     };
 
-    if pixels.len() != preview_width as usize * preview_height as usize * 4 {
+    let expected_preview_len = (preview_width as usize)
+        .checked_mul(preview_height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or_else(|| "Ultra HDR preview size overflow".to_string())?;
+    if pixels.len() != expected_preview_len {
         return Err(format!(
             "Ultra HDR SDR preview buffer length mismatch: expected {} bytes, got {}",
-            preview_width as usize * preview_height as usize * 4,
+            expected_preview_len,
             pixels.len()
         ));
     }
@@ -766,7 +786,11 @@ fn downsample_oriented_ultra_hdr_sdr_base_nearest(
             .collect()
     };
 
-    let mut pixels = Vec::with_capacity(preview_width as usize * preview_height as usize * 4);
+    let pixel_capacity = (preview_width as usize)
+        .checked_mul(preview_height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or_else(|| "Ultra HDR preview capacity overflow".to_string())?;
+    let mut pixels = Vec::with_capacity(pixel_capacity);
     for row in rows {
         pixels.extend_from_slice(&row);
     }
@@ -801,7 +825,7 @@ fn sample_oriented_ultra_hdr_sdr_preview_row(
     } = sample;
     let display_y =
         crate::hdr::tiled::preview_sample_coord(preview_y, preview_height, display_height);
-    let mut row = Vec::with_capacity(preview_width as usize * 4);
+    let mut row = Vec::with_capacity((preview_width as usize).saturating_mul(4));
     for preview_x in 0..preview_width {
         let display_x =
             crate::hdr::tiled::preview_sample_coord(preview_x, preview_width, display_width);

@@ -19,6 +19,7 @@ use super::decode::{
 };
 
 use crate::hdr::types::{HdrColorProfile, HdrImageMetadata};
+
 #[cfg(feature = "heif-native")]
 use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
 #[cfg(feature = "heif-native")]
@@ -284,6 +285,7 @@ pub(crate) fn hdr_buffer_from_ycbcr(
     if y_w == 0 || y_h == 0 {
         return Err("YCbCr: zero-sized luma".to_string());
     }
+    crate::constants::validate_static_decode_dimensions(y_w as u32, y_h as u32)?;
 
     let cb_w = unsafe { libheif_sys::heif_image_get_width(image, heif_channel_Cb) } as usize;
     let cb_h = unsafe { libheif_sys::heif_image_get_height(image, heif_channel_Cb) } as usize;
@@ -413,9 +415,11 @@ pub(crate) fn hdr_buffer_from_ycbcr(
         None
     };
 
-    let mut rgba_f32 = vec![0.0_f32; y_w * y_h * 4];
+    let rgba_f32_len = super::heif_checked_rgba_buffer_len(y_w, y_h)?;
+    let row_len = super::heif_checked_rgba_row_len(y_w)?;
+    let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
 
-    parallel_row_chunks_mut(y_h, y_w * 4, &mut rgba_f32, |y_px, row_dst| {
+    parallel_row_chunks_mut(y_h, row_len, &mut rgba_f32, |y_px, row_dst| {
         let row_y = unsafe { ptr_y.get().byte_add(y_px * stride_y) };
 
         let yc = chroma_row_index(y_px, chroma, cb_h);
@@ -620,6 +624,7 @@ pub(crate) fn ycbcr_image_to_rgba8(
     if y_w <= 0 || y_h <= 0 {
         return Err("libheif YCbCr image has zero luma size".to_string());
     }
+    crate::constants::validate_static_decode_dimensions(y_w as u32, y_h as u32)?;
     let width = y_w as u32;
     let height = y_h as u32;
 
@@ -664,13 +669,15 @@ pub(crate) fn ycbcr_image_to_rgba8(
     };
     let w = width as usize;
     let h = height as usize;
-    let mut rgba = vec![0_u8; w * h * 4];
+    let rgba_len = super::heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = super::heif_checked_rgba_row_len(w)?;
+    let mut rgba = vec![0_u8; rgba_len];
     let simd_bt709_full_range = matrix == HeifYcbcrMatrix::Bt709 && !nclx_studio_swing;
     let simd_bt709_limited_range = matrix == HeifYcbcrMatrix::Bt709 && nclx_studio_swing;
     let y_plane = SendReadonlyPtr::new(y_plane);
     let cb_plane = SendReadonlyPtr::new(cb_plane);
     let cr_plane = SendReadonlyPtr::new(cr_plane);
-    parallel_row_chunks_mut(h, w * 4, &mut rgba, |y, row_dst| {
+    parallel_row_chunks_mut(h, row_len, &mut rgba, |y, row_dst| {
         let y_row = unsafe { std::slice::from_raw_parts(y_plane.get().add(y * y_stride), w) };
         let cb_y = if subsample_v { y / 2 } else { y };
         let cb_row = unsafe {

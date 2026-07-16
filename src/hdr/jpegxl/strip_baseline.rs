@@ -103,7 +103,18 @@ pub(crate) fn decode_jxl_strip_preview_rgba8(bytes: &[u8]) -> JxlStripPreviewRes
                 if preview.xsize == 0 || preview.ysize == 0 {
                     return Some(Err("libjxl preview has zero dimensions".to_string()));
                 }
-                let expected = preview.xsize as usize * preview.ysize as usize * 4;
+                let expected = match (preview.xsize as usize)
+                    .checked_mul(preview.ysize as usize)
+                    .and_then(|p| p.checked_mul(4))
+                {
+                    Some(v) => v,
+                    None => {
+                        return Some(Err(format!(
+                            "libjxl strip preview size overflow for {}x{}",
+                            preview.xsize, preview.ysize
+                        )));
+                    }
+                };
                 let floats: &[f32] = bytemuck::cast_slice(&preview_scratch);
                 if floats.len() < expected {
                     return Some(Err(format!(
@@ -143,6 +154,7 @@ pub(crate) fn decode_jxl_strip_preview_rgba8(bytes: &[u8]) -> JxlStripPreviewRes
                 if info.xsize == 0 || info.ysize == 0 {
                     return Some(Err("libjxl decoded zero-sized image".to_string()));
                 }
+                crate::constants::validate_static_decode_dimensions(info.xsize, info.ysize).ok()?;
                 basic_info = Some(info);
             }
             libjxl_sys::JXL_DEC_NEED_PREVIEW_OUT_BUFFER => {
@@ -158,6 +170,43 @@ pub(crate) fn decode_jxl_strip_preview_rgba8(bytes: &[u8]) -> JxlStripPreviewRes
                     "size JPEG XL strip preview output buffer",
                 )
                 .ok()?;
+                if !size.is_multiple_of(std::mem::size_of::<f32>()) {
+                    return Some(Err(
+                        "libjxl strip preview buffer size is not float-aligned".to_string()
+                    ));
+                }
+                // Validate preview buffer size before allocation.
+                let info = match basic_info.as_ref() {
+                    Some(info) => info,
+                    None => {
+                        return Some(Err(
+                            "JXL_NEED_PREVIEW_OUT_BUFFER before basic info".to_string()
+                        ));
+                    }
+                };
+                crate::constants::validate_static_decode_dimensions(
+                    info.preview.xsize,
+                    info.preview.ysize,
+                )
+                .ok()?;
+                let expected_preview = match (info.preview.xsize as usize)
+                    .checked_mul(info.preview.ysize as usize)
+                    .and_then(|p| p.checked_mul(4))
+                    .and_then(|p| p.checked_mul(std::mem::size_of::<f32>()))
+                {
+                    Some(v) => v,
+                    None => {
+                        return Some(Err(format!(
+                            "JPEG XL strip preview buffer size overflow for {}x{}",
+                            info.preview.xsize, info.preview.ysize
+                        )));
+                    }
+                };
+                if size < expected_preview {
+                    return Some(Err(format!(
+                        "JPEG XL strip preview buffer size {size} is smaller than expected {expected_preview}"
+                    )));
+                }
                 preview_scratch.resize(size, 0);
                 ensure_jxl_success(
                     unsafe {

@@ -297,8 +297,20 @@ impl PsbTiledSource {
         let grid_len = h_usize
             .checked_mul(ch_count)
             .ok_or_else(|| "PSD/PSB tiled row-grid size overflow".to_string())?;
+        let end_x = x
+            .checked_add(w)
+            .ok_or_else(|| format!("PSD/PSB tile X range overflow: x={x} w={w}"))?;
+        let end_y = y
+            .checked_add(h)
+            .ok_or_else(|| format!("PSD/PSB tile Y range overflow: y={y} h={h}"))?;
+        if end_x > self.width || end_y > self.height {
+            return Err(format!(
+                "PSD/PSB tile out of bounds: ({x},{y}) {w}x{h} vs {}x{}",
+                self.width, self.height
+            ));
+        }
         let start = x as usize;
-        let end = (x + w) as usize;
+        let end = end_x as usize;
 
         // Flat TLS grid: one allocation reused across tiles (avoids `h` inner Vecs).
         with_psb_tile_row_grid(grid_len, |row_grid| {

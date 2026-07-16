@@ -41,10 +41,17 @@ const PIXELS_PER_NEON_STEP: usize = 4;
 #[cfg(target_arch = "x86_64")]
 const PIXELS_PER_AVX2_STEP: usize = 8;
 
-/// 4:2:0 AVX2/NEON vector chroma loads read 8 bytes from `cb_row[xc..]`.
+/// 4:2:0 NEON vector chroma loads read 2 chroma samples from `cb_row[xc..]`.
+#[cfg(target_arch = "aarch64")]
 #[inline]
-fn ycbcr420_chroma_load8_fits(x: usize, chroma_len: usize) -> bool {
-    x / 2 + 8 <= chroma_len
+fn ycbcr420_chroma_load2_fits(x: usize, chroma_len: usize) -> bool {
+    x / 2 + 2 <= chroma_len
+}
+
+/// 4:2:0 AVX2 vector chroma loads read 4 chroma samples from `cb_row[xc..]`.
+#[inline]
+fn ycbcr420_chroma_load4_fits(x: usize, chroma_len: usize) -> bool {
+    x / 2 + 4 <= chroma_len
 }
 
 /// `_mm_cvtepu8_epi32` only uses the low 4 bytes; avoid `_mm_loadl_epi64` (8 bytes).
@@ -70,10 +77,10 @@ unsafe fn u8x8_to_f32x4(v: uint8x8_t) -> float32x4_t {
     unsafe { vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(v)))) }
 }
 
-/// 4:2:0 chroma upsample: `[c0, c0, c1, c1]` in the low four lanes.
+/// 4:2:0 chroma horizontal upsample: read 2 u8 from `ptr`, return `[c0, c0, c1, c1]`.
 #[cfg(target_arch = "aarch64")]
 #[inline]
-unsafe fn load_u8x4_420_chroma_neon(ptr: *const u8) -> uint8x8_t {
+unsafe fn upsample_420_chroma_neon(ptr: *const u8) -> uint8x8_t {
     unsafe {
         let c0 = *ptr;
         let c1 = *ptr.add(1);
@@ -543,10 +550,10 @@ unsafe fn ycbcr_full_range_bt709_row_420_avx2(
     x: &mut usize,
 ) {
     unsafe {
-        while *x + PIXELS_PER_AVX2_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
+        while *x + PIXELS_PER_AVX2_STEP <= width && ycbcr420_chroma_load4_fits(*x, cb_row.len()) {
             let xc = *x / 2;
-            let cb = _mm_loadl_epi64(cb_row.as_ptr().add(xc) as *const __m128i);
-            let cr = _mm_loadl_epi64(cr_row.as_ptr().add(xc) as *const __m128i);
+            let cb = load_u8x4_for_cvtepu8(cb_row.as_ptr().add(xc));
+            let cr = load_u8x4_for_cvtepu8(cr_row.as_ptr().add(xc));
             // Upsample 4 chroma samples to 8 luma sites: [c0,c0,c1,c1,c2,c2,c3,c3].
             let cb_dup = _mm_shuffle_epi8(
                 cb,
@@ -718,11 +725,11 @@ unsafe fn ycbcr_full_range_bt709_row_420_neon(
         let zero = vdupq_n_f32(0.0);
         let one = vdupq_n_f32(1.0);
 
-        while *x + PIXELS_PER_NEON_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
+        while *x + PIXELS_PER_NEON_STEP <= width && ycbcr420_chroma_load2_fits(*x, cb_row.len()) {
             let xc = *x / 2;
             let y = load_u8x4_neon(y_row.as_ptr().add(*x));
-            let cb = load_u8x4_420_chroma_neon(cb_row.as_ptr().add(xc));
-            let cr = load_u8x4_420_chroma_neon(cr_row.as_ptr().add(xc));
+            let cb = upsample_420_chroma_neon(cb_row.as_ptr().add(xc));
+            let cr = upsample_420_chroma_neon(cr_row.as_ptr().add(xc));
 
             let yy = vmulq_f32(u8x8_to_f32x4(y), scale);
             let pb = vsubq_f32(vmulq_f32(u8x8_to_f32x4(cb), scale), center);
@@ -865,10 +872,10 @@ unsafe fn ycbcr_limited_range_bt709_row_420_avx2(
     x: &mut usize,
 ) {
     unsafe {
-        while *x + PIXELS_PER_AVX2_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
+        while *x + PIXELS_PER_AVX2_STEP <= width && ycbcr420_chroma_load4_fits(*x, cb_row.len()) {
             let xc = *x / 2;
-            let cb = _mm_loadl_epi64(cb_row.as_ptr().add(xc) as *const __m128i);
-            let cr = _mm_loadl_epi64(cr_row.as_ptr().add(xc) as *const __m128i);
+            let cb = load_u8x4_for_cvtepu8(cb_row.as_ptr().add(xc));
+            let cr = load_u8x4_for_cvtepu8(cr_row.as_ptr().add(xc));
             // Upsample 4 chroma samples to 8 luma sites: [c0,c0,c1,c1,c2,c2,c3,c3].
             let cb_dup = _mm_shuffle_epi8(
                 cb,
@@ -995,11 +1002,11 @@ unsafe fn ycbcr_limited_range_bt709_row_420_neon(
         let chroma_mid = vdupq_n_f32(STUDIO_CHROMA_MID);
         let chroma_inv = vdupq_n_f32(STUDIO_CHROMA_INV_SPAN);
 
-        while *x + PIXELS_PER_NEON_STEP <= width && ycbcr420_chroma_load8_fits(*x, cb_row.len()) {
+        while *x + PIXELS_PER_NEON_STEP <= width && ycbcr420_chroma_load2_fits(*x, cb_row.len()) {
             let xc = *x / 2;
             let y = load_u8x4_neon(y_row.as_ptr().add(*x));
-            let cb = load_u8x4_420_chroma_neon(cb_row.as_ptr().add(xc));
-            let cr = load_u8x4_420_chroma_neon(cr_row.as_ptr().add(xc));
+            let cb = upsample_420_chroma_neon(cb_row.as_ptr().add(xc));
+            let cr = upsample_420_chroma_neon(cr_row.as_ptr().add(xc));
 
             let y_f = u8x8_to_f32x4(y);
             let cb_f = u8x8_to_f32x4(cb);

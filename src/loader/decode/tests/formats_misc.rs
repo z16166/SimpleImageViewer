@@ -41,7 +41,7 @@ fn craft_rgb8_raw_psb(width: u32, height: u32, planar: &[u8]) -> Vec<u8> {
 
 fn craft_rgb8_raw_document(version: u16, width: u32, height: u32, planar: &[u8]) -> Vec<u8> {
     assert!(version == 1 || version == 2);
-    assert_eq!(planar.len(), (width * height * 3) as usize);
+    assert_eq!(planar.len(), (width as usize) * (height as usize) * 3);
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"8BPS");
     bytes.extend_from_slice(&version.to_be_bytes());

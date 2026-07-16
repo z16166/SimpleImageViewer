@@ -36,7 +36,9 @@ pub(crate) struct UltraHdrComposeInput<'a> {
 }
 
 #[allow(dead_code)] // tests and tiled preview reference path
-pub(crate) fn compose_ultra_hdr_cpu(input: UltraHdrComposeInput<'_>) -> HdrImageBuffer {
+pub(crate) fn compose_ultra_hdr_cpu(
+    input: UltraHdrComposeInput<'_>,
+) -> Result<HdrImageBuffer, String> {
     let UltraHdrComposeInput {
         width,
         height,
@@ -48,7 +50,9 @@ pub(crate) fn compose_ultra_hdr_cpu(input: UltraHdrComposeInput<'_>) -> HdrImage
         image_metadata,
         target_hdr_capacity,
     } = input;
-    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    let rgba_len = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+        .ok_or_else(|| format!("Ultra HDR compose buffer size overflow for {width}x{height}"))?;
+    let mut rgba_f32 = Vec::with_capacity(rgba_len);
     for y in 0..height {
         for x in 0..width {
             let sdr_index = (y as usize * width as usize + x as usize) * 4;
@@ -64,14 +68,14 @@ pub(crate) fn compose_ultra_hdr_cpu(input: UltraHdrComposeInput<'_>) -> HdrImage
         }
     }
 
-    HdrImageBuffer {
+    Ok(HdrImageBuffer {
         width,
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space: HdrColorSpace::LinearSrgb,
         metadata: image_metadata,
         rgba_f32: Arc::new(rgba_f32),
-    }
+    })
 }
 
 pub(crate) struct UltraHdrTileRegionCompose<'a, F> {
@@ -94,7 +98,7 @@ pub(crate) struct UltraHdrTileRegionCompose<'a, F> {
 #[allow(dead_code)] // loader/ultra_hdr tests and tiled preview reference path
 pub(crate) fn compose_ultra_hdr_tile_region_cpu<F>(
     input: UltraHdrTileRegionCompose<'_, F>,
-) -> Vec<f32>
+) -> Result<Vec<f32>, String>
 where
     F: Fn(u32, u32, u32, u32, u16) -> (u32, u32),
 {
@@ -114,7 +118,16 @@ where
         target_hdr_capacity,
         display_to_physical,
     } = input;
-    let mut rgba_f32 = Vec::with_capacity(tile_width as usize * tile_height as usize * 4);
+    let rgba_cap = (tile_width as usize)
+        .checked_mul(tile_height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or_else(|| {
+            format!(
+                "Ultra HDR tile compose buffer size overflow for {}x{}",
+                tile_width, tile_height
+            )
+        })?;
+    let mut rgba_f32 = Vec::with_capacity(rgba_cap);
     for dy in 0..tile_height {
         for dx in 0..tile_width {
             let display_x = origin_x + dx;
@@ -126,8 +139,15 @@ where
                 physical_height,
                 orientation,
             );
-            let sdr_index =
-                (physical_y as usize * physical_width as usize + physical_x as usize) * 4;
+            let sdr_index = (physical_y as usize)
+                .checked_mul(physical_width as usize)
+                .and_then(|p| p.checked_add(physical_x as usize))
+                .and_then(|p| p.checked_mul(4))
+                .ok_or_else(|| {
+                    format!(
+                        "Ultra HDR tile SDR buffer index overflow at ({physical_x},{physical_y})"
+                    )
+                })?;
             let gain_value = sample_gain_map_rgb(
                 gain_rgba,
                 gain_width,
@@ -146,5 +166,5 @@ where
             );
         }
     }
-    rgba_f32
+    Ok(rgba_f32)
 }

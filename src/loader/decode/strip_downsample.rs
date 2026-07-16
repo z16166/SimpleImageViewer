@@ -40,8 +40,8 @@ pub(crate) fn downsample_decoded_for_strip(
         return Ok(decoded.clone());
     }
     let scale = max_side as f32 / max_dim as f32;
-    let out_w = ((w as f32 * scale).round() as u32).max(1);
-    let out_h = ((h as f32 * scale).round() as u32).max(1);
+    let out_w = ((w as f32 * scale).round() as u32).max(1).min(w);
+    let out_h = ((h as f32 * scale).round() as u32).max(1).min(h);
     let Some(src_bytes) = w
         .checked_mul(h)
         .and_then(|pixels| pixels.checked_mul(4))

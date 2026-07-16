@@ -38,19 +38,38 @@ pub(crate) fn unpack_libraw_rgb16_rows_to_rgba_f32(
     if bytes_per_pixel != 6 {
         return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
     }
+    crate::constants::validate_static_decode_dimensions(width, height)?;
     let w = width as usize;
     let h = height as usize;
-    let tight_row_bytes = w * bytes_per_pixel;
+    let row_bytes_per_pixel = bytes_per_pixel;
+    let tight_row_bytes = w
+        .checked_mul(row_bytes_per_pixel)
+        .ok_or_else(|| format!("RGB16 tight row bytes overflow: {width}x{height}"))?;
     let inv_scale = 1.0 / 65535.0;
-    let mut rgba_f32 = Vec::with_capacity(w * h * crate::constants::RGBA_CHANNELS);
+    let cap = w
+        .checked_mul(h)
+        .and_then(|p| p.checked_mul(crate::constants::RGBA_CHANNELS))
+        .ok_or_else(|| format!("RGB16 buffer capacity overflow: {width}x{height}"))?;
+    let mut rgba_f32 = Vec::with_capacity(cap);
     for y in 0..h {
         let row_off = y * row_stride;
         let row_end = row_off + tight_row_bytes;
         let row = rgb16_bytes
             .get(row_off..row_end)
             .ok_or_else(|| rust_i18n::t!("error.buffer_size_mismatch").to_string())?;
-        let dst_start = y * w * 4;
-        rgba_f32.resize(dst_start + w * 4, 0.0);
+        let dst_start = y
+            .checked_mul(w)
+            .and_then(|p| p.checked_mul(crate::constants::RGBA_CHANNELS))
+            .ok_or_else(|| format!("RGB16 dst_start overflow at row {y}"))?;
+        let row_len = w
+            .checked_mul(crate::constants::RGBA_CHANNELS)
+            .ok_or_else(|| format!("RGB16 row_len overflow: {width}x{height}"))?;
+        rgba_f32.resize(
+            dst_start
+                .checked_add(row_len)
+                .ok_or_else(|| format!("RGB16 buffer end overflow at row {y}"))?,
+            0.0,
+        );
         simple_image_viewer::simd_pixel_convert::normalize_uint16_rgb_scanline_to_rgba32f(
             row,
             &mut rgba_f32[dst_start..dst_start + w * 4],
@@ -526,7 +545,10 @@ impl RawProcessor {
 
         let w = self.width();
         let h = self.height();
-        let total_pixels = w as usize * h as usize;
+        crate::constants::validate_static_decode_dimensions(w, h)?;
+        let total_pixels = (w as usize)
+            .checked_mul(h as usize)
+            .ok_or_else(|| format!("RGB16 total pixels overflow: {w}x{h}"))?;
         let mut scaled_pixels = vec![0u16; total_pixels];
         let mut scaled_w = 0u32;
         let mut scaled_h = 0u32;
@@ -915,6 +937,7 @@ impl RawProcessor {
 
             let width = img.width as u32;
             let height = img.height as u32;
+            crate::constants::validate_static_decode_dimensions(width, height)?;
             let data_ptr = img.data.as_ptr();
             let data_len = img.data_size as usize;
 
@@ -922,16 +945,25 @@ impl RawProcessor {
                 return Err(rust_i18n::t!("error.libraw_mem_image", code = -1).to_string());
             }
 
-            let expected_min = width as usize * height as usize * crate::constants::RGB_CHANNELS;
+            let pixel_count = (width as usize)
+                .checked_mul(height as usize)
+                .ok_or_else(|| format!("RAW develop pixel count overflow for {width}x{height}"))?;
+            let expected_min = pixel_count
+                .checked_mul(crate::constants::RGB_CHANNELS)
+                .ok_or_else(|| {
+                    format!("RAW develop RGB buffer size overflow for {width}x{height}")
+                })?;
             if data_len < expected_min {
                 return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
             }
 
             // SINGLE-PASS PACKING OPTIMIZATION:
-            let mut rgba = vec![
-                crate::constants::MAX_CHANNEL_VALUE;
-                width as usize * height as usize * crate::constants::RGBA_CHANNELS
-            ];
+            let rgba_len = pixel_count
+                .checked_mul(crate::constants::RGBA_CHANNELS)
+                .ok_or_else(|| {
+                    format!("RAW develop RGBA buffer size overflow for {width}x{height}")
+                })?;
+            let mut rgba = vec![crate::constants::MAX_CHANNEL_VALUE; rgba_len];
             let slice = std::slice::from_raw_parts(data_ptr, expected_min);
 
             simple_image_viewer::simd_swizzle::interleave_rgb_packed_to_rgba_packed(
@@ -957,7 +989,10 @@ impl RawProcessor {
         if width == 0 || height == 0 {
             return Err("Invalid dimensions".to_string());
         }
-        let expected = width as usize * height as usize * 3;
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|p| p.checked_mul(3))
+            .ok_or_else(|| format!("RGB16 output buffer length overflow: {width}x{height}"))?;
         if rgb16.len() < expected {
             return Err("RGB16 buffer too small".to_string());
         }
@@ -985,7 +1020,12 @@ impl RawProcessor {
         }
         let w = self.width();
         let h = self.height();
-        let mut out = vec![0u16; w as usize * h as usize * 3];
+        crate::constants::validate_static_decode_dimensions(w, h)?;
+        let total = (w as usize)
+            .checked_mul(h as usize)
+            .and_then(|p| p.checked_mul(3))
+            .ok_or_else(|| format!("libraw ppg scaled camera RGB counts overflow: {w}x{h}"))?;
+        let mut out = vec![0u16; total];
         let mut out_w = 0u32;
         let mut out_h = 0u32;
         let status = unsafe {
@@ -1017,7 +1057,12 @@ impl RawProcessor {
         }
         let w = self.width();
         let h = self.height();
-        let mut out = vec![0u16; w as usize * h as usize * 3];
+        crate::constants::validate_static_decode_dimensions(w, h)?;
+        let total = (w as usize)
+            .checked_mul(h as usize)
+            .and_then(|p| p.checked_mul(3))
+            .ok_or_else(|| format!("libraw ppg camera RGB counts overflow: {w}x{h}"))?;
+        let mut out = vec![0u16; total];
         let mut out_w = 0u32;
         let mut out_h = 0u32;
         let status = unsafe {
@@ -1138,6 +1183,7 @@ impl RawProcessor {
 
             let width = img.width as u32;
             let height = img.height as u32;
+            crate::constants::validate_static_decode_dimensions(width, height)?;
             let data_ptr = img.data.as_ptr();
             let data_len = img.data_size as usize;
             let colors = img.colors as usize;
@@ -1221,7 +1267,11 @@ impl RawProcessor {
                 if img.colors == crate::constants::RGB_CHANNELS as u16
                     && img.bits == crate::constants::BIT_DEPTH_8 as u16
                 {
-                    let count = img.width as usize * img.height as usize;
+                    let validated_pixels = crate::constants::validate_static_decode_dimensions(
+                        img.width as u32,
+                        img.height as u32,
+                    )?;
+                    let count = validated_pixels as usize;
                     let required_rgb = count
                         .checked_mul(crate::constants::RGB_CHANNELS)
                         .filter(|&len| len <= slice.len());

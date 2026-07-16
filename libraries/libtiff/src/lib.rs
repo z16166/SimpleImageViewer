@@ -37,6 +37,10 @@ pub const TIFFTAG_PLANARCONFIG: uint32 = 284;
 pub const TIFFTAG_COLORMAP: uint32 = 320;
 pub const TIFFTAG_TILEWIDTH: uint32 = 322;
 pub const TIFFTAG_TILELENGTH: uint32 = 323;
+pub const TIFFTAG_STRIPOFFSETS: uint32 = 273;
+pub const TIFFTAG_STRIPBYTECOUNTS: uint32 = 279;
+pub const TIFFTAG_TILEOFFSETS: uint32 = 324;
+pub const TIFFTAG_TILEBYTECOUNTS: uint32 = 325;
 pub const TIFFTAG_SAMPLEFORMAT: uint32 = 339;
 pub const TIFFTAG_SMINSAMPLEVALUE: uint32 = 340;
 pub const TIFFTAG_SMAXSAMPLEVALUE: uint32 = 341;
@@ -94,6 +98,8 @@ unsafe extern "C" {
     pub fn TIFFScanlineSize(tif: *mut TIFF) -> tsize_t;
     pub fn TIFFDefaultStripSize(tif: *mut TIFF, request: uint32) -> uint32;
     pub fn TIFFIsByteSwapped(tif: *mut TIFF) -> c_int;
+    pub fn TIFFNumberOfStrips(tif: *mut TIFF) -> uint32;
+    pub fn TIFFNumberOfTiles(tif: *mut TIFF) -> uint32;
 }
 
 // ── RAII guards ────────────────────────────────────────────────────────
@@ -173,6 +179,19 @@ impl TiffGuard {
         let mut val: f64 = 0.0;
         if unsafe { TIFFGetField(self.ptr, tag, &mut val) } != 0 {
             Some(val)
+        } else {
+            None
+        }
+    }
+
+    /// Read a strip/tile offset or byte-count array (`uint64 **` in modern libtiff).
+    ///
+    /// The returned pointer is owned by libtiff (directory storage); do not free it.
+    #[inline]
+    pub unsafe fn get_field_u64_array(&self, tag: u32) -> Option<*const u64> {
+        let mut ptr: *mut u64 = std::ptr::null_mut();
+        if unsafe { TIFFGetField(self.ptr, tag, &mut ptr) } != 0 && !ptr.is_null() {
+            Some(ptr as *const u64)
         } else {
             None
         }

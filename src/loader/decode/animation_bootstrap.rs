@@ -62,11 +62,17 @@ fn image_frame_delay(frame: &image::Frame) -> Duration {
     Duration::from_millis(delay_ms as u64)
 }
 
-fn image_frame_to_animation_frame(frame: image::Frame) -> AnimationFrame {
+fn image_frame_to_animation_frame(frame: image::Frame) -> Result<AnimationFrame, String> {
     let delay = image_frame_delay(&frame);
     let buffer = frame.into_buffer();
     let (width, height) = buffer.dimensions();
-    AnimationFrame::new(width, height, buffer.into_raw(), delay)
+    // Per-frame dimension cap via MAX_STATIC_FULL_DECODE_PIXELS (256 MP).
+    // This prevents a single malformed frame header from allocating an
+    // excessive buffer. It does NOT budget the total animation cache across
+    // all frames — the caller (e.g. orchestrator) manages overall memory
+    // via max_cache_bytes and frame count limits.
+    crate::constants::validate_static_decode_dimensions(width, height)?;
+    Ok(AnimationFrame::new(width, height, buffer.into_raw(), delay))
 }
 
 fn raster_animation_remainder_job(
@@ -129,13 +135,13 @@ fn load_raster_animation_bootstrap_from_mmap(
                 .is_none()
             {
                 // Single-frame GIF: reuse the already-decoded first frame.
-                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()));
+                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()))?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
                 });
             }
-            let first_anim = image_frame_to_animation_frame(first);
+            let first_anim = image_frame_to_animation_frame(first)?;
             log::info!(
                 "[Loader] raster animation bootstrap: 1 frame ({:?}) -- {}",
                 format,
@@ -198,13 +204,13 @@ fn load_raster_animation_bootstrap_from_mmap(
                 .is_none()
             {
                 // Single-frame APNG: reuse the already-decoded first frame.
-                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()));
+                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()))?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
                 });
             }
-            let first_anim = image_frame_to_animation_frame(first);
+            let first_anim = image_frame_to_animation_frame(first)?;
             log::info!(
                 "[Loader] raster animation bootstrap: 1 frame ({:?}) -- {}",
                 format,
@@ -254,13 +260,13 @@ fn load_raster_animation_bootstrap_from_mmap(
                 .is_none()
             {
                 // Single-frame WebP: reuse the already-decoded first frame.
-                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()));
+                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()))?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
                 });
             }
-            let first_anim = image_frame_to_animation_frame(first);
+            let first_anim = image_frame_to_animation_frame(first)?;
             log::info!(
                 "[Loader] raster animation bootstrap: 1 frame ({:?}) -- {}",
                 format,

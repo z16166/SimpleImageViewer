@@ -110,13 +110,22 @@ impl SharedSlice {
     }
 
     /// Create a zero-copy sub-slice (cheap: bumps the Arc refcount).
-    pub(crate) fn sub_slice(&self, start: usize, end: usize) -> Self {
-        debug_assert!(start <= end && end <= self.len);
-        Self {
-            inner: Arc::clone(&self.inner),
-            offset: self.offset + start,
-            len: end - start,
+    /// Returns `None` when the range is invalid (release-safe bounds check).
+    pub(crate) fn sub_slice(&self, start: usize, end: usize) -> Option<Self> {
+        if start > end || end > self.len {
+            return None;
         }
+        // Offset must not overflow the backing allocation address space.
+        let offset = self.offset.checked_add(start)?;
+        let len = end - start;
+        if offset.checked_add(len).is_none() || offset + len > self.inner.len() {
+            return None;
+        }
+        Some(Self {
+            inner: Arc::clone(&self.inner),
+            offset,
+            len,
+        })
     }
 
     /// The backing allocation as `&[u8]`.
@@ -1426,4 +1435,27 @@ pub fn estimate_memory_from_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, u64), 
             .ok_or_else(|| "PSD/PSB memory estimate overflow".to_string())?
     };
     Ok((width, height, channels, estimated))
+}
+
+#[cfg(test)]
+mod shared_slice_tests {
+    use super::SharedSlice;
+    use std::sync::Arc;
+
+    #[test]
+    fn sub_slice_rejects_out_of_bounds() {
+        let slice = SharedSlice::new(Arc::from([1u8, 2, 3, 4].as_slice()));
+        assert!(slice.sub_slice(0, 4).is_some());
+        assert!(slice.sub_slice(1, 3).is_some());
+        assert!(slice.sub_slice(3, 1).is_none());
+        assert!(slice.sub_slice(0, 5).is_none());
+        assert!(slice.sub_slice(5, 5).is_none());
+    }
+
+    #[test]
+    fn sub_slice_preserves_content() {
+        let slice = SharedSlice::new(Arc::from([10u8, 20, 30, 40].as_slice()));
+        let sub = slice.sub_slice(1, 3).expect("in-bounds");
+        assert_eq!(sub.as_slice(), &[20, 30]);
+    }
 }
