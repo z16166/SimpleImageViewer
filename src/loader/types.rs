@@ -64,12 +64,15 @@ impl std::fmt::Debug for DecodedImage {
 fn assert_decoded_rgba_len(width: u32, height: u32, len: usize) {
     // External decoders must hand us a buffer whose length matches width*height*4.
     // Always-on check (not debug_assert) so Release builds still reject mismatched state.
-    if let Some(expected) = crate::constants::checked_rgba8_len_u32(width, height) {
-        assert!(
-            len == expected,
-            "DecodedImage RGBA length mismatch: {width}x{height} expects {expected} bytes, got {len}"
-        );
-    }
+    let expected = crate::constants::checked_rgba8_len_u32(width, height).unwrap_or_else(|| {
+        panic!(
+            "DecodedImage RGBA dimensions overflow: {width}x{height}"
+        )
+    });
+    assert!(
+        len == expected,
+        "DecodedImage RGBA length mismatch: {width}x{height} expects {expected} bytes, got {len}"
+    );
 }
 
 impl DecodedImage {

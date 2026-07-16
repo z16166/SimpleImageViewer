@@ -48,7 +48,11 @@ pub(crate) fn compose_ultra_hdr_cpu(input: UltraHdrComposeInput<'_>) -> HdrImage
         image_metadata,
         target_hdr_capacity,
     } = input;
-    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    let rgba_len = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+        .unwrap_or_else(|| {
+            panic!("Ultra HDR compose buffer size overflow for {width}x{height}")
+        });
+    let mut rgba_f32 = Vec::with_capacity(rgba_len);
     for y in 0..height {
         for x in 0..width {
             let sdr_index = (y as usize * width as usize + x as usize) * 4;

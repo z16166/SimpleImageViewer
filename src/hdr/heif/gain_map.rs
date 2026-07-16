@@ -307,7 +307,19 @@ pub(crate) fn decode_heif_gain_map(
         return None;
     }
 
-    let mut gain_rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    let gain_len = match crate::constants::checked_rgba_buffer_len(
+        width as usize,
+        height as usize,
+    ) {
+        Some(n) => n,
+        None => {
+            log::warn!(
+                "[HDR] HEIF gain map buffer size overflow for {width}x{height}"
+            );
+            return None;
+        }
+    };
+    let mut gain_rgba = Vec::with_capacity(gain_len);
     let row_bytes = width as usize * 4;
     if stride < row_bytes {
         log::warn!(

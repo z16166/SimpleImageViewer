@@ -169,7 +169,9 @@ pub(crate) fn compose_iso_deferred_cpu_pixels_simd(
 
     let constants = IsoComposeConstants::new(deferred.metadata, target_hdr_capacity);
     let simd_pack = constants.to_simd_pack();
-    let mut rgba_f32 = vec![0.0_f32; width as usize * height as usize * 4];
+    let rgba_len = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+        .ok_or_else(|| format!("ISO gain map compose buffer size overflow for {width}x{height}"))?;
+    let mut rgba_f32 = vec![0.0_f32; rgba_len];
     let row_stride = width as usize * 4;
     let sdr = deferred.sdr_rgba.as_slice();
 

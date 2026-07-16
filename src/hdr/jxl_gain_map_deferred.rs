@@ -183,7 +183,8 @@ fn apply_jxl_jhgm_gain_map_gpu_deferred(
         return Err("jhgm primary is precomposed HDR base".to_string());
     }
 
-    let expected_len = width as usize * height as usize * 4;
+    let expected_len = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+        .ok_or_else(|| format!("JXL gain map deferred expected length overflow for {width}x{height}"))?;
     if base_rgba_f32.len() != expected_len {
         return Err(format!(
             "JPEG XL jhgm base buffer length mismatch: got {}, expected {}",
@@ -235,7 +236,8 @@ fn apply_jxl_jhgm_cpu_compose(
     metadata: &HdrImageMetadata,
     reuse: Option<&mut Option<IsoGainMapFrameReuse>>,
 ) -> Result<HdrImageBuffer, String> {
-    let expected_len = width as usize * height as usize * 4;
+    let expected_len = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+        .ok_or_else(|| format!("JXL gain map deferred jhgm compose overflow for {width}x{height}"))?;
     let color_space = metadata.color_space_hint();
     let sdr_baseline = jxl_rgba_f32_to_iso_sdr_baseline(rgba_f32, color_space, metadata);
     let selected = select_jxl_planes_with_reuse(

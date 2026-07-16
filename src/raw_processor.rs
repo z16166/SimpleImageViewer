@@ -925,16 +925,21 @@ impl RawProcessor {
                 return Err(rust_i18n::t!("error.libraw_mem_image", code = -1).to_string());
             }
 
-            let expected_min = width as usize * height as usize * crate::constants::RGB_CHANNELS;
+            let pixel_count = (width as usize)
+                .checked_mul(height as usize)
+                .ok_or_else(|| format!("RAW develop pixel count overflow for {width}x{height}"))?;
+            let expected_min = pixel_count
+                .checked_mul(crate::constants::RGB_CHANNELS)
+                .ok_or_else(|| format!("RAW develop RGB buffer size overflow for {width}x{height}"))?;
             if data_len < expected_min {
                 return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
             }
 
             // SINGLE-PASS PACKING OPTIMIZATION:
-            let mut rgba = vec![
-                crate::constants::MAX_CHANNEL_VALUE;
-                width as usize * height as usize * crate::constants::RGBA_CHANNELS
-            ];
+            let rgba_len = pixel_count
+                .checked_mul(crate::constants::RGBA_CHANNELS)
+                .ok_or_else(|| format!("RAW develop RGBA buffer size overflow for {width}x{height}"))?;
+            let mut rgba = vec![crate::constants::MAX_CHANNEL_VALUE; rgba_len];
             let slice = std::slice::from_raw_parts(data_ptr, expected_min);
 
             simple_image_viewer::simd_swizzle::interleave_rgb_packed_to_rgba_packed(
