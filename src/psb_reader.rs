@@ -859,7 +859,7 @@ mod tests {
     }
 
     fn craft_rgb8_psd(compression: u16, planar: &[u8], width: u32, height: u32) -> Vec<u8> {
-        assert_eq!(planar.len(), (width * height * 3) as usize);
+        assert_eq!(planar.len(), (width as usize) * (height as usize) * 3);
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"8BPS");
         bytes.extend_from_slice(&1u16.to_be_bytes());
@@ -902,7 +902,7 @@ mod tests {
     fn read_composite_zip_and_zip_prediction_rgb8() {
         let width = 4u32;
         let height = 2u32;
-        let mut planar = vec![0u8; (width * height * 3) as usize];
+        let mut planar = vec![0u8; (width as usize) * (height as usize) * 3];
         for (i, b) in planar.iter_mut().enumerate() {
             *b = (i as u8).wrapping_mul(3).wrapping_add(7);
         }

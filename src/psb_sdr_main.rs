@@ -675,7 +675,7 @@ mod tests {
     use std::path::Path;
 
     fn tiny_raw_rgb_psd(width: u32, height: u32, rgb_planar: &[u8]) -> Vec<u8> {
-        assert_eq!(rgb_planar.len(), (width * height * 3) as usize);
+        assert_eq!(rgb_planar.len(), (width as usize) * (height as usize) * 3);
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"8BPS");
         bytes.extend_from_slice(&1u16.to_be_bytes()); // version = PSD

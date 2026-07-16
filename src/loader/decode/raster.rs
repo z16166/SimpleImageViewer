@@ -119,14 +119,15 @@ pub(crate) fn image_frame_to_static_image_data(
     frame: image::Frame,
     path: &Path,
     mmap: Option<&[u8]>,
-) -> ImageData {
+) -> Result<ImageData, String> {
     let buffer = frame.into_buffer();
     let (width, height) = buffer.dimensions();
-    apply_exif_orientation_to_image_data(
+    crate::constants::validate_static_decode_dimensions(width, height)?;
+    Ok(apply_exif_orientation_to_image_data(
         path,
         make_image_data(DecodedImage::new(width, height, buffer.into_raw())),
         mmap,
-    )
+    ))
 }
 
 pub(crate) fn process_animation_frames(
@@ -140,7 +141,7 @@ pub(crate) fn process_animation_frames(
     // to a full static decode when the decoder produced no frames at all.
     if raw_frames.len() <= 1 {
         if let Some(frame) = raw_frames.into_iter().next() {
-            return Ok(image_frame_to_static_image_data(frame, path, mmap));
+            return Ok(image_frame_to_static_image_data(frame, path, mmap)?);
         }
         if let Some(bytes) = mmap {
             return load_static_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map, None);
@@ -163,14 +164,15 @@ pub(crate) fn process_animation_frames(
             };
             let buffer = frame.into_buffer();
             let (width, height) = buffer.dimensions();
-            AnimationFrame::new(
+            crate::constants::validate_static_decode_dimensions(width, height)?;
+            Ok::<_, String>(AnimationFrame::new(
                 width,
                 height,
                 buffer.into_raw(),
                 Duration::from_millis(delay_ms as u64),
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(apply_exif_orientation_to_image_data(
         path,

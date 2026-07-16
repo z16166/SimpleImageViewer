@@ -129,7 +129,7 @@ fn load_raster_animation_bootstrap_from_mmap(
                 .is_none()
             {
                 // Single-frame GIF: reuse the already-decoded first frame.
-                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()));
+                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()))?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
@@ -198,7 +198,7 @@ fn load_raster_animation_bootstrap_from_mmap(
                 .is_none()
             {
                 // Single-frame APNG: reuse the already-decoded first frame.
-                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()));
+                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()))?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
@@ -254,7 +254,7 @@ fn load_raster_animation_bootstrap_from_mmap(
                 .is_none()
             {
                 // Single-frame WebP: reuse the already-decoded first frame.
-                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()));
+                let image = image_frame_to_static_image_data(first, path, Some(mmap.as_ref()))?;
                 return Ok(RasterAnimationBootstrapOutcome {
                     image,
                     remainder: None,
