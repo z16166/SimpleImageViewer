@@ -250,7 +250,9 @@ impl OpenExrCoreReadContext {
 
         let part_index =
             i32::try_from(part_index).map_err(|_| "EXR part index exceeds i32".to_string())?;
-        let mut rgba = vec![0.0_f32; width as usize * height as usize * 4];
+        let buf_len = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+            .ok_or_else(|| format!("OpenEXR scanline tile buffer size overflow for {width}x{height}"))?;
+        let mut rgba = vec![0.0_f32; buf_len];
         for alpha in rgba.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
             *alpha = 1.0;
         }
@@ -527,7 +529,9 @@ impl OpenExrCoreReadContext {
             entry.2.push(row);
         }
 
-        let mut rgba = vec![0.0_f32; width as usize * height as usize * 4];
+        let buf_len = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+            .ok_or_else(|| format!("OpenEXR scanline preview buffer size overflow for {width}x{height}"))?;
+        let mut rgba = vec![0.0_f32; buf_len];
         for alpha in rgba.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
             *alpha = 1.0;
         }
@@ -751,7 +755,9 @@ impl OpenExrCoreReadContext {
             return Err("OpenEXRCore mip level dimensions are zero".to_string());
         }
 
-        let mut rgba = vec![0.0_f32; width as usize * height as usize * 4];
+        let buf_len = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+            .ok_or_else(|| format!("OpenEXR mip level buffer size overflow for {width}x{height}"))?;
+        let mut rgba = vec![0.0_f32; buf_len];
         let tile_rect = (0, 0, width, height);
         for tile_y_index in 0..tile_grid.count_y {
             for tile_x_index in 0..tile_grid.count_x {
@@ -790,7 +796,9 @@ impl OpenExrCoreReadContext {
             });
         }
 
-        let mut preview = vec![0.0_f32; out_w as usize * out_h as usize * 4];
+        let buf_len = crate::constants::checked_rgba_buffer_len(out_w as usize, out_h as usize)
+            .ok_or_else(|| format!("OpenEXR mip preview buffer size overflow for {out_w}x{out_h}"))?;
+        let mut preview = vec![0.0_f32; buf_len];
         for preview_y in 0..out_h {
             let source_y =
                 crate::hdr::tiled::preview_sample_coord(preview_y, out_h, height) as usize;
@@ -933,7 +941,10 @@ impl OpenExrCoreReadContext {
         })?;
         let decode_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
 
-        let mut rgba = vec![0.0_f32; sample_count * 4];
+        let rgba_len = sample_count
+            .checked_mul(4)
+            .ok_or_else(|| "OpenEXR chunk RGBA sample count overflow".to_string())?;
+        let mut rgba = vec![0.0_f32; rgba_len];
         for alpha in rgba.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
             *alpha = 1.0;
         }

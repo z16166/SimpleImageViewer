@@ -210,7 +210,12 @@ pub(crate) fn decode_radiance_sdr_preview(
 
     validate_scanline_offsets(raster.outer_len, scanline_offsets)?;
     let metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
-    let mut pixels = Vec::with_capacity(preview_width as usize * preview_height as usize * 4);
+    let pixel_count = crate::constants::checked_rgba_buffer_len(
+        preview_width as usize,
+        preview_height as usize,
+    )
+    .ok_or_else(|| format!("Radiance SDR preview buffer size overflow for {preview_width}x{preview_height}"))?;
+    let mut pixels = Vec::with_capacity(pixel_count);
 
     if raster.is_row_major_top_left() {
         let inner_len = raster.inner_len as usize;
@@ -320,7 +325,12 @@ pub(crate) fn decode_radiance_hdr_preview(
     }
 
     validate_scanline_offsets(raster.outer_len, scanline_offsets)?;
-    let mut rgba = vec![0.0f32; preview_width as usize * preview_height as usize * 4];
+    let rgba_len = crate::constants::checked_rgba_buffer_len(
+        preview_width as usize,
+        preview_height as usize,
+    )
+    .ok_or_else(|| format!("Radiance HDR preview buffer size overflow for {preview_width}x{preview_height}"))?;
+    let mut rgba = vec![0.0f32; rgba_len];
 
     if raster.is_row_major_top_left() {
         let inner_len = raster.inner_len as usize;

@@ -157,7 +157,8 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
     crate::hdr::decode::validate_hdr_fallback_budget(width, height)?;
     let data_offset = reader.position() as usize;
     let scanline_offsets = build_radiance_scanline_offsets(mmap, data_offset, &raster)?;
-    let n = width as usize * height as usize * 4;
+    let n = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+        .ok_or_else(|| format!("Radiance HDR buffer size overflow for {width}x{height}"))?;
     let mut rgba_f32 = vec![0.0f32; n];
     validate_scanline_offsets(raster.outer_len, &scanline_offsets)?;
 
