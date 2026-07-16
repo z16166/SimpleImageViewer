@@ -389,6 +389,11 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
     // Demosaic paths call `RawProcessor::unpack` lazily; embedded-preview bootstrap
     // (CPU tiled refine) never needs sensor data on the loader thread.
     let (width, height) = processor.developed_output_dimensions();
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "RAW developed dimensions from LibRaw are zero ({width}x{height})"
+        ));
+    }
     let area = width as u64 * height as u64;
     let threshold = crate::tile_cache::get_tiled_threshold();
     let hq_refine_requires_tiling =
