@@ -37,6 +37,15 @@ pub const MAX_STATIC_FULL_DECODE_PIXELS: u64 = 256 * 1024 * 1024;
 
 /// Reject zero / overflowing / oversized static decode dimensions before allocating pixels.
 ///
+/// # Error convention
+///
+/// Returns English `format!`-based error strings (no `rust_i18n::t!`). These are
+/// **technical/developer-oriented** messages that flow through `Result<_, String>`
+/// to the loading orchestrator (which may translate them into user-visible OSD text).
+/// User-facing strings (settings labels, status bar, crash dialogs) use `rust_i18n::t!`
+/// and are translated; decode-layer technical errors are intentionally kept in English
+/// to avoid obscuring diagnostic information during debugging.
+///
 /// Returns `Ok(total_pixel_count)` on success — the caller can use the returned pixel count
 /// to pre-allocate buffers without re-computing `width * height`.
 #[inline]

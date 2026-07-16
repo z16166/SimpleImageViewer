@@ -342,7 +342,8 @@ fn tiled_source_uses_target_hdr_capacity() {
         metadata: low.metadata,
         target_hdr_capacity: low.target_hdr_capacity,
         display_to_physical: display_to_physical_pixel,
-    });
+    })
+    .expect("low-capacity Ultra HDR tile compose");
     let high_rgba = compose_ultra_hdr_tile_region_cpu(UltraHdrTileRegionCompose {
         tile_width: 64,
         tile_height: 64,
@@ -358,7 +359,8 @@ fn tiled_source_uses_target_hdr_capacity() {
         metadata: high.metadata,
         target_hdr_capacity: high.target_hdr_capacity,
         display_to_physical: display_to_physical_pixel,
-    });
+    })
+    .expect("high-capacity Ultra HDR tile compose");
 
     let low_peak = low_rgba
         .chunks_exact(4)

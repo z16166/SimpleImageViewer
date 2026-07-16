@@ -346,7 +346,8 @@ fn ultra_hdr_threshold_sized_jpeg_routes_to_file_backed_hdr_tiles() {
         metadata: deferred.metadata,
         target_hdr_capacity: 8.0,
         display_to_physical: display_to_physical_pixel,
-    });
+    })
+    .expect("Ultra HDR tile compose for test");
     assert!(
         composed
             .chunks_exact(4)

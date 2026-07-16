@@ -79,7 +79,15 @@ where
     }
 }
 
-/// Decode the primary HEIF tile to HDR float RGBA using libheif's preferred native layout (one decode).
+/// Verify that `height * stride` does not overflow (defense-in-depth before unsafe
+/// pointer arithmetic using `plane.add(y * stride)` in [`parallel_row_chunks_mut`] closures).
+#[inline]
+fn heif_check_stride_mul_height(height: usize, stride: usize) -> Result<(), String> {
+    height.checked_mul(stride).ok_or_else(|| {
+        format!("libheif stride * height overflow: stride={stride} height={height}")
+    })?;
+    Ok(())
+}
 #[cfg(feature = "heif-native")]
 pub(crate) fn decode_primary_heif_to_hdr(
     handle: *const libheif_sys::heif_image_handle,
@@ -371,6 +379,7 @@ pub(crate) fn hdr_buffer_from_monochrome(
     let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
     let plane = SendReadonlyPtr::new(plane);
+    heif_check_stride_mul_height(h, stride)?;
     parallel_row_chunks_mut(h, row_len, &mut rgba_f32, |y, row_dst| {
         let row_base = unsafe { plane.get().add(y * stride) };
         for x in 0..w {
@@ -457,6 +466,7 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb16(
     let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
     let plane = SendReadonlyPtr::new(plane);
+    heif_check_stride_mul_height(h, stride)?;
     parallel_row_chunks_mut(h, row_len, &mut rgba_f32, |y, row_dst| {
         let row = unsafe { std::slice::from_raw_parts(plane.get().add(y * stride), row_bytes) };
         for (x, px) in row.chunks_exact(bytes_per_pixel).enumerate() {
@@ -534,6 +544,7 @@ fn rgba8_from_interleaved_rgb8(
     let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba = vec![0_u8; rgba_len];
     let plane = SendReadonlyPtr::new(plane);
+    heif_check_stride_mul_height(h, stride)?;
     parallel_row_chunks_mut(h, row_len, &mut rgba, |y, row_dst| {
         let row = unsafe { std::slice::from_raw_parts(plane.get().add(y * stride), row_bytes) };
         for (x, px) in row.chunks_exact(bytes_per_pixel).enumerate() {
@@ -610,6 +621,7 @@ fn rgba8_from_interleaved_rgb16(
     let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba = vec![0_u8; rgba_len];
     let plane = SendReadonlyPtr::new(plane);
+    heif_check_stride_mul_height(h, stride)?;
     parallel_row_chunks_mut(h, row_len, &mut rgba, |y, row_dst| {
         let row = unsafe { std::slice::from_raw_parts(plane.get().add(y * stride), row_bytes) };
         for (x, px) in row.chunks_exact(bytes_per_pixel).enumerate() {
@@ -662,6 +674,7 @@ fn rgba8_from_monochrome(image: *const libheif_sys::heif_image) -> Result<Decode
     let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba = vec![0_u8; rgba_len];
     let plane = SendReadonlyPtr::new(plane);
+    heif_check_stride_mul_height(h, stride)?;
     parallel_row_chunks_mut(h, row_len, &mut rgba, |y, row_dst| {
         let row = unsafe { std::slice::from_raw_parts(plane.get().add(y * stride), w) };
         for (x, &lum) in row.iter().enumerate() {
@@ -835,6 +848,7 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb8_packed(
     let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
     let plane = SendReadonlyPtr::new(plane);
+    heif_check_stride_mul_height(h, stride)?;
     parallel_row_chunks_mut(h, row_len, &mut rgba_f32, |y, row_dst| {
         let row = unsafe { std::slice::from_raw_parts(plane.get().add(y * stride), row_bytes) };
         for (x, px) in row.chunks_exact(bytes_per_pixel).enumerate() {

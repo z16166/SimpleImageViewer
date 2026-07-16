@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Improved
 - **Reduced thumbnail loading overhead**: Cached reusable file-probe results during directory tree navigation, speeding up cold thumbnail scheduling for static formats like PNG and WebP.
 - **Better battery efficiency**: Eliminated periodic CPU wake-ups in background loader threads when idle, reducing unnecessary power consumption on all platforms.
+- **Decode hardening**: Added checked arithmetic for all buffer-size and stride calculations in AVIF, HEIF, JPEG-XL, OpenEXR, Radiance HDR, and RAW decode paths — malformed or malicious images that claim excessive dimensions now fail cleanly with an error message instead of crashing.
 
 ## [3.1.1] - 2026-07-15
 

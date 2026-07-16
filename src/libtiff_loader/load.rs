@@ -45,6 +45,15 @@ use crate::loader::{DecodedImage, ImageData};
 
 /// Validate that every strip/tile offset+byte_count entry fits within the mmap.
 ///
+/// # libtiff version dependency
+///
+/// Reads `uint64_t*` arrays via [`TiffGuard::get_field_u64_array`], which relies on
+/// libtiff's internal IFD directory layout for `TIFFTAG_STRIPOFFSETS` /
+/// `TIFFTAG_TILEOFFSETS` and the corresponding byte-count tags. This convention is
+/// stable in libtiff ≥ 4.0 (all modern builds). Alternative: use the public strile API
+/// (`TIFFGetStrileOffsetWithErr` / `TIFFGetStrileByteCountWithErr`), which is less
+/// coupled to the internal layout but may not be available in older libtiff builds.
+///
 /// Returns `Err` when an IFD is malformed (missing offset/byte-count arrays) or
 /// any entry references data beyond the mapped file — defense-in-depth for corrupted
 /// TIFF files that libtiff's own internal guards might not fully catch.

@@ -41,7 +41,10 @@ pub(crate) fn unpack_libraw_rgb16_rows_to_rgba_f32(
     crate::constants::validate_static_decode_dimensions(width, height)?;
     let w = width as usize;
     let h = height as usize;
-    let tight_row_bytes = w * bytes_per_pixel;
+    let row_bytes_per_pixel = bytes_per_pixel;
+    let tight_row_bytes = w
+        .checked_mul(row_bytes_per_pixel)
+        .ok_or_else(|| format!("RGB16 tight row bytes overflow: {width}x{height}"))?;
     let inv_scale = 1.0 / 65535.0;
     let cap = w
         .checked_mul(h)
@@ -54,8 +57,19 @@ pub(crate) fn unpack_libraw_rgb16_rows_to_rgba_f32(
         let row = rgb16_bytes
             .get(row_off..row_end)
             .ok_or_else(|| rust_i18n::t!("error.buffer_size_mismatch").to_string())?;
-        let dst_start = y * w * 4;
-        rgba_f32.resize(dst_start + w * 4, 0.0);
+        let dst_start = y
+            .checked_mul(w)
+            .and_then(|p| p.checked_mul(crate::constants::RGBA_CHANNELS))
+            .ok_or_else(|| format!("RGB16 dst_start overflow at row {y}"))?;
+        let row_len = w
+            .checked_mul(crate::constants::RGBA_CHANNELS)
+            .ok_or_else(|| format!("RGB16 row_len overflow: {width}x{height}"))?;
+        rgba_f32.resize(
+            dst_start
+                .checked_add(row_len)
+                .ok_or_else(|| format!("RGB16 buffer end overflow at row {y}"))?,
+            0.0,
+        );
         simple_image_viewer::simd_pixel_convert::normalize_uint16_rgb_scanline_to_rgba32f(
             row,
             &mut rgba_f32[dst_start..dst_start + w * 4],
@@ -532,7 +546,9 @@ impl RawProcessor {
         let w = self.width();
         let h = self.height();
         crate::constants::validate_static_decode_dimensions(w, h)?;
-        let total_pixels = w as usize * h as usize;
+        let total_pixels = (w as usize)
+            .checked_mul(h as usize)
+            .ok_or_else(|| format!("RGB16 total pixels overflow: {w}x{h}"))?;
         let mut scaled_pixels = vec![0u16; total_pixels];
         let mut scaled_w = 0u32;
         let mut scaled_h = 0u32;
@@ -1004,7 +1020,12 @@ impl RawProcessor {
         }
         let w = self.width();
         let h = self.height();
-        let mut out = vec![0u16; w as usize * h as usize * 3];
+        crate::constants::validate_static_decode_dimensions(w, h)?;
+        let total = (w as usize)
+            .checked_mul(h as usize)
+            .and_then(|p| p.checked_mul(3))
+            .ok_or_else(|| format!("libraw ppg scaled camera RGB counts overflow: {w}x{h}"))?;
+        let mut out = vec![0u16; total];
         let mut out_w = 0u32;
         let mut out_h = 0u32;
         let status = unsafe {
@@ -1036,7 +1057,12 @@ impl RawProcessor {
         }
         let w = self.width();
         let h = self.height();
-        let mut out = vec![0u16; w as usize * h as usize * 3];
+        crate::constants::validate_static_decode_dimensions(w, h)?;
+        let total = (w as usize)
+            .checked_mul(h as usize)
+            .and_then(|p| p.checked_mul(3))
+            .ok_or_else(|| format!("libraw ppg camera RGB counts overflow: {w}x{h}"))?;
+        let mut out = vec![0u16; total];
         let mut out_w = 0u32;
         let mut out_h = 0u32;
         let status = unsafe {

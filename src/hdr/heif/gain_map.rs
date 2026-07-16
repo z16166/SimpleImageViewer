@@ -334,6 +334,12 @@ pub(crate) fn decode_heif_gain_map(
         return None;
     }
 
+    // Verify that y * stride does not overflow (defense-in-depth for unsafe slice construction).
+    if (height as usize).checked_mul(stride).is_none() {
+        log::warn!("[HDR] HEIF gain map stride * height overflow: stride={stride} height={height}");
+        return None;
+    }
+
     for y in 0..height as usize {
         let row = unsafe { std::slice::from_raw_parts(plane.add(y * stride), row_bytes) };
         gain_rgba.extend_from_slice(row);

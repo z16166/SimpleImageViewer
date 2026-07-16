@@ -66,6 +66,11 @@ fn image_frame_to_animation_frame(frame: image::Frame) -> Result<AnimationFrame,
     let delay = image_frame_delay(&frame);
     let buffer = frame.into_buffer();
     let (width, height) = buffer.dimensions();
+    // Per-frame dimension cap via MAX_STATIC_FULL_DECODE_PIXELS (256 MP).
+    // This prevents a single malformed frame header from allocating an
+    // excessive buffer. It does NOT budget the total animation cache across
+    // all frames — the caller (e.g. orchestrator) manages overall memory
+    // via max_cache_bytes and frame count limits.
     crate::constants::validate_static_decode_dimensions(width, height)?;
     Ok(AnimationFrame::new(width, height, buffer.into_raw(), delay))
 }

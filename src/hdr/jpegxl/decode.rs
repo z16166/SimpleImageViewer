@@ -1398,7 +1398,10 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                             crate::constants::JXL_MAX_GAIN_MAP_BOX_SIZE / (1024 * 1024)
                         ));
                     }
-                    current_box_buffer = vec![0_u8; box_size as usize];
+                    let box_bytes = usize::try_from(box_size).map_err(|_| {
+                        format!("JPEG XL jhgm box size {box_size} exceeds platform usize",)
+                    })?;
+                    current_box_buffer = vec![0_u8; box_bytes];
                     current_box_pos = 0;
                     ensure_jxl_success(
                         unsafe {
