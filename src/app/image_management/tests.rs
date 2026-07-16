@@ -2360,19 +2360,16 @@ fn first_cached_hdr_or_tiled_preview_selection_rules() {
 pub(crate) fn make_test_app() -> ImageViewerApp {
     let (file_op_tx, file_op_rx) = crossbeam_channel::unbounded();
     let (lightweight_file_op_tx, _lightweight_file_op_rx) = crossbeam_channel::unbounded();
-    let (save_tx, _save_rx) = crossbeam_channel::unbounded();
-    let (_save_error_tx, save_error_rx) = crossbeam_channel::unbounded();
+    let (yaml_save_tx, _yaml_save_rx) = crossbeam_channel::unbounded();
+    let (_yaml_save_error_tx, yaml_save_error_rx) =
+        crossbeam_channel::bounded(crate::constants::BACKGROUND_YAML_SAVE_ERROR_CHANNEL_CAPACITY);
     let (_ipc_tx, ipc_rx) = crossbeam_channel::unbounded();
 
     let hotkeys_draft_config = crate::hotkeys::model::default_hotkey_config_file();
     let hotkeys_runtime = crate::hotkeys::rebuild_runtime_state(&hotkeys_draft_config);
-    let (hotkeys_save_tx, _hotkeys_save_rx) = crossbeam_channel::unbounded();
-    let (_hotkeys_save_error_tx, hotkeys_save_error_rx) = crossbeam_channel::unbounded();
     let context_menu_draft_config = crate::context_menu::model::default_context_menu_config_file();
     let context_menu_runtime =
         crate::context_menu::rebuild_runtime_state(&context_menu_draft_config);
-    let (context_menu_save_tx, _context_menu_save_rx) = crossbeam_channel::unbounded();
-    let (_context_menu_save_error_tx, context_menu_save_error_rx) = crossbeam_channel::unbounded();
 
     #[cfg(target_os = "linux")]
     let requested_vulkan_hdr_metadata = eframe::egui_wgpu::RequestedVulkanHdrMetadata::new();
@@ -2600,10 +2597,10 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         last_mouse_wheel_nav: 0.0,
         last_canvas_rect: None,
         last_keyboard_nav: None,
-        save_tx,
-        save_error_rx,
+        yaml_save_tx,
+        yaml_save_error_rx,
         last_save_error: None,
-        saver_handle: None,
+        yaml_saver_handle: None,
         preload_budget_forward: 100 * 1024 * 1024,
         preload_budget_backward: 100 * 1024 * 1024,
         preload_memory: crate::app::preload_memory::PreloadMemorySnapshot::new(),
@@ -2619,9 +2616,6 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         music_hud_drag_offset: Vec2::ZERO,
         hotkeys_runtime,
         hotkeys_draft_config,
-        hotkeys_save_error_rx,
-        hotkeys_save_tx,
-        hotkeys_saver_handle: None,
         last_hotkeys_save_error: None,
         hotkeys_apply_success_at: None,
         hotkeys_load_error: None,
@@ -2635,9 +2629,6 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         hotkeys_add_row_need_key_hint: false,
         context_menu_runtime,
         context_menu_draft_config,
-        context_menu_save_error_rx,
-        context_menu_save_tx,
-        context_menu_saver_handle: None,
         last_context_menu_save_error: None,
         context_menu_apply_success_at: None,
         context_menu_apply_error: None,
@@ -3916,8 +3907,8 @@ fn ipc_double_click_can_keep_saved_gallery_directory() {
 fn ipc_double_click_transient_gallery_queues_persistent_setting_save() {
     let ctx = egui::Context::default();
     let mut app = make_test_app();
-    let (save_tx, save_rx) = crossbeam_channel::unbounded();
-    app.save_tx = save_tx;
+    let (yaml_save_tx, yaml_save_rx) = crossbeam_channel::unbounded();
+    app.yaml_save_tx = yaml_save_tx;
     let saved = std::env::temp_dir().join("siv_saved_gallery_save_queued");
     let opened = std::env::temp_dir().join("siv_opened_gallery_save_queued");
     std::fs::create_dir_all(&saved).unwrap();
@@ -3931,7 +3922,14 @@ fn ipc_double_click_transient_gallery_queues_persistent_setting_save() {
 
     app.handle_ipc_open_image(image, &ctx, true);
 
-    let queued = save_rx.try_iter().last().expect("settings save queued");
+    let queued = match yaml_save_rx
+        .try_iter()
+        .last()
+        .expect("settings save queued")
+    {
+        crate::app::background_yaml_saver::YamlSaveRequest::Settings(settings) => *settings,
+        other => panic!("expected settings save request, got {other:?}"),
+    };
     assert_eq!(queued.last_image_dir, Some(saved));
     assert!(!queued.recursive);
     assert!(!queued.auto_switch);
@@ -3969,8 +3967,8 @@ fn embedded_panel_bootstrap_retries_until_embedded_nav_active() {
 fn image_list_double_click_hides_tree_nav_without_persisting_toggle() {
     let ctx = egui::Context::default();
     let mut app = make_test_app();
-    let (save_tx, save_rx) = crossbeam_channel::unbounded();
-    app.save_tx = save_tx;
+    let (yaml_save_tx, yaml_save_rx) = crossbeam_channel::unbounded();
+    app.yaml_save_tx = yaml_save_tx;
     let dir = std::env::temp_dir().join("siv_list_double_click_nav");
     std::fs::create_dir_all(&dir).unwrap();
     let first = dir.join("first.jpg");
@@ -4018,15 +4016,15 @@ fn image_list_double_click_hides_tree_nav_without_persisting_toggle() {
     assert!(!app.directory_tree_settings_active());
     assert!(app.auto_hidden_directory_tree_nav);
     assert!(app.settings.show_directory_tree_nav);
-    assert!(save_rx.try_iter().next().is_none());
+    assert!(yaml_save_rx.try_iter().next().is_none());
 }
 
 #[test]
 fn ipc_double_click_auto_hides_tree_nav_without_persisting_toggle() {
     let ctx = egui::Context::default();
     let mut app = make_test_app();
-    let (save_tx, save_rx) = crossbeam_channel::unbounded();
-    app.save_tx = save_tx;
+    let (yaml_save_tx, yaml_save_rx) = crossbeam_channel::unbounded();
+    app.yaml_save_tx = yaml_save_tx;
     let saved = std::env::temp_dir().join("siv_tree_saved_gallery");
     let opened = std::env::temp_dir().join("siv_tree_opened_gallery");
     std::fs::create_dir_all(&saved).unwrap();
@@ -4042,7 +4040,14 @@ fn ipc_double_click_auto_hides_tree_nav_without_persisting_toggle() {
     assert!(!app.directory_tree_settings_active());
     assert_eq!(app.settings.browse_mode, crate::settings::BrowseMode::Tree);
     assert!(app.settings.show_directory_tree_nav);
-    let queued = save_rx.try_iter().last().expect("settings save queued");
+    let queued = match yaml_save_rx
+        .try_iter()
+        .last()
+        .expect("settings save queued")
+    {
+        crate::app::background_yaml_saver::YamlSaveRequest::Settings(settings) => *settings,
+        other => panic!("expected settings save request, got {other:?}"),
+    };
     assert_eq!(queued.browse_mode, crate::settings::BrowseMode::Tree);
     assert!(queued.show_directory_tree_nav);
 }

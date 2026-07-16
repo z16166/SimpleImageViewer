@@ -76,38 +76,25 @@ impl eframe::App for ImageViewerApp {
                 self.cached_directory_tree_restore_placement,
             );
         }
-        // Shut down the async saver thread first: dropping the sender closes the
-        // channel, causing the saver's `recv()` loop to exit after finishing any
-        // in-progress write. This eliminates the race between the saver and our
-        // synchronous save below.
-        let (dummy_tx, _) = crossbeam_channel::unbounded::<Settings>();
-        let old_tx = std::mem::replace(&mut self.save_tx, dummy_tx);
+        // Shut down the unified YAML saver thread first: dropping the sender closes
+        // the channel, causing the saver loop to exit after finishing any in-progress
+        // write. This eliminates the race between the saver and our synchronous saves
+        // below.
+        let (dummy_tx, _) =
+            crossbeam_channel::unbounded::<crate::app::background_yaml_saver::YamlSaveRequest>();
+        let old_tx = std::mem::replace(&mut self.yaml_save_tx, dummy_tx);
         drop(old_tx);
-        let (dummy_hotkey_tx, _) =
-            crossbeam_channel::unbounded::<crate::hotkeys::model::HotkeyConfigFile>();
-        let old_hotkey_tx = std::mem::replace(&mut self.hotkeys_save_tx, dummy_hotkey_tx);
-        drop(old_hotkey_tx);
-        let (dummy_context_menu_tx, _) =
-            crossbeam_channel::unbounded::<crate::context_menu::model::ContextMenuConfigFile>();
-        let old_context_menu_tx =
-            std::mem::replace(&mut self.context_menu_save_tx, dummy_context_menu_tx);
-        drop(old_context_menu_tx);
 
-        // Wait for the saver thread to finish any in-progress I/O
-        if let Some(handle) = self.saver_handle.take()
-            && let Err(e) = handle.join()
-        {
-            log::error!("[on_exit] Saver thread panicked: {:?}", e);
-        }
-        if let Some(handle) = self.hotkeys_saver_handle.take()
-            && let Err(e) = handle.join()
-        {
-            log::error!("[on_exit] Hotkeys saver thread panicked: {:?}", e);
-        }
-        if let Some(handle) = self.context_menu_saver_handle.take()
-            && let Err(e) = handle.join()
-        {
-            log::error!("[on_exit] Context menu saver thread panicked: {:?}", e);
+        // Wait for the saver thread to finish any in-progress I/O, with the same
+        // wall-clock budget as other background workers. A stuck disk write must
+        // not block process exit forever; synchronous YAML saves below remain
+        // authoritative for session state.
+        if let Some(handle) = self.yaml_saver_handle.take() {
+            crate::app::background_threads::join_handle_with_timeout(
+                handle,
+                crate::app::background_threads::BACKGROUND_THREAD_JOIN_TIMEOUT,
+                "YAML saver thread",
+            );
         }
         self.background_threads
             .join_all(crate::app::background_threads::BACKGROUND_THREAD_JOIN_TIMEOUT);

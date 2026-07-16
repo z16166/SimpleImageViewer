@@ -87,25 +87,27 @@ impl ImageViewerApp {
         let tray_cmd_rx =
             crate::app::tray_handlers::install_tray_event_handlers(cc.egui_ctx.clone());
 
-        let (save_tx, save_rx) = crossbeam_channel::unbounded::<Settings>();
-        let (save_error_tx, save_error_rx) = crossbeam_channel::unbounded::<String>();
-        let saver_res = std::thread::Builder::new()
-            .name("settings-saver".to_string())
+        // Request channel stays unbounded: kinds are coalesced to latest payload only.
+        // Error channel is bounded; UI drains every frame and the saver never blocks on it.
+        let (yaml_save_tx, yaml_save_rx) =
+            crossbeam_channel::unbounded::<crate::app::background_yaml_saver::YamlSaveRequest>();
+        let (yaml_save_error_tx, yaml_save_error_rx) =
+            crossbeam_channel::bounded::<crate::app::background_yaml_saver::YamlSaveError>(
+                crate::constants::BACKGROUND_YAML_SAVE_ERROR_CHANNEL_CAPACITY,
+            );
+        let yaml_saver_res = std::thread::Builder::new()
+            .name("yaml-saver".to_string())
             .spawn(move || {
-                crate::app::background_yaml_saver::run_coalescing_periodic_saver(
-                    save_rx,
+                crate::app::background_yaml_saver::run_unified_yaml_saver(
+                    yaml_save_rx,
                     crate::constants::BACKGROUND_YAML_SAVE_MIN_INTERVAL,
-                    |settings| settings.save(),
-                    |e| {
-                        let _ = save_error_tx.send(e);
-                    },
+                    yaml_save_error_tx,
                 );
             });
-
-        let saver_handle = match saver_res {
+        let yaml_saver_handle = match yaml_saver_res {
             Ok(handle) => Some(handle),
             Err(e) => {
-                log::error!("[Core] Failed to spawn settings-saver thread: {}", e);
+                log::error!("[Core] Failed to spawn yaml-saver thread: {}", e);
                 None
             }
         };
@@ -137,29 +139,6 @@ impl ImageViewerApp {
             }
         };
         let hotkeys_draft_config = hotkeys_runtime.config.clone();
-        let (hotkeys_save_tx, hotkeys_save_rx) =
-            crossbeam_channel::unbounded::<crate::hotkeys::model::HotkeyConfigFile>();
-        let (hotkeys_save_error_tx, hotkeys_save_error_rx) =
-            crossbeam_channel::unbounded::<String>();
-        let hotkeys_saver_res = std::thread::Builder::new()
-            .name("hotkeys-saver".to_string())
-            .spawn(move || {
-                crate::app::background_yaml_saver::run_coalescing_periodic_saver(
-                    hotkeys_save_rx,
-                    crate::constants::BACKGROUND_YAML_SAVE_MIN_INTERVAL,
-                    crate::hotkeys::io::save_hotkeys_file,
-                    |e| {
-                        let _ = hotkeys_save_error_tx.send(e);
-                    },
-                );
-            });
-        let hotkeys_saver_handle = match hotkeys_saver_res {
-            Ok(handle) => Some(handle),
-            Err(e) => {
-                log::error!("[Core] Failed to spawn hotkeys-saver thread: {}", e);
-                None
-            }
-        };
 
         let context_menu_runtime = match crate::context_menu::load_runtime_context_menu_state() {
             Ok(state) => state,
@@ -171,29 +150,6 @@ impl ImageViewerApp {
             }
         };
         let context_menu_draft_config = context_menu_runtime.config.clone();
-        let (context_menu_save_tx, context_menu_save_rx) =
-            crossbeam_channel::unbounded::<crate::context_menu::model::ContextMenuConfigFile>();
-        let (context_menu_save_error_tx, context_menu_save_error_rx) =
-            crossbeam_channel::unbounded::<String>();
-        let context_menu_saver_res = std::thread::Builder::new()
-            .name("context-menu-saver".to_string())
-            .spawn(move || {
-                crate::app::background_yaml_saver::run_coalescing_periodic_saver(
-                    context_menu_save_rx,
-                    crate::constants::BACKGROUND_YAML_SAVE_MIN_INTERVAL,
-                    crate::context_menu::io::save_context_menu_file,
-                    |e| {
-                        let _ = context_menu_save_error_tx.send(e);
-                    },
-                );
-            });
-        let context_menu_saver_handle = match context_menu_saver_res {
-            Ok(handle) => Some(handle),
-            Err(e) => {
-                log::error!("[Core] Failed to spawn context-menu-saver thread: {}", e);
-                None
-            }
-        };
 
         // ── GPU Limits ───────────────────────────────────────────────────────
         let max_texture_side_hw = cc
@@ -478,7 +434,7 @@ impl ImageViewerApp {
             && settings.show_directory_tree_nav
             && settings.browse_mode == BrowseMode::Tree;
         let mut app = Self {
-            save_tx,
+            yaml_save_tx,
             initial_image,
             image_files: Vec::new(),
             cached_image_strip_path_index: None,
@@ -693,9 +649,9 @@ impl ImageViewerApp {
             context_menu_viewport: None,
             context_menu_label_cache: None,
             current_rotation: 0,
-            save_error_rx,
+            yaml_save_error_rx,
             last_save_error: None,
-            saver_handle,
+            yaml_saver_handle,
             tile_upload_quota: tile_quota,
             hardware_tier: tier,
             music_seeking_target_ms: None,
@@ -707,9 +663,6 @@ impl ImageViewerApp {
             music_hud_drag_offset: Vec2::ZERO,
             hotkeys_runtime,
             hotkeys_draft_config,
-            hotkeys_save_error_rx,
-            hotkeys_save_tx,
-            hotkeys_saver_handle,
             last_hotkeys_save_error: None,
             hotkeys_apply_success_at: None,
             hotkeys_load_error,
@@ -723,9 +676,6 @@ impl ImageViewerApp {
             hotkeys_add_row_need_key_hint: false,
             context_menu_runtime,
             context_menu_draft_config,
-            context_menu_save_error_rx,
-            context_menu_save_tx,
-            context_menu_saver_handle,
             last_context_menu_save_error: None,
             context_menu_apply_success_at: None,
             context_menu_apply_error: None,
@@ -821,18 +771,26 @@ impl ImageViewerApp {
     /// Enqueues a best-effort background YAML write (trailing debounce, ~5s quiet period).
     /// `last_viewed_image` and other session state are persisted authoritatively in `on_exit`.
     pub(crate) fn queue_save(&self) {
-        let _ = self.save_tx.send(self.settings.clone());
+        let _ = self.yaml_save_tx.send(
+            crate::app::background_yaml_saver::YamlSaveRequest::Settings(Box::new(
+                self.settings.clone(),
+            )),
+        );
     }
 
     pub(crate) fn queue_hotkeys_save(&self) {
-        let _ = self
-            .hotkeys_save_tx
-            .send(self.hotkeys_runtime.config.clone());
+        let _ =
+            self.yaml_save_tx
+                .send(crate::app::background_yaml_saver::YamlSaveRequest::Hotkeys(
+                    self.hotkeys_runtime.config.clone(),
+                ));
     }
 
     pub(crate) fn queue_context_menu_save(&self) {
-        let _ = self
-            .context_menu_save_tx
-            .send(self.context_menu_runtime.config.clone());
+        let _ = self.yaml_save_tx.send(
+            crate::app::background_yaml_saver::YamlSaveRequest::ContextMenu(
+                self.context_menu_runtime.config.clone(),
+            ),
+        );
     }
 }

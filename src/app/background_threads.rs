@@ -29,6 +29,36 @@ pub(crate) const BACKGROUND_THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(
 /// Poll interval while waiting for unfinished background threads during shutdown.
 const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Join a single worker with a wall-clock budget.
+///
+/// `JoinHandle::join` itself has no timeout; we poll `is_finished` and only call
+/// `join` once the thread has stopped. On timeout the handle is dropped (detached)
+/// so shutdown can continue; authoritative persistence must already have a
+/// synchronous fallback (e.g. YAML writes in `on_exit`).
+pub(crate) fn join_handle_with_timeout(handle: JoinHandle<()>, timeout: Duration, label: &str) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if handle.is_finished() {
+            if handle.join().is_err() {
+                log::error!("[on_exit] {label} panicked on join");
+            }
+            return;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            log::warn!(
+                "[on_exit] {label} join timed out after {:?}; detaching unfinished thread",
+                timeout
+            );
+            // Dropping JoinHandle detaches the thread.
+            drop(handle);
+            return;
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        std::thread::sleep(remaining.min(JOIN_POLL_INTERVAL));
+    }
+}
+
 pub(crate) struct BackgroundThreadJoiner {
     handles: Mutex<VecDeque<JoinHandle<()>>>,
 }
