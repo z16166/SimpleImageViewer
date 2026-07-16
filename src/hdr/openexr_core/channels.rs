@@ -150,16 +150,37 @@ pub(crate) fn copy_decoded_chunk_to_tile(
     let copy_width = (copy_end_x - copy_start_x) as usize;
     let chunk_width = decoded.width as usize;
     let tile_width = tile_width as usize;
+    let cw4 = chunk_width
+        .checked_mul(4)
+        .ok_or_else(|| format!("EXR chunk stride overflow: chunk_width={chunk_width}"))?;
+    let tw4 = tile_width
+        .checked_mul(4)
+        .ok_or_else(|| format!("EXR tile stride overflow: tile_width={tile_width}"))?;
+    let cw_copy = copy_width
+        .checked_mul(4)
+        .ok_or_else(|| format!("EXR copy width overflow: copy_width={copy_width}"))?;
     for source_y in copy_start_y..copy_end_y {
         let src_row = (source_y - chunk_y) as usize;
         let dst_row = (source_y - tile_y) as usize;
         let src_col = (copy_start_x - chunk_x) as usize;
         let dst_col = (copy_start_x - tile_x) as usize;
-        let src_start = (src_row * chunk_width + src_col) * 4;
-        let src_end = src_start + copy_width * 4;
-        let dst_start = (dst_row * tile_width + dst_col) * 4;
-        let dst_end = dst_start + copy_width * 4;
-        rgba[dst_start..dst_end].copy_from_slice(&decoded.rgba[src_start..src_end]);
+        let src_start = (src_row as usize)
+            .checked_mul(cw4)
+            .ok_or_else(|| {
+                format!("EXR chunk row offset overflow: src_row={src_row}")
+            })?
+            + (src_col as usize)
+                .checked_mul(4)
+                .ok_or_else(|| format!("EXR chunk col offset overflow: src_col={src_col}"))?;
+        let dst_start = (dst_row as usize)
+            .checked_mul(tw4)
+            .ok_or_else(|| {
+                format!("EXR tile row offset overflow: dst_row={dst_row}")
+            })?
+            + (dst_col as usize)
+                .checked_mul(4)
+                .ok_or_else(|| format!("EXR tile col offset overflow: dst_col={dst_col}"))?;
+        rgba[dst_start..dst_start + cw_copy].copy_from_slice(&decoded.rgba[src_start..src_start + cw_copy]);
     }
 
     Ok(copy_start.elapsed().as_secs_f64() * 1000.0)
@@ -196,6 +217,12 @@ pub(crate) fn sample_decoded_scanline_chunk_into_preview(
             continue;
         }
         let source_row = (source_y - chunk_y) as usize;
+        let src_w4 = (decoded.width as usize)
+            .checked_mul(4)
+            .ok_or_else(|| format!("EXR preview source stride overflow"))?;
+        let dst_w4 = (preview_width as usize)
+            .checked_mul(4)
+            .ok_or_else(|| format!("EXR preview dest stride overflow"))?;
         for preview_x in 0..preview_width {
             let source_x =
                 crate::hdr::tiled::preview_sample_coord(preview_x, preview_width, source_width);
@@ -203,9 +230,26 @@ pub(crate) fn sample_decoded_scanline_chunk_into_preview(
                 continue;
             }
             let source_col = (source_x - chunk_x) as usize;
-            let source_offset = (source_row * decoded.width as usize + source_col) * 4;
-            let dest_offset =
-                (preview_y as usize * preview_width as usize + preview_x as usize) * 4;
+            let source_offset = (source_row as usize)
+                .checked_mul(src_w4)
+                .ok_or_else(|| {
+                    format!("EXR preview source row offset overflow: source_row={source_row}")
+                })?
+                + (source_col as usize)
+                    .checked_mul(4)
+                    .ok_or_else(|| {
+                        format!("EXR preview source col offset overflow: source_col={source_col}")
+                    })?;
+            let dest_offset = (preview_y as usize)
+                .checked_mul(dst_w4)
+                .ok_or_else(|| {
+                    format!("EXR preview dest row offset overflow: preview_y={preview_y}")
+                })?
+                + (preview_x as usize)
+                    .checked_mul(4)
+                    .ok_or_else(|| {
+                        format!("EXR preview dest col offset overflow: preview_x={preview_x}")
+                    })?;
             rgba[dest_offset..dest_offset + 4]
                 .copy_from_slice(&decoded.rgba[source_offset..source_offset + 4]);
         }

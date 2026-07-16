@@ -259,12 +259,28 @@ pub(crate) fn extract_rgba32f_tile_from_flat_buffer(
             )
         })?;
     let mut out = vec![0.0_f32; out_len];
+    let w4 = (width as usize)
+        .checked_mul(4)
+        .ok_or_else(|| format!("EXR tile row width overflow: width={width}"))?;
     for row in 0..height {
         let src_y = (y + row) as usize;
-        let src_start = src_y * row_stride + x as usize * 4;
-        let src_end = src_start + width as usize * 4;
-        let dst_start = row as usize * width as usize * 4;
-        out[dst_start..dst_start + width as usize * 4].copy_from_slice(&rgba[src_start..src_end]);
+        let src_start = (src_y as usize)
+            .checked_mul(row_stride)
+            .ok_or_else(|| {
+                format!("EXR tile source row offset overflow: src_y={src_y} stride={row_stride}")
+            })?
+            + (x as usize)
+                .checked_mul(4)
+                .ok_or_else(|| format!("EXR tile source col offset overflow: x={x}"))?;
+        let dst_start = (row as usize)
+            .checked_mul(width as usize)
+            .and_then(|p| p.checked_mul(4))
+            .ok_or_else(|| {
+                format!(
+                    "EXR tile destination row offset overflow: row={row} width={width}"
+                )
+            })?;
+        out[dst_start..dst_start + w4].copy_from_slice(&rgba[src_start..src_start + w4]);
     }
     Ok(out)
 }
