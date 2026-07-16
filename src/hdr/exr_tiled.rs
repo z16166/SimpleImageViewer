@@ -224,7 +224,11 @@ impl ExrTiledImageSource {
 
             let mut tiles = Vec::with_capacity(keys.len());
             for (tile_x, tile_y, tile_width, tile_height) in keys {
-                let mut rgba = Vec::with_capacity(tile_width as usize * tile_height as usize * 4);
+                let cap = (tile_width as usize)
+                    .checked_mul(tile_height as usize)
+                    .and_then(|p| p.checked_mul(4))
+                    .unwrap_or(0);
+                let mut rgba = Vec::with_capacity(cap);
                 let start_x = tile_x as usize * 4;
                 let row_len = tile_width as usize * 4;
                 let source_stride = band.width as usize * 4;

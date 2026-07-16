@@ -299,6 +299,7 @@ pub(crate) fn hdr_buffer_from_ycbcr(
     if y_w == 0 || y_h == 0 {
         return Err("YCbCr: zero-sized luma".to_string());
     }
+    crate::constants::validate_static_decode_dimensions(y_w as u32, y_h as u32)?;
 
     let cb_w = unsafe { libheif_sys::heif_image_get_width(image, heif_channel_Cb) } as usize;
     let cb_h = unsafe { libheif_sys::heif_image_get_height(image, heif_channel_Cb) } as usize;
@@ -637,6 +638,7 @@ pub(crate) fn ycbcr_image_to_rgba8(
     if y_w <= 0 || y_h <= 0 {
         return Err("libheif YCbCr image has zero luma size".to_string());
     }
+    crate::constants::validate_static_decode_dimensions(y_w as u32, y_h as u32)?;
     let width = y_w as u32;
     let height = y_h as u32;
 

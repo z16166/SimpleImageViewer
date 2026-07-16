@@ -134,7 +134,14 @@ pub(crate) fn copy_decoded_chunk_to_tile(
         return Ok(0.0);
     }
 
-    let expected_len = tile_width as usize * tile_height as usize * 4;
+    let expected_len = (tile_width as usize)
+        .checked_mul(tile_height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or_else(|| {
+            format!(
+                "EXR destination tile buffer size overflow: {tile_width}x{tile_height}"
+            )
+        })?;
     if rgba.len() != expected_len {
         return Err("EXR destination tile buffer has unexpected length".to_string());
     }
@@ -166,7 +173,14 @@ pub(crate) fn sample_decoded_scanline_chunk_into_preview(
     preview_rows: &[(u32, u32)],
     rgba: &mut [f32],
 ) -> Result<(), String> {
-    let expected_len = preview_width as usize * preview_height as usize * 4;
+    let expected_len = (preview_width as usize)
+        .checked_mul(preview_height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or_else(|| {
+            format!(
+                "EXR preview buffer size overflow: {preview_width}x{preview_height}"
+            )
+        })?;
     if rgba.len() != expected_len {
         return Err("EXR preview buffer has unexpected length".to_string());
     }

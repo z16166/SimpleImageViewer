@@ -184,6 +184,11 @@ pub(crate) fn decode_jxl_strip_preview_rgba8(bytes: &[u8]) -> JxlStripPreviewRes
                         ))
                     }
                 };
+                crate::constants::validate_static_decode_dimensions(
+                    info.preview.xsize,
+                    info.preview.ysize,
+                )
+                .ok()?;
                 let expected_preview = match (info.preview.xsize as usize)
                     .checked_mul(info.preview.ysize as usize)
                     .and_then(|p| p.checked_mul(4))

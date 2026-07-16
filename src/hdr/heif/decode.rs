@@ -361,6 +361,7 @@ pub(crate) fn hdr_buffer_from_monochrome(
     if width_i <= 0 || height_i <= 0 {
         return Err("libheif monochrome image has zero size".to_string());
     }
+    crate::constants::validate_static_decode_dimensions(width_i as u32, height_i as u32)?;
 
     let mut stride = 0usize;
     let plane =
@@ -427,6 +428,7 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb16(
     if width_i <= 0 || height_i <= 0 {
         return Err("libheif decoded zero-sized image".to_string());
     }
+    crate::constants::validate_static_decode_dimensions(width_i as u32, height_i as u32)?;
     let mut stride = 0_usize;
     let plane = unsafe {
         libheif_sys::heif_image_get_plane_readonly2(
@@ -511,6 +513,7 @@ fn rgba8_from_interleaved_rgb8(
     if width_i <= 0 || height_i <= 0 {
         return Err("libheif decoded zero-sized image".to_string());
     }
+    crate::constants::validate_static_decode_dimensions(width_i as u32, height_i as u32)?;
     let width = width_i as u32;
     let height = height_i as u32;
 
@@ -576,6 +579,7 @@ fn rgba8_from_interleaved_rgb16(
     if width_i <= 0 || height_i <= 0 {
         return Err("libheif decoded zero-sized image".to_string());
     }
+    crate::constants::validate_static_decode_dimensions(width_i as u32, height_i as u32)?;
     let width = width_i as u32;
     let height = height_i as u32;
 
@@ -653,6 +657,7 @@ fn rgba8_from_monochrome(image: *const libheif_sys::heif_image) -> Result<Decode
     if width_i <= 0 || height_i <= 0 {
         return Err("libheif monochrome image has zero size".to_string());
     }
+    crate::constants::validate_static_decode_dimensions(width_i as u32, height_i as u32)?;
     let width = width_i as u32;
     let height = height_i as u32;
 

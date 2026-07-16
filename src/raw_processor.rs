@@ -43,7 +43,13 @@ pub(crate) fn unpack_libraw_rgb16_rows_to_rgba_f32(
     let h = height as usize;
     let tight_row_bytes = w * bytes_per_pixel;
     let inv_scale = 1.0 / 65535.0;
-    let mut rgba_f32 = Vec::with_capacity(w * h * crate::constants::RGBA_CHANNELS);
+    let cap = w
+        .checked_mul(h)
+        .and_then(|p| p.checked_mul(crate::constants::RGBA_CHANNELS))
+        .ok_or_else(|| {
+            format!("RGB16 buffer capacity overflow: {width}x{height}")
+        })?;
+    let mut rgba_f32 = Vec::with_capacity(cap);
     for y in 0..h {
         let row_off = y * row_stride;
         let row_end = row_off + tight_row_bytes;
@@ -965,7 +971,14 @@ impl RawProcessor {
         if width == 0 || height == 0 {
             return Err("Invalid dimensions".to_string());
         }
-        let expected = width as usize * height as usize * 3;
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|p| p.checked_mul(3))
+            .ok_or_else(|| {
+                format!(
+                    "RGB16 output buffer length overflow: {width}x{height}"
+                )
+            })?;
         if rgb16.len() < expected {
             return Err("RGB16 buffer too small".to_string());
         }
@@ -1230,11 +1243,12 @@ impl RawProcessor {
                 if img.colors == crate::constants::RGB_CHANNELS as u16
                     && img.bits == crate::constants::BIT_DEPTH_8 as u16
                 {
-                    crate::constants::validate_static_decode_dimensions(
-                        img.width as u32,
-                        img.height as u32,
-                    )?;
-                    let count = img.width as usize * img.height as usize;
+                    let validated_pixels =
+                        crate::constants::validate_static_decode_dimensions(
+                            img.width as u32,
+                            img.height as u32,
+                        )?;
+                    let count = validated_pixels as usize;
                     let required_rgb = count
                         .checked_mul(crate::constants::RGB_CHANNELS)
                         .filter(|&len| len <= slice.len());

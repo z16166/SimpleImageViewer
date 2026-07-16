@@ -1014,7 +1014,15 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 if captured_frames.is_empty() && rgba_f32.is_empty() {
                     return Err("libjxl decode completed without an image".to_string());
                 }
-                let expected_len = info.xsize as usize * info.ysize as usize * 4;
+                let expected_len = (info.xsize as usize)
+                    .checked_mul(info.ysize as usize)
+                    .and_then(|p| p.checked_mul(4))
+                    .ok_or_else(|| {
+                        format!(
+                            "JPEG XL output buffer length overflow for {}x{}",
+                            info.xsize, info.ysize
+                        )
+                    })?;
                 if captured_frames.len() > 1 {
                     for (buf, _) in &captured_frames {
                         if buf.len() != expected_len {
@@ -1207,6 +1215,10 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 }
                 // Validate preview buffer size before allocation (DoS guard).
                 let info = basic_info.ok_or("JXL_NEED_PREVIEW_OUT_BUFFER before basic info")?;
+                crate::constants::validate_static_decode_dimensions(
+                    info.preview.xsize,
+                    info.preview.ysize,
+                )?;
                 let expected = (info.preview.xsize as usize)
                     .checked_mul(info.preview.ysize as usize)
                     .and_then(|p| p.checked_mul(4))
