@@ -205,6 +205,8 @@ impl ImageViewerApp {
         self.directory_tree_strip_inflight_cancel.remove(&path);
         self.directory_tree_strip_static_full_decode_inflight
             .remove(&path);
+        self.directory_tree_strip_reusable_full_decode_cache
+            .retain(|p| p != path.as_path());
         self.directory_tree_strip_tiled_attempted.remove(&path);
     }
 
