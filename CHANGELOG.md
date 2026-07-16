@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.1.2] - 2026-07-16
+
+### Improved
+- **Reduced thumbnail loading overhead**: Cached reusable file-probe results during directory tree navigation, speeding up cold thumbnail scheduling for static formats like PNG and WebP.
+- **Better battery efficiency**: Eliminated periodic CPU wake-ups in background loader threads when idle, reducing unnecessary power consumption on all platforms.
+
 ## [3.1.1] - 2026-07-15
 
 ### Improved

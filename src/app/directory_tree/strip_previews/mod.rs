@@ -42,7 +42,7 @@ use super::{
     MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP, MAX_TILED_STRIP_GENERATES_PER_FRAME, domains, view,
 };
 
-mod checks;
+pub(crate) mod checks;
 mod gpu;
 mod poll;
 mod schedule;
@@ -205,6 +205,8 @@ impl ImageViewerApp {
         self.directory_tree_strip_inflight_cancel.remove(&path);
         self.directory_tree_strip_static_full_decode_inflight
             .remove(&path);
+        self.directory_tree_strip_reusable_full_decode_cache
+            .retain(|p| p != path.as_path());
         self.directory_tree_strip_tiled_attempted.remove(&path);
     }
 
@@ -749,6 +751,8 @@ impl ImageViewerApp {
             .retain(|path, _| live.contains(path));
         self.directory_tree_strip_static_full_decode_inflight
             .retain(|path| live.contains(path));
+        self.directory_tree_strip_reusable_full_decode_cache
+            .retain(|path| live.contains(path));
         self.directory_tree_strip_tiled_attempted
             .retain(|path| live.contains(path));
         self.directory_tree_strip_cold_attempted
@@ -840,6 +844,7 @@ impl ImageViewerApp {
         self.directory_tree_strip_inflight_cancel.clear();
         self.directory_tree_strip_static_full_decode_inflight
             .clear();
+        self.directory_tree_strip_reusable_full_decode_cache.clear();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
         self.directory_tree_strip_cold_awaiting_main_loader.clear();
@@ -882,6 +887,7 @@ impl ImageViewerApp {
         self.directory_tree_strip_cache.clear_gpu_textures();
         self.directory_tree_strip_tiled_attempted.clear();
         self.directory_tree_strip_cold_attempted.clear();
+        self.directory_tree_strip_reusable_full_decode_cache.clear();
         self.directory_tree_strip_cold_awaiting_main_loader.clear();
         domains::clear_preview_snapshot(&self.directory_tree.preview_snapshot);
         view::assemble_directory_tree_view(

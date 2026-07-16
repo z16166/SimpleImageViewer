@@ -602,12 +602,10 @@ impl ImageViewerApp {
             #[cfg(not(target_os = "windows"))]
             let com_ok = true;
 
-            let mut decoded = DecodedImage::new(0, 0, Vec::new());
-            let mut reusable_full_decoded = None;
-            let mut logical = (0u32, 0u32);
-            let mut buffer_tag = StripPreviewBufferTag::StripDecodedPixels;
-            let stage = PreviewStage::Initial;
+            let mut decode_out: Option<(DecodedImage, Option<DecodedImage>, StripPreviewBufferTag)> = None;
             let mut cold_deferred_to_main_loader = false;
+            let mut logical = (0u32, 0u32);
+            let stage = PreviewStage::Initial;
             if com_ok {
                 let decode_options = DirectoryTreeThumbDecodeOptions {
                     skip_slow_primary: slow_primary_skip_reason,
@@ -620,12 +618,13 @@ impl ImageViewerApp {
                     &cancel,
                 ) {
                     Ok(strip_decode) => {
-                        decoded = strip_decode.preview;
+                        let buffer_tag = if strip_decode.from_embedded_sdr_preview {
+                            StripPreviewBufferTag::PreloadSdrFallback
+                        } else {
+                            StripPreviewBufferTag::StripDecodedPixels
+                        };
                         logical = strip_decode.logical_size;
-                        reusable_full_decoded = strip_decode.reusable_full;
-                        if strip_decode.from_embedded_sdr_preview {
-                            buffer_tag = StripPreviewBufferTag::PreloadSdrFallback;
-                        }
+                        decode_out = Some((strip_decode.preview, strip_decode.reusable_full, buffer_tag));
                     }
                     Err(err) if err == crate::loader::DECODE_CANCELLED => {
                         send_strip_inflight_release(
@@ -652,12 +651,26 @@ impl ImageViewerApp {
                             "[DirectoryTree] Cold strip preview failed for index {index} ({}): {err}",
                             path.display()
                         );
+                        send_strip_inflight_release(
+                            &release_tx,
+                            job_key.clone(),
+                            DirectoryTreeStripInflightReleaseKind::PermanentFailure,
+                            root_wake.as_ref(),
+                        );
+                        return;
                     }
                 }
             } else {
                 log::warn!(
                     "[DirectoryTree] COM init failed for cold strip preview worker index {index}"
                 );
+                send_strip_inflight_release(
+                    &release_tx,
+                    job_key.clone(),
+                    DirectoryTreeStripInflightReleaseKind::PermanentFailure,
+                    root_wake.as_ref(),
+                );
+                return;
             }
             if cancel.is_cancelled() {
                 send_strip_inflight_release(
@@ -668,6 +681,41 @@ impl ImageViewerApp {
                 );
                 return;
             }
+            // Deferred to main loader: no strip result to send, return early.
+            if cold_deferred_to_main_loader {
+                debug_assert!(
+                    decode_out.is_none(),
+                    "deferred decode should not produce output"
+                );
+                let job = DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(
+                    DirectoryTreeStripPreviewFailure {
+                        key: job_key.clone(),
+                        reason: "await_main_loader_primary",
+                    },
+                );
+                let send_result = tx.try_send(job);
+                if send_result.is_ok() {
+                    if let Some(wake) = &root_wake {
+                        wake();
+                    }
+                } else if let Err(err) = send_result {
+                    log::warn!(
+                        "[DirectoryTree] Deferred strip result dropped for index {index}: {err}"
+                    );
+                    send_strip_inflight_release(
+                        &release_tx,
+                        job_key.clone(),
+                        DirectoryTreeStripInflightReleaseKind::ClearAttempt,
+                        root_wake.as_ref(),
+                    );
+                }
+                return;
+            }
+
+            // Success path: decode output is guaranteed.
+            let (decoded, reusable_full_decoded, buffer_tag) =
+                decode_out.expect("success path must have decode output");
+
             #[cfg(feature = "preload-debug")]
             crate::preload_debug!(
                 "[PreloadDebug][Strip] cold worker done idx={} out={}x{} logical={}x{} aspect_ok={} placeholder={} from_embedded_sdr={} buffer_tag={:?} stage={:?}",
@@ -687,15 +735,7 @@ impl ImageViewerApp {
                 buffer_tag,
                 stage
             );
-            let send_result = if cold_deferred_to_main_loader {
-                let job = DirectoryTreeStripPreviewJobResult::DeferredToMainLoader(
-                    DirectoryTreeStripPreviewFailure {
-                        key: job_key.clone(),
-                        reason: "await_main_loader_primary",
-                    },
-                );
-                tx.try_send(job)
-            } else if decoded.width == 0
+            let send_result = if decoded.width == 0
                 || decoded.height == 0
                 || !decoded_rgba_size_valid(&decoded)
                 || !preview_aspect_matches_logical(decoded.width, decoded.height, logical.0, logical.1)

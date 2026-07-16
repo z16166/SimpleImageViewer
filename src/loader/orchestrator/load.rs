@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::types::{
     DelayedFallbackJob, FALLBACK_DEBOUNCE, ImageLoader, LOADER_OUTPUT_CHANNEL_CAPACITY,
-    LOADER_WORKER_IDLE_POLL, LoaderOutputSender, LoaderWorkerLifetime,
-    REFINEMENT_REQUEST_CHANNEL_CAPACITY, TileInFlightKey, TileRequest, should_spawn_load_task,
+    LoaderOutputSender, LoaderWorkerLifetime, REFINEMENT_REQUEST_CHANNEL_CAPACITY, TileInFlightKey,
+    TileRequest, should_spawn_load_task,
 };
 
 use crate::hdr::types::HdrOutputMode;
@@ -33,7 +33,7 @@ use crate::loader::{
     static_hdr_background_plane_upload_eligible,
 };
 use crate::raw_processor::RawProcessor;
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{Receiver, Sender};
 use image::DynamicImage;
 use parking_lot::{Condvar, Mutex};
 
@@ -238,7 +238,9 @@ impl ImageLoader {
                                     if shutdown_worker.load(Ordering::Acquire) {
                                         return;
                                     }
-                                    cvar.wait_for(&mut g, LOADER_WORKER_IDLE_POLL);
+                                    // Woken by ImageLoader::request_load → cvar.notify_one()
+                                    // or LoaderWorkerLifetime::signal_shutdown → cvar.notify_all()
+                                    cvar.wait(&mut g);
                                     if shutdown_worker.load(Ordering::Acquire) {
                                         return;
                                     }
@@ -365,7 +367,9 @@ impl ImageLoader {
                                 if shutdown_worker.load(Ordering::Acquire) {
                                     return;
                                 }
-                                cvar.wait_for(&mut heap, LOADER_WORKER_IDLE_POLL);
+                                // Woken by ImageLoader::request_tile → cvar.notify_one()
+                                // or LoaderWorkerLifetime::signal_shutdown → cvar.notify_all()
+                                cvar.wait(&mut heap);
                                 if shutdown_worker.load(Ordering::Acquire) {
                                     return;
                                 }
@@ -557,7 +561,10 @@ impl ImageLoader {
                     if shutdown_worker.load(Ordering::Acquire) {
                         break;
                     }
-                    match refine_rx.recv_timeout(LOADER_WORKER_IDLE_POLL) {
+                    // Blocked until a request arrives or the channel disconnects.
+                    // Shutdown: LoaderWorkerLifetime::signal_shutdown drops refine_tx,
+                    //          causing refine_rx.recv() to return Err(RecvError).
+                    match refine_rx.recv() {
                         Ok(req) => {
                             let snapshot_epoch = worker_plan.profile_epoch();
                             if req.decode_profile.profile_epoch < snapshot_epoch {
@@ -786,8 +793,7 @@ impl ImageLoader {
                                 }
                             }
                         }
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => break,
+                        Err(_) => break,
                     }
                 }
             })

@@ -1862,7 +1862,10 @@ mod namespace;
 mod node_store;
 mod sort;
 mod strip_previews;
-pub(crate) use strip_previews::DirectoryTreeStripPendingMainHandoff;
+pub(crate) use strip_previews::{
+    DirectoryTreeStripPendingMainHandoff,
+    checks::{DECODE_PROBE_CACHE_MAX, DecodeProbeCache},
+};
 mod ui;
 mod view;
 mod visibility;

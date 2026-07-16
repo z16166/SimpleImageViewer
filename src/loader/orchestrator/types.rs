@@ -36,10 +36,6 @@ use std::time::{Duration, Instant};
 /// Delayed fallback worker debounce before running `do_load` when the pool task has not claimed first.
 pub(crate) const FALLBACK_DEBOUNCE: Duration = Duration::from_millis(50);
 
-/// Periodic wake for dedicated loader workers blocked on an empty queue or channel recv.
-/// Avoids infinite condvar/recv waits when shutdown is never signaled (e.g. panic without drop).
-pub(crate) const LOADER_WORKER_IDLE_POLL: Duration = Duration::from_millis(50);
-
 /// Best-effort join budget for dedicated loader worker threads during [`LoaderWorkerLifetime`] drop.
 pub(crate) const LOADER_WORKER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// Bounded loader output queue: enough for bursty workers, small enough to cap large results.

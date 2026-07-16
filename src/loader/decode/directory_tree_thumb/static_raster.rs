@@ -22,18 +22,21 @@ use super::DirectoryTreeThumbDecode;
 use super::path_extension_ascii_lower;
 
 pub(super) fn static_raster_path_provides_reusable_full_decode(path: &Path) -> bool {
-    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+    let Some(ext) = path_extension_ascii_lower(path) else {
         return false;
     };
-    if ext.eq_ignore_ascii_case("png") {
+    if ext == "png" {
         return png_path_provides_reusable_full_decode(path);
     }
-    if ext.eq_ignore_ascii_case("webp") {
+    if ext == "webp" {
         return webp_path_provides_reusable_full_decode(path);
+    }
+    if ext == "apng" {
+        return false;
     }
     ["bmp", "tga", "ico", "pnm", "ppm", "pbm", "pgm", "qoi"]
         .iter()
-        .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+        .any(|candidate| ext == *candidate)
 }
 
 fn png_path_provides_reusable_full_decode(path: &Path) -> bool {
