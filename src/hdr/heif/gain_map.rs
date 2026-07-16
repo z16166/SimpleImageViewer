@@ -294,6 +294,13 @@ pub(crate) fn decode_heif_gain_map(
     let width = width_i as u32;
     let height = height_i as u32;
 
+    if let Err(e) = crate::constants::validate_static_decode_dimensions(width, height) {
+        log::warn!(
+            "[HDR] HEIF gain map dimensions rejected: {width}x{height} — {e}",
+        );
+        return None;
+    }
+
     let mut stride = 0_usize;
     let plane = unsafe {
         libheif_sys::heif_image_get_plane_readonly2(
@@ -320,7 +327,9 @@ pub(crate) fn decode_heif_gain_map(
         }
     };
     let mut gain_rgba = Vec::with_capacity(gain_len);
-    let row_bytes = width as usize * 4;
+    let row_bytes = (width as usize)
+        .checked_mul(4)
+        .unwrap_or(0);
     if stride < row_bytes {
         log::warn!(
             "[HDR] Auxiliary gain map stride {} is less than row bytes {}",
