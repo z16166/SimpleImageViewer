@@ -132,6 +132,7 @@ impl TextureCache {
 
     pub fn remove(&mut self, index: usize) {
         self.entries.remove(&index);
+        self.preview_names.remove(&index);
         self.drop_cached_index(index);
         if self.evict_furthest_idx == Some(index) {
             self.evict_furthest_idx = None;
@@ -145,6 +146,9 @@ impl TextureCache {
         if let Some(entry) = self.entries.remove(&from) {
             self.entries.insert(to, entry);
         }
+        if let Some(name) = self.preview_names.remove(&from) {
+            self.preview_names.insert(to, name);
+        }
         if let Some(pos) = self.cached_index_slot.remove(&from) {
             self.cached_indices[pos] = to;
             self.cached_index_slot.insert(to, pos);
@@ -154,6 +158,7 @@ impl TextureCache {
 
     pub fn permute(&mut self, old_to_new: &[usize]) {
         permute_usize_hashmap(&mut self.entries, old_to_new);
+        permute_usize_hashmap(&mut self.preview_names, old_to_new);
         for idx in &mut self.cached_indices {
             if *idx < old_to_new.len() {
                 *idx = old_to_new[*idx];

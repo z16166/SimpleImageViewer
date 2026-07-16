@@ -506,6 +506,11 @@ impl ImageViewerApp {
             return cached;
         }
         let result = crate::loader::strip_path_provides_reusable_static_full_decode(path);
+        // Bounded cache: paths are already cleared on directory change; this guard
+        // prevents unbounded growth in extreme-sized folders between re-scans.
+        if self.directory_tree_strip_reusable_full_decode_cache.len() >= 4096 {
+            self.directory_tree_strip_reusable_full_decode_cache.clear();
+        }
         self.directory_tree_strip_reusable_full_decode_cache
             .insert(path.to_path_buf(), result);
         result
