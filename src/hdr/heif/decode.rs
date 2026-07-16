@@ -29,19 +29,6 @@ use std::sync::Arc;
 #[cfg(feature = "heif-native")]
 pub(crate) const PARALLEL_ROW_THRESHOLD: usize = 8;
 
-/// File-derived HEIF dimensions as RGBA element count (`width * height * 4`).
-#[cfg(feature = "heif-native")]
-fn heif_checked_rgba_buffer_len(width: usize, height: usize) -> Result<usize, String> {
-    crate::constants::checked_rgba_buffer_len(width, height)
-        .ok_or_else(|| format!("HEIF RGBA buffer size overflow: {width}x{height}"))
-}
-
-#[cfg(feature = "heif-native")]
-fn heif_checked_rgba_row_len(width: usize) -> Result<usize, String> {
-    crate::constants::checked_rgba_row_len(width)
-        .ok_or_else(|| format!("HEIF RGBA row size overflow: width={width}"))
-}
-
 /// Read-only libheif plane pointer safe to share across rayon row workers for one decode.
 #[cfg(feature = "heif-native")]
 #[derive(Copy, Clone)]
@@ -380,8 +367,8 @@ pub(crate) fn hdr_buffer_from_monochrome(
         return Err("libheif monochrome stride too small".to_string());
     }
 
-    let rgba_f32_len = heif_checked_rgba_buffer_len(w, h)?;
-    let row_len = heif_checked_rgba_row_len(w)?;
+    let rgba_f32_len = super::heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
     let plane = SendReadonlyPtr::new(plane);
     parallel_row_chunks_mut(h, row_len, &mut rgba_f32, |y, row_dst| {
@@ -466,8 +453,8 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb16(
     };
     let w = width as usize;
     let h = height as usize;
-    let rgba_f32_len = heif_checked_rgba_buffer_len(w, h)?;
-    let row_len = heif_checked_rgba_row_len(w)?;
+    let rgba_f32_len = super::heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
     let plane = SendReadonlyPtr::new(plane);
     parallel_row_chunks_mut(h, row_len, &mut rgba_f32, |y, row_dst| {
@@ -543,8 +530,8 @@ fn rgba8_from_interleaved_rgb8(
 
     let w = width as usize;
     let h = height as usize;
-    let rgba_len = heif_checked_rgba_buffer_len(w, h)?;
-    let row_len = heif_checked_rgba_row_len(w)?;
+    let rgba_len = super::heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba = vec![0_u8; rgba_len];
     let plane = SendReadonlyPtr::new(plane);
     parallel_row_chunks_mut(h, row_len, &mut rgba, |y, row_dst| {
@@ -619,8 +606,8 @@ fn rgba8_from_interleaved_rgb16(
 
     let w = width as usize;
     let h = height as usize;
-    let rgba_len = heif_checked_rgba_buffer_len(w, h)?;
-    let row_len = heif_checked_rgba_row_len(w)?;
+    let rgba_len = super::heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba = vec![0_u8; rgba_len];
     let plane = SendReadonlyPtr::new(plane);
     parallel_row_chunks_mut(h, row_len, &mut rgba, |y, row_dst| {
@@ -671,8 +658,8 @@ fn rgba8_from_monochrome(image: *const libheif_sys::heif_image) -> Result<Decode
 
     let w = width as usize;
     let h = height as usize;
-    let rgba_len = heif_checked_rgba_buffer_len(w, h)?;
-    let row_len = heif_checked_rgba_row_len(w)?;
+    let rgba_len = super::heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba = vec![0_u8; rgba_len];
     let plane = SendReadonlyPtr::new(plane);
     parallel_row_chunks_mut(h, row_len, &mut rgba, |y, row_dst| {
@@ -767,8 +754,8 @@ fn rgba8_from_planar_rgb444(
     let ptr_r = SendReadonlyPtr::new(ptr_r);
     let ptr_g = SendReadonlyPtr::new(ptr_g);
     let ptr_b = SendReadonlyPtr::new(ptr_b);
-    let rgba_len = heif_checked_rgba_buffer_len(w, h)?;
-    let row_len = heif_checked_rgba_row_len(w)?;
+    let rgba_len = super::heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba = vec![0_u8; rgba_len];
     parallel_row_chunks_mut(h, row_len, &mut rgba, |y, row_dst| {
         let row_r = unsafe { ptr_r.get().byte_add(y * stride_r) };
@@ -844,8 +831,8 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb8_packed(
     let scale = ((1_u32 << bit_depth) - 1) as f32;
     let w = width as usize;
     let h = height as usize;
-    let rgba_f32_len = heif_checked_rgba_buffer_len(w, h)?;
-    let row_len = heif_checked_rgba_row_len(w)?;
+    let rgba_f32_len = super::heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
     let plane = SendReadonlyPtr::new(plane);
     parallel_row_chunks_mut(h, row_len, &mut rgba_f32, |y, row_dst| {
@@ -1028,8 +1015,8 @@ pub(crate) fn hdr_buffer_from_planar_rgb444(
     let ptr_r = SendReadonlyPtr::new(ptr_r);
     let ptr_g = SendReadonlyPtr::new(ptr_g);
     let ptr_b = SendReadonlyPtr::new(ptr_b);
-    let rgba_f32_len = heif_checked_rgba_buffer_len(w, h)?;
-    let row_len = heif_checked_rgba_row_len(w)?;
+    let rgba_f32_len = super::heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
 
     parallel_row_chunks_mut(h, row_len, &mut rgba_f32, |y, row_dst| {

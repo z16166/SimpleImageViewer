@@ -834,7 +834,7 @@ fn ycbcr420_chroma_load4_fits(x: usize, chroma_len: usize) -> bool {
     x / 2 + 4 <= chroma_len
 }
 
-/// 4:2:0 NEON chroma loads (`upsample_420_chroma_neon`) read 2 u16 from `cb_row[xc..]`.
+/// 4:2:0 NEON vector chroma loads read 2 chroma samples from `cb_row[xc..]`.
 #[cfg(target_arch = "aarch64")]
 #[inline]
 fn ycbcr420_chroma_load2_fits(x: usize, chroma_len: usize) -> bool {

@@ -41,14 +41,14 @@ const PIXELS_PER_NEON_STEP: usize = 4;
 #[cfg(target_arch = "x86_64")]
 const PIXELS_PER_AVX2_STEP: usize = 8;
 
-/// 4:2:0 NEON vector chroma loads read 2 bytes from `cb_row[xc..]`.
+/// 4:2:0 NEON vector chroma loads read 2 chroma samples from `cb_row[xc..]`.
 #[cfg(target_arch = "aarch64")]
 #[inline]
 fn ycbcr420_chroma_load2_fits(x: usize, chroma_len: usize) -> bool {
     x / 2 + 2 <= chroma_len
 }
 
-/// 4:2:0 AVX2 vector chroma loads read 4 bytes from `cb_row[xc..]`.
+/// 4:2:0 AVX2 vector chroma loads read 4 chroma samples from `cb_row[xc..]`.
 #[inline]
 fn ycbcr420_chroma_load4_fits(x: usize, chroma_len: usize) -> bool {
     x / 2 + 4 <= chroma_len

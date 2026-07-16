@@ -36,6 +36,9 @@ pub const WIC_ABSOLUTE_MAX_SIDE: u32 = ABSOLUTE_MAX_TEXTURE_SIDE * 8;
 pub const MAX_STATIC_FULL_DECODE_PIXELS: u64 = 256 * 1024 * 1024;
 
 /// Reject zero / overflowing / oversized static decode dimensions before allocating pixels.
+///
+/// Returns `Ok(total_pixel_count)` on success — the caller can use the returned pixel count
+/// to pre-allocate buffers without re-computing `width * height`.
 #[inline]
 pub fn validate_static_decode_dimensions(width: u32, height: u32) -> Result<u64, String> {
     if width == 0 || height == 0 {

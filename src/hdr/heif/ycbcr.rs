@@ -18,26 +18,12 @@ use super::decode::{
     planar_semantic_depth_bits, planar_storage_span_bytes,
 };
 
-#[cfg(feature = "heif-native")]
-use crate::constants::checked_rgba_buffer_len;
 use crate::hdr::types::{HdrColorProfile, HdrImageMetadata};
 
 #[cfg(feature = "heif-native")]
 use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
 #[cfg(feature = "heif-native")]
 use std::sync::Arc;
-
-#[cfg(feature = "heif-native")]
-fn heif_checked_rgba_buffer_len(width: usize, height: usize) -> Result<usize, String> {
-    checked_rgba_buffer_len(width, height)
-        .ok_or_else(|| format!("HEIF RGBA buffer size overflow: {width}x{height}"))
-}
-
-#[cfg(feature = "heif-native")]
-fn heif_checked_rgba_row_len(width: usize) -> Result<usize, String> {
-    crate::constants::checked_rgba_row_len(width)
-        .ok_or_else(|| format!("HEIF RGBA row size overflow: width={width}"))
-}
 
 #[cfg(feature = "heif-native")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -429,8 +415,8 @@ pub(crate) fn hdr_buffer_from_ycbcr(
         None
     };
 
-    let rgba_f32_len = heif_checked_rgba_buffer_len(y_w, y_h)?;
-    let row_len = heif_checked_rgba_row_len(y_w)?;
+    let rgba_f32_len = super::heif_checked_rgba_buffer_len(y_w, y_h)?;
+    let row_len = super::heif_checked_rgba_row_len(y_w)?;
     let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
 
     parallel_row_chunks_mut(y_h, row_len, &mut rgba_f32, |y_px, row_dst| {
@@ -683,8 +669,8 @@ pub(crate) fn ycbcr_image_to_rgba8(
     };
     let w = width as usize;
     let h = height as usize;
-    let rgba_len = heif_checked_rgba_buffer_len(w, h)?;
-    let row_len = heif_checked_rgba_row_len(w)?;
+    let rgba_len = super::heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = super::heif_checked_rgba_row_len(w)?;
     let mut rgba = vec![0_u8; rgba_len];
     let simd_bt709_full_range = matrix == HeifYcbcrMatrix::Bt709 && !nclx_studio_swing;
     let simd_bt709_limited_range = matrix == HeifYcbcrMatrix::Bt709 && nclx_studio_swing;

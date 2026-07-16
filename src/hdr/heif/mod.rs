@@ -48,6 +48,21 @@ mod ycbcr_hdr_simd;
 #[cfg(feature = "heif-native")]
 mod ycbcr_simd;
 
+/// File-derived HEIF dimensions as RGBA element count (`width * height * 4`).
+#[cfg(feature = "heif-native")]
+#[inline]
+pub(super) fn heif_checked_rgba_buffer_len(width: usize, height: usize) -> Result<usize, String> {
+    crate::constants::checked_rgba_buffer_len(width, height)
+        .ok_or_else(|| format!("HEIF RGBA buffer size overflow: {width}x{height}"))
+}
+
+#[cfg(feature = "heif-native")]
+#[inline]
+pub(super) fn heif_checked_rgba_row_len(width: usize) -> Result<usize, String> {
+    crate::constants::checked_rgba_row_len(width)
+        .ok_or_else(|| format!("HEIF RGBA row size overflow: width={width}"))
+}
+
 #[cfg(test)]
 mod tests;
 
