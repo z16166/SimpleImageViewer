@@ -37,13 +37,30 @@ pub(crate) fn avif_build_iso_sdr_baseline_rgba8(
     height: u32,
     metadata: &HdrImageMetadata,
     color_space: HdrColorSpace,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, String> {
     let scale = rgb_channel_max_f(rgb_out_depth);
     let sdr_white = DEFAULT_SDR_WHITE_NITS;
-    let mut sdr_rgba = Vec::with_capacity(width as usize * height as usize * 4);
-    for y in 0..height {
-        for x in 0..width {
-            let index = (y as usize * width as usize + x as usize) * 4;
+    // capacity = width * height * 4; success also proves width*height fits in usize.
+    let capacity = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+        .ok_or_else(|| format!("AVIF SDR baseline size overflow: {width}x{height}"))?;
+    if rgba_u16.len() < capacity {
+        return Err(format!(
+            "AVIF SDR baseline input too short: got {} lanes, need {capacity} for {width}x{height}",
+            rgba_u16.len()
+        ));
+    }
+    let mut sdr_rgba = Vec::with_capacity(capacity);
+    for y in 0..height as usize {
+        let row_base = y
+            .checked_mul(width as usize)
+            .ok_or_else(|| format!("AVIF SDR baseline row index overflow: y={y} width={width}"))?;
+        for x in 0..width as usize {
+            let index = row_base
+                .checked_add(x)
+                .and_then(|px| px.checked_mul(crate::constants::RGBA_CHANNELS))
+                .ok_or_else(|| {
+                    format!("AVIF SDR baseline pixel index overflow: {width}x{height} at ({x},{y})")
+                })?;
             let r = rgba_u16[index] as f32 / scale;
             let g = rgba_u16[index + 1] as f32 / scale;
             let b = rgba_u16[index + 2] as f32 / scale;
@@ -58,7 +75,8 @@ pub(crate) fn avif_build_iso_sdr_baseline_rgba8(
             sdr_rgba.push((a * 255.0_f32).round().clamp(0.0, 255.0) as u8);
         }
     }
-    sdr_rgba
+    debug_assert_eq!(sdr_rgba.len(), capacity);
+    Ok(sdr_rgba)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -215,7 +233,9 @@ mod tests {
             container_luminance,
             target_hdr_capacity,
         } = input;
-        let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+        let capacity = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+            .expect("test dimensions");
+        let mut rgba_f32 = Vec::with_capacity(capacity);
         for y in 0..height {
             for x in 0..width {
                 let sdr_index = (y as usize * width as usize + x as usize) * 4;
@@ -264,7 +284,8 @@ mod tests {
             1,
             &meta,
             HdrColorSpace::LinearSrgb,
-        );
+        )
+        .expect("baseline build");
         assert_eq!(sdr.len(), 4);
         assert_eq!(sdr[3], 255);
         assert!(

@@ -49,6 +49,12 @@ pub fn checked_rgba_buffer_len(width: usize, height: usize) -> Option<usize> {
     checked_rgba_row_len(width).and_then(|row_len| row_len.checked_mul(height))
 }
 
+/// Computes `width * height` without overflow.
+#[inline]
+pub fn checked_pixel_area(width: usize, height: usize) -> Option<usize> {
+    width.checked_mul(height)
+}
+
 /// Standard bit depth for 8-bit image formats.
 pub const BIT_DEPTH_8: usize = 8;
 /// Maximum value for a single 8-bit color channel.

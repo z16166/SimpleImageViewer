@@ -214,7 +214,7 @@ fn try_avif_iso_forward_deferred_with_reuse(
         image_ref.height,
         metadata,
         color_space,
-    );
+    )?;
     let policy = IsoGainMapGainDecodePolicy::KeyAndSdrMatchSkipsGainDecode;
     let mut local_reuse = None;
     let reuse_slot = match reuse {

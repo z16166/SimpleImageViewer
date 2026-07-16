@@ -29,6 +29,19 @@ use std::sync::Arc;
 #[cfg(feature = "heif-native")]
 pub(crate) const PARALLEL_ROW_THRESHOLD: usize = 8;
 
+/// File-derived HEIF dimensions as RGBA element count (`width * height * 4`).
+#[cfg(feature = "heif-native")]
+fn heif_checked_rgba_buffer_len(width: usize, height: usize) -> Result<usize, String> {
+    crate::constants::checked_rgba_buffer_len(width, height)
+        .ok_or_else(|| format!("HEIF RGBA buffer size overflow: {width}x{height}"))
+}
+
+#[cfg(feature = "heif-native")]
+fn heif_checked_rgba_row_len(width: usize) -> Result<usize, String> {
+    crate::constants::checked_rgba_row_len(width)
+        .ok_or_else(|| format!("HEIF RGBA row size overflow: width={width}"))
+}
+
 /// Read-only libheif plane pointer safe to share across rayon row workers for one decode.
 #[cfg(feature = "heif-native")]
 #[derive(Copy, Clone)]
@@ -366,9 +379,11 @@ pub(crate) fn hdr_buffer_from_monochrome(
         return Err("libheif monochrome stride too small".to_string());
     }
 
-    let mut rgba_f32 = vec![0.0_f32; w * h * 4];
+    let rgba_f32_len = heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = heif_checked_rgba_row_len(w)?;
+    let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
     let plane = SendReadonlyPtr::new(plane);
-    parallel_row_chunks_mut(h, w * 4, &mut rgba_f32, |y, row_dst| {
+    parallel_row_chunks_mut(h, row_len, &mut rgba_f32, |y, row_dst| {
         let row_base = unsafe { plane.get().add(y * stride) };
         for x in 0..w {
             let yn = planar_read_sample(row_base, x, stride, span)?;
@@ -427,7 +442,11 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb16(
     let width = width_i as u32;
     let height = height_i as u32;
     let bytes_per_pixel = (components as usize) * std::mem::size_of::<u16>();
-    let row_bytes = width as usize * bytes_per_pixel;
+    let row_bytes = (width as usize)
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| {
+            format!("HEIF row byte size overflow: width={width} bpp={bytes_per_pixel}")
+        })?;
     if stride < row_bytes {
         return Err(format!(
             "libheif row stride too small: got {stride}, expected at least {row_bytes}",
@@ -445,9 +464,11 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb16(
     };
     let w = width as usize;
     let h = height as usize;
-    let mut rgba_f32 = vec![0.0_f32; w * h * 4];
+    let rgba_f32_len = heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = heif_checked_rgba_row_len(w)?;
+    let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
     let plane = SendReadonlyPtr::new(plane);
-    parallel_row_chunks_mut(h, w * 4, &mut rgba_f32, |y, row_dst| {
+    parallel_row_chunks_mut(h, row_len, &mut rgba_f32, |y, row_dst| {
         let row = unsafe { std::slice::from_raw_parts(plane.get().add(y * stride), row_bytes) };
         for (x, px) in row.chunks_exact(bytes_per_pixel).enumerate() {
             let dst = x * 4;
@@ -506,7 +527,11 @@ fn rgba8_from_interleaved_rgb8(
     }
 
     let bytes_per_pixel = components as usize;
-    let row_bytes = width as usize * bytes_per_pixel;
+    let row_bytes = (width as usize)
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| {
+            format!("HEIF row byte size overflow: width={width} bpp={bytes_per_pixel}")
+        })?;
     if stride < row_bytes {
         return Err(format!(
             "libheif row stride too small: got {stride}, need {row_bytes}"
@@ -515,9 +540,11 @@ fn rgba8_from_interleaved_rgb8(
 
     let w = width as usize;
     let h = height as usize;
-    let mut rgba = vec![0_u8; w * h * 4];
+    let rgba_len = heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = heif_checked_rgba_row_len(w)?;
+    let mut rgba = vec![0_u8; rgba_len];
     let plane = SendReadonlyPtr::new(plane);
-    parallel_row_chunks_mut(h, w * 4, &mut rgba, |y, row_dst| {
+    parallel_row_chunks_mut(h, row_len, &mut rgba, |y, row_dst| {
         let row = unsafe { std::slice::from_raw_parts(plane.get().add(y * stride), row_bytes) };
         for (x, px) in row.chunks_exact(bytes_per_pixel).enumerate() {
             let dst = x * 4;
@@ -565,7 +592,11 @@ fn rgba8_from_interleaved_rgb16(
     }
 
     let bytes_per_pixel = (components as usize) * std::mem::size_of::<u16>();
-    let row_bytes = width as usize * bytes_per_pixel;
+    let row_bytes = (width as usize)
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| {
+            format!("HEIF row byte size overflow: width={width} bpp={bytes_per_pixel}")
+        })?;
     if stride < row_bytes {
         return Err(format!(
             "libheif row stride too small: got {stride}, need {row_bytes}"
@@ -584,9 +615,11 @@ fn rgba8_from_interleaved_rgb16(
 
     let w = width as usize;
     let h = height as usize;
-    let mut rgba = vec![0_u8; w * h * 4];
+    let rgba_len = heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = heif_checked_rgba_row_len(w)?;
+    let mut rgba = vec![0_u8; rgba_len];
     let plane = SendReadonlyPtr::new(plane);
-    parallel_row_chunks_mut(h, w * 4, &mut rgba, |y, row_dst| {
+    parallel_row_chunks_mut(h, row_len, &mut rgba, |y, row_dst| {
         let row = unsafe { std::slice::from_raw_parts(plane.get().add(y * stride), row_bytes) };
         for (x, px) in row.chunks_exact(bytes_per_pixel).enumerate() {
             let dst = x * 4;
@@ -633,9 +666,11 @@ fn rgba8_from_monochrome(image: *const libheif_sys::heif_image) -> Result<Decode
 
     let w = width as usize;
     let h = height as usize;
-    let mut rgba = vec![0_u8; w * h * 4];
+    let rgba_len = heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = heif_checked_rgba_row_len(w)?;
+    let mut rgba = vec![0_u8; rgba_len];
     let plane = SendReadonlyPtr::new(plane);
-    parallel_row_chunks_mut(h, w * 4, &mut rgba, |y, row_dst| {
+    parallel_row_chunks_mut(h, row_len, &mut rgba, |y, row_dst| {
         let row = unsafe { std::slice::from_raw_parts(plane.get().add(y * stride), w) };
         for (x, &lum) in row.iter().enumerate() {
             let dst = x * 4;
@@ -726,8 +761,10 @@ fn rgba8_from_planar_rgb444(
     let ptr_r = SendReadonlyPtr::new(ptr_r);
     let ptr_g = SendReadonlyPtr::new(ptr_g);
     let ptr_b = SendReadonlyPtr::new(ptr_b);
-    let mut rgba = vec![0_u8; w * h * 4];
-    parallel_row_chunks_mut(h, w * 4, &mut rgba, |y, row_dst| {
+    let rgba_len = heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = heif_checked_rgba_row_len(w)?;
+    let mut rgba = vec![0_u8; rgba_len];
+    parallel_row_chunks_mut(h, row_len, &mut rgba, |y, row_dst| {
         let row_r = unsafe { ptr_r.get().byte_add(y * stride_r) };
         let row_g = unsafe { ptr_g.get().byte_add(y * stride_g) };
         let row_b = unsafe { ptr_b.get().byte_add(y * stride_b) };
@@ -785,7 +822,11 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb8_packed(
     let width = width_i as u32;
     let height = height_i as u32;
     let bytes_per_pixel = components as usize;
-    let row_bytes = width as usize * bytes_per_pixel;
+    let row_bytes = (width as usize)
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| {
+            format!("HEIF row byte size overflow: width={width} bpp={bytes_per_pixel}")
+        })?;
     if stride < row_bytes {
         return Err(format!(
             "libheif row stride too small: got {stride}, expected at least {row_bytes}",
@@ -796,9 +837,11 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb8_packed(
     let scale = ((1_u32 << bit_depth) - 1) as f32;
     let w = width as usize;
     let h = height as usize;
-    let mut rgba_f32 = vec![0.0_f32; w * h * 4];
+    let rgba_f32_len = heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = heif_checked_rgba_row_len(w)?;
+    let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
     let plane = SendReadonlyPtr::new(plane);
-    parallel_row_chunks_mut(h, w * 4, &mut rgba_f32, |y, row_dst| {
+    parallel_row_chunks_mut(h, row_len, &mut rgba_f32, |y, row_dst| {
         let row = unsafe { std::slice::from_raw_parts(plane.get().add(y * stride), row_bytes) };
         for (x, px) in row.chunks_exact(bytes_per_pixel).enumerate() {
             let dst = x * 4;
@@ -977,9 +1020,11 @@ pub(crate) fn hdr_buffer_from_planar_rgb444(
     let ptr_r = SendReadonlyPtr::new(ptr_r);
     let ptr_g = SendReadonlyPtr::new(ptr_g);
     let ptr_b = SendReadonlyPtr::new(ptr_b);
-    let mut rgba_f32 = vec![0.0_f32; w * h * 4];
+    let rgba_f32_len = heif_checked_rgba_buffer_len(w, h)?;
+    let row_len = heif_checked_rgba_row_len(w)?;
+    let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
 
-    parallel_row_chunks_mut(h, w * 4, &mut rgba_f32, |y, row_dst| {
+    parallel_row_chunks_mut(h, row_len, &mut rgba_f32, |y, row_dst| {
         let row_r = unsafe { ptr_r.get().byte_add(y * stride_r) };
         let row_g = unsafe { ptr_g.get().byte_add(y * stride_g) };
         let row_b = unsafe { ptr_b.get().byte_add(y * stride_b) };
