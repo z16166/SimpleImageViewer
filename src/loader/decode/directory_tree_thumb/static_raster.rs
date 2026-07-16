@@ -22,43 +22,21 @@ use super::DirectoryTreeThumbDecode;
 use super::path_extension_ascii_lower;
 
 pub(super) fn static_raster_path_provides_reusable_full_decode(path: &Path) -> bool {
-    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+    let Some(ext) = path_extension_ascii_lower(path) else {
         return false;
     };
-    if ext.eq_ignore_ascii_case("png") {
-        return png_path_provides_reusable_full_decode(path);
+    // PNG/WebP: optimistically assume static; actual animation check happens
+    // during decode in decode_png_strip_rgba/decode_webp_strip_rgba, which sets
+    // reusable_full_allowed accordingly. If animated, reusable_full = None and the
+    // main loader falls back to its own decode after the cold strip finishes.
+    if ext == "apng" {
+        return false;
     }
-    if ext.eq_ignore_ascii_case("webp") {
-        return webp_path_provides_reusable_full_decode(path);
-    }
-    ["bmp", "tga", "ico", "pnm", "ppm", "pbm", "pgm", "qoi"]
-        .iter()
-        .any(|candidate| ext.eq_ignore_ascii_case(candidate))
-}
-
-fn png_path_provides_reusable_full_decode(path: &Path) -> bool {
-    use image::codecs::png::PngDecoder;
-    use std::io::Cursor;
-
-    let Ok((mmap, _)) = crate::mmap_util::map_file(path) else {
-        return false;
-    };
-    PngDecoder::new(Cursor::new(mmap.as_ref()))
-        .and_then(|decoder| decoder.is_apng())
-        .map(|is_apng| !is_apng)
-        .unwrap_or(false)
-}
-
-fn webp_path_provides_reusable_full_decode(path: &Path) -> bool {
-    use image::codecs::webp::WebPDecoder;
-    use std::io::Cursor;
-
-    let Ok((mmap, _)) = crate::mmap_util::map_file(path) else {
-        return false;
-    };
-    WebPDecoder::new(Cursor::new(mmap.as_ref()))
-        .map(|decoder| !decoder.has_animation())
-        .unwrap_or(false)
+    [
+        "bmp", "tga", "ico", "pnm", "ppm", "pbm", "pgm", "qoi", "png", "webp",
+    ]
+    .iter()
+    .any(|candidate| ext == *candidate)
 }
 
 pub(super) fn try_static_raster_strip_fast_path(
