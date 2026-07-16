@@ -71,11 +71,7 @@ pub(crate) fn decode_radiance_tile_window(
     let rgba_len = (tile_w as usize)
         .checked_mul(tile_h as usize)
         .and_then(|p| p.checked_mul(4))
-        .ok_or_else(|| {
-            format!(
-                "Radiance tile buffer size overflow: {tile_w}x{tile_h}"
-            )
-        })?;
+        .ok_or_else(|| format!("Radiance tile buffer size overflow: {tile_w}x{tile_h}"))?;
     let mut rgba = vec![0.0f32; rgba_len];
 
     if raster.is_row_major_top_left() {
@@ -159,13 +155,11 @@ pub(crate) fn decode_radiance_tile_window(
                             let rgb = scanline[inner_b as usize].to_rgb_f32();
                             let x = plan.x_start + (inner_b as i32) * plan.x_step;
                             let dx = (x - tx0) as usize;
-                            let base = (dy * tw + dx)
-                                .checked_mul(4)
-                                .ok_or_else(|| {
-                                    format!(
-                                        "Radiance tile pixel offset overflow: dy={dy} tw={tw} dx={dx}"
-                                    )
-                                })?;
+                            let base = (dy * tw + dx).checked_mul(4).ok_or_else(|| {
+                                format!(
+                                    "Radiance tile pixel offset overflow: dy={dy} tw={tw} dx={dx}"
+                                )
+                            })?;
                             rgba[base..base + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
                         }
                     }
@@ -192,13 +186,11 @@ pub(crate) fn decode_radiance_tile_window(
                             let rgb = scanline[inner_b as usize].to_rgb_f32();
                             let y = plan.y_start + (inner_b as i32) * plan.y_step;
                             let dy = (y - ty0) as usize;
-                            let base = (dy * tw + dx)
-                                .checked_mul(4)
-                                .ok_or_else(|| {
-                                    format!(
-                                        "Radiance tile pixel offset overflow: dy={dy} tw={tw} dx={dx}"
-                                    )
-                                })?;
+                            let base = (dy * tw + dx).checked_mul(4).ok_or_else(|| {
+                                format!(
+                                    "Radiance tile pixel offset overflow: dy={dy} tw={tw} dx={dx}"
+                                )
+                            })?;
                             rgba[base..base + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
                         }
                     }
@@ -244,11 +236,13 @@ pub(crate) fn decode_radiance_sdr_preview(
 
     validate_scanline_offsets(raster.outer_len, scanline_offsets)?;
     let metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
-    let pixel_count = crate::constants::checked_rgba_buffer_len(
-        preview_width as usize,
-        preview_height as usize,
-    )
-    .ok_or_else(|| format!("Radiance SDR preview buffer size overflow for {preview_width}x{preview_height}"))?;
+    let pixel_count =
+        crate::constants::checked_rgba_buffer_len(preview_width as usize, preview_height as usize)
+            .ok_or_else(|| {
+                format!(
+                    "Radiance SDR preview buffer size overflow for {preview_width}x{preview_height}"
+                )
+            })?;
     let mut pixels = Vec::with_capacity(pixel_count);
 
     if raster.is_row_major_top_left() {
@@ -359,11 +353,13 @@ pub(crate) fn decode_radiance_hdr_preview(
     }
 
     validate_scanline_offsets(raster.outer_len, scanline_offsets)?;
-    let rgba_len = crate::constants::checked_rgba_buffer_len(
-        preview_width as usize,
-        preview_height as usize,
-    )
-    .ok_or_else(|| format!("Radiance HDR preview buffer size overflow for {preview_width}x{preview_height}"))?;
+    let rgba_len =
+        crate::constants::checked_rgba_buffer_len(preview_width as usize, preview_height as usize)
+            .ok_or_else(|| {
+                format!(
+                    "Radiance HDR preview buffer size overflow for {preview_width}x{preview_height}"
+                )
+            })?;
     let mut rgba = vec![0.0f32; rgba_len];
 
     if raster.is_row_major_top_left() {
@@ -387,9 +383,7 @@ pub(crate) fn decode_radiance_hdr_preview(
                     .checked_mul(preview_width as usize)
                     .and_then(|p| p.checked_mul(4))
                     .ok_or_else(|| {
-                        format!(
-                            "Radiance HDR preview row offset overflow: preview_y={preview_y}"
-                        )
+                        format!("Radiance HDR preview row offset overflow: preview_y={preview_y}")
                     })?;
                 rgba[base..base + row_rgba.len()].copy_from_slice(&row_rgba);
             }
@@ -400,9 +394,7 @@ pub(crate) fn decode_radiance_hdr_preview(
                     .checked_mul(preview_width as usize)
                     .and_then(|p| p.checked_mul(4))
                     .ok_or_else(|| {
-                        format!(
-                            "Radiance HDR preview row offset overflow: preview_y={preview_y}"
-                        )
+                        format!("Radiance HDR preview row offset overflow: preview_y={preview_y}")
                     })?;
                 rgba[base..base + row_rgba.len()].copy_from_slice(&row_rgba);
             }
@@ -428,9 +420,7 @@ pub(crate) fn decode_radiance_hdr_preview(
                     .checked_mul(preview_width as usize)
                     .and_then(|p| p.checked_mul(4))
                     .ok_or_else(|| {
-                        format!(
-                            "Radiance HDR preview row offset overflow: preview_y={preview_y}"
-                        )
+                        format!("Radiance HDR preview row offset overflow: preview_y={preview_y}")
                     })?;
                 rgba[base..base + row_rgba.len()].copy_from_slice(&row_rgba);
             }
@@ -441,9 +431,7 @@ pub(crate) fn decode_radiance_hdr_preview(
                     .checked_mul(preview_width as usize)
                     .and_then(|p| p.checked_mul(4))
                     .ok_or_else(|| {
-                        format!(
-                            "Radiance HDR preview row offset overflow: preview_y={preview_y}"
-                        )
+                        format!("Radiance HDR preview row offset overflow: preview_y={preview_y}")
                     })?;
                 rgba[base..base + row_rgba.len()].copy_from_slice(&row_rgba);
             }
@@ -481,24 +469,16 @@ fn decode_row_major_preview_row(
     let mut scanline = vec![Rgbe8Pixel::default(); inner_len];
     read_scanline(&mut reader, &mut scanline)?;
 
-    let row_len = (preview_width as usize)
-        .checked_mul(4)
-        .ok_or_else(|| {
-            format!(
-                "Radiance HDR preview row buffer size overflow: preview_width={preview_width}"
-            )
-        })?;
+    let row_len = (preview_width as usize).checked_mul(4).ok_or_else(|| {
+        format!("Radiance HDR preview row buffer size overflow: preview_width={preview_width}")
+    })?;
     let mut row_rgba = vec![0.0f32; row_len];
     for preview_x in 0..preview_width {
         let source_x = preview_sample_coord(preview_x, preview_width, logical_width) as usize;
         let rgb = scanline[source_x].to_rgb_f32();
-        let base = (preview_x as usize)
-            .checked_mul(4)
-            .ok_or_else(|| {
-                format!(
-                    "Radiance HDR preview pixel offset overflow: preview_x={preview_x}"
-                )
-            })?;
+        let base = (preview_x as usize).checked_mul(4).ok_or_else(|| {
+            format!("Radiance HDR preview pixel offset overflow: preview_x={preview_x}")
+        })?;
         row_rgba[base..base + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
     }
     Ok(row_rgba)
@@ -521,13 +501,9 @@ fn decode_non_row_major_preview_row(
     let mut reader = Cursor::new(mmap);
     let mut scanline = vec![Rgbe8Pixel::default(); inner_len];
     let mut last_outer_a: Option<u32> = None;
-    let row_len = (preview_width as usize)
-        .checked_mul(4)
-        .ok_or_else(|| {
-            format!(
-                "Radiance HDR preview row buffer size overflow: preview_width={preview_width}"
-            )
-        })?;
+    let row_len = (preview_width as usize).checked_mul(4).ok_or_else(|| {
+        format!("Radiance HDR preview row buffer size overflow: preview_width={preview_width}")
+    })?;
     let mut row_rgba = vec![0.0f32; row_len];
 
     for preview_x in 0..preview_width {
@@ -542,13 +518,9 @@ fn decode_non_row_major_preview_row(
         }
 
         let rgb = scanline[inner_b as usize].to_rgb_f32();
-        let base = (preview_x as usize)
-            .checked_mul(4)
-            .ok_or_else(|| {
-                format!(
-                    "Radiance HDR preview pixel offset overflow: preview_x={preview_x}"
-                )
-            })?;
+        let base = (preview_x as usize).checked_mul(4).ok_or_else(|| {
+            format!("Radiance HDR preview pixel offset overflow: preview_x={preview_x}")
+        })?;
         row_rgba[base..base + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
     }
     Ok(row_rgba)
@@ -571,11 +543,7 @@ fn decode_row_major_tile_row(
     let end = start + tile_w as usize;
     let row_len = (tile_w as usize)
         .checked_mul(4)
-        .ok_or_else(|| {
-            format!(
-                "Radiance HDR tile row buffer size overflow: tile_w={tile_w}"
-            )
-        })?;
+        .ok_or_else(|| format!("Radiance HDR tile row buffer size overflow: tile_w={tile_w}"))?;
     let mut row_rgba = vec![0.0f32; row_len];
     rgbe_pixels_to_rgba32f(&scanline[start..end], &mut row_rgba);
     Ok(row_rgba)

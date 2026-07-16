@@ -295,9 +295,7 @@ pub(crate) fn decode_heif_gain_map(
     let height = height_i as u32;
 
     if let Err(e) = crate::constants::validate_static_decode_dimensions(width, height) {
-        log::warn!(
-            "[HDR] HEIF gain map dimensions rejected: {width}x{height} — {e}",
-        );
+        log::warn!("[HDR] HEIF gain map dimensions rejected: {width}x{height} — {e}",);
         return None;
     }
 
@@ -314,22 +312,16 @@ pub(crate) fn decode_heif_gain_map(
         return None;
     }
 
-    let gain_len = match crate::constants::checked_rgba_buffer_len(
-        width as usize,
-        height as usize,
-    ) {
+    let gain_len = match crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
+    {
         Some(n) => n,
         None => {
-            log::warn!(
-                "[HDR] HEIF gain map buffer size overflow for {width}x{height}"
-            );
+            log::warn!("[HDR] HEIF gain map buffer size overflow for {width}x{height}");
             return None;
         }
     };
     let mut gain_rgba = Vec::with_capacity(gain_len);
-    let row_bytes = (width as usize)
-        .checked_mul(4)
-        .unwrap_or(0);
+    let row_bytes = (width as usize).checked_mul(4).unwrap_or(0);
     if stride < row_bytes {
         log::warn!(
             "[HDR] Auxiliary gain map stride {} is less than row bytes {}",

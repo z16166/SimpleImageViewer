@@ -72,9 +72,7 @@ fn assert_decoded_rgba_len(width: u32, height: u32, len: usize) {
             "DecodedImage RGBA length mismatch: {width}x{height} expects {expected} bytes, got {len}"
         );
     } else {
-        log::warn!(
-            "DecodedImage RGBA dimensions overflow: {width}x{height}; length check skipped"
-        );
+        log::warn!("DecodedImage RGBA dimensions overflow: {width}x{height}; length check skipped");
     }
 }
 

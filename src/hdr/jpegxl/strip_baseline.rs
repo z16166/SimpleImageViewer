@@ -172,7 +172,7 @@ pub(crate) fn decode_jxl_strip_preview_rgba8(bytes: &[u8]) -> JxlStripPreviewRes
                 .ok()?;
                 if !size.is_multiple_of(std::mem::size_of::<f32>()) {
                     return Some(Err(
-                        "libjxl strip preview buffer size is not float-aligned".to_string(),
+                        "libjxl strip preview buffer size is not float-aligned".to_string()
                     ));
                 }
                 // Validate preview buffer size before allocation.
@@ -180,8 +180,8 @@ pub(crate) fn decode_jxl_strip_preview_rgba8(bytes: &[u8]) -> JxlStripPreviewRes
                     Some(info) => info,
                     None => {
                         return Some(Err(
-                            "JXL_NEED_PREVIEW_OUT_BUFFER before basic info".to_string(),
-                        ))
+                            "JXL_NEED_PREVIEW_OUT_BUFFER before basic info".to_string()
+                        ));
                     }
                 };
                 crate::constants::validate_static_decode_dimensions(

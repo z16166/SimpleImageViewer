@@ -127,9 +127,7 @@ pub(crate) fn deep_scanline_flatten_rgba_via_imf(
         .checked_mul(expected_h as usize)
         .and_then(|p| p.checked_mul(4))
         .ok_or_else(|| {
-            format!(
-                "OpenEXR deep scanline buffer size overflow: {expected_w}x{expected_h}"
-            )
+            format!("OpenEXR deep scanline buffer size overflow: {expected_w}x{expected_h}")
         })?;
     let mut rgba = vec![0.0_f32; rgba_len];
     let mut w = 0u32;
@@ -208,11 +206,7 @@ pub(crate) fn rgba_input_scanline_flatten_rgba_via_imf(path: &Path) -> Result<Ve
         let need = (w as usize)
             .checked_mul(h as usize)
             .and_then(|p| p.checked_mul(4))
-            .ok_or_else(|| {
-                format!(
-                    "OpenEXR IMF flatten buffer size overflow: {w}x{h}"
-                )
-            })?;
+            .ok_or_else(|| format!("OpenEXR IMF flatten buffer size overflow: {w}x{h}"))?;
         rgba = vec![0.0_f32; need];
         code = unsafe {
             sys::siv_imf_rgba_input_scanline_flatten_rgba_bytes(
@@ -247,38 +241,27 @@ pub(crate) fn extract_rgba32f_tile_from_flat_buffer(
     validate_tile_bounds(image_width, image_height, x, y, width, height)?;
     let row_stride = (image_width as usize)
         .checked_mul(4)
-        .ok_or_else(|| {
-            format!("OpenEXR tile row stride overflow: width={image_width}")
-        })?;
+        .ok_or_else(|| format!("OpenEXR tile row stride overflow: width={image_width}"))?;
     let out_len = (width as usize)
         .checked_mul(height as usize)
         .and_then(|p| p.checked_mul(4))
-        .ok_or_else(|| {
-            format!(
-                "OpenEXR tile buffer size overflow: {width}x{height}"
-            )
-        })?;
+        .ok_or_else(|| format!("OpenEXR tile buffer size overflow: {width}x{height}"))?;
     let mut out = vec![0.0_f32; out_len];
     let w4 = (width as usize)
         .checked_mul(4)
         .ok_or_else(|| format!("EXR tile row width overflow: width={width}"))?;
     for row in 0..height {
         let src_y = (y + row) as usize;
-        let src_start = (src_y as usize)
-            .checked_mul(row_stride)
-            .ok_or_else(|| {
-                format!("EXR tile source row offset overflow: src_y={src_y} stride={row_stride}")
-            })?
-            + (x as usize)
-                .checked_mul(4)
-                .ok_or_else(|| format!("EXR tile source col offset overflow: x={x}"))?;
+        let src_start = (src_y as usize).checked_mul(row_stride).ok_or_else(|| {
+            format!("EXR tile source row offset overflow: src_y={src_y} stride={row_stride}")
+        })? + (x as usize)
+            .checked_mul(4)
+            .ok_or_else(|| format!("EXR tile source col offset overflow: x={x}"))?;
         let dst_start = (row as usize)
             .checked_mul(width as usize)
             .and_then(|p| p.checked_mul(4))
             .ok_or_else(|| {
-                format!(
-                    "EXR tile destination row offset overflow: row={row} width={width}"
-                )
+                format!("EXR tile destination row offset overflow: row={row} width={width}")
             })?;
         out[dst_start..dst_start + w4].copy_from_slice(&rgba[src_start..src_start + w4]);
     }

@@ -181,9 +181,7 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
                 })?;
             let row_pixels = (width as usize)
                 .checked_mul(4)
-                .ok_or_else(|| {
-                    format!("Radiance HDR row pixel count overflow: width={width}")
-                })?;
+                .ok_or_else(|| format!("Radiance HDR row pixel count overflow: width={width}"))?;
             rgbe_pixels_to_rgba32f(
                 &scanline[..width as usize],
                 &mut rgba_f32[row_off..row_off + row_pixels],
@@ -204,9 +202,7 @@ pub(crate) fn decode_radiance_rgba32f_from_mmap(
                 let row_off = (y as usize)
                     .checked_mul(w)
                     .and_then(|p| p.checked_mul(4))
-                    .ok_or_else(|| {
-                        format!("Radiance HDR row offset overflow: y={y} width={w}")
-                    })?;
+                    .ok_or_else(|| format!("Radiance HDR row offset overflow: y={y} width={w}"))?;
                 for pixel in scanline.iter().take(plan.inner_len as usize) {
                     let rgb = pixel.to_rgb_f32();
                     let x4 = (x as usize)

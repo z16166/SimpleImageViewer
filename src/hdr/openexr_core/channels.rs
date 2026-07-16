@@ -138,9 +138,7 @@ pub(crate) fn copy_decoded_chunk_to_tile(
         .checked_mul(tile_height as usize)
         .and_then(|p| p.checked_mul(4))
         .ok_or_else(|| {
-            format!(
-                "EXR destination tile buffer size overflow: {tile_width}x{tile_height}"
-            )
+            format!("EXR destination tile buffer size overflow: {tile_width}x{tile_height}")
         })?;
     if rgba.len() != expected_len {
         return Err("EXR destination tile buffer has unexpected length".to_string());
@@ -166,21 +164,18 @@ pub(crate) fn copy_decoded_chunk_to_tile(
         let dst_col = (copy_start_x - tile_x) as usize;
         let src_start = (src_row as usize)
             .checked_mul(cw4)
-            .ok_or_else(|| {
-                format!("EXR chunk row offset overflow: src_row={src_row}")
-            })?
+            .ok_or_else(|| format!("EXR chunk row offset overflow: src_row={src_row}"))?
             + (src_col as usize)
                 .checked_mul(4)
                 .ok_or_else(|| format!("EXR chunk col offset overflow: src_col={src_col}"))?;
         let dst_start = (dst_row as usize)
             .checked_mul(tw4)
-            .ok_or_else(|| {
-                format!("EXR tile row offset overflow: dst_row={dst_row}")
-            })?
+            .ok_or_else(|| format!("EXR tile row offset overflow: dst_row={dst_row}"))?
             + (dst_col as usize)
                 .checked_mul(4)
                 .ok_or_else(|| format!("EXR tile col offset overflow: dst_col={dst_col}"))?;
-        rgba[dst_start..dst_start + cw_copy].copy_from_slice(&decoded.rgba[src_start..src_start + cw_copy]);
+        rgba[dst_start..dst_start + cw_copy]
+            .copy_from_slice(&decoded.rgba[src_start..src_start + cw_copy]);
     }
 
     Ok(copy_start.elapsed().as_secs_f64() * 1000.0)
@@ -198,9 +193,7 @@ pub(crate) fn sample_decoded_scanline_chunk_into_preview(
         .checked_mul(preview_height as usize)
         .and_then(|p| p.checked_mul(4))
         .ok_or_else(|| {
-            format!(
-                "EXR preview buffer size overflow: {preview_width}x{preview_height}"
-            )
+            format!("EXR preview buffer size overflow: {preview_width}x{preview_height}")
         })?;
     if rgba.len() != expected_len {
         return Err("EXR preview buffer has unexpected length".to_string());
@@ -230,26 +223,16 @@ pub(crate) fn sample_decoded_scanline_chunk_into_preview(
                 continue;
             }
             let source_col = (source_x - chunk_x) as usize;
-            let source_offset = (source_row as usize)
-                .checked_mul(src_w4)
-                .ok_or_else(|| {
-                    format!("EXR preview source row offset overflow: source_row={source_row}")
-                })?
-                + (source_col as usize)
-                    .checked_mul(4)
-                    .ok_or_else(|| {
-                        format!("EXR preview source col offset overflow: source_col={source_col}")
-                    })?;
-            let dest_offset = (preview_y as usize)
-                .checked_mul(dst_w4)
-                .ok_or_else(|| {
-                    format!("EXR preview dest row offset overflow: preview_y={preview_y}")
-                })?
-                + (preview_x as usize)
-                    .checked_mul(4)
-                    .ok_or_else(|| {
-                        format!("EXR preview dest col offset overflow: preview_x={preview_x}")
-                    })?;
+            let source_offset = (source_row as usize).checked_mul(src_w4).ok_or_else(|| {
+                format!("EXR preview source row offset overflow: source_row={source_row}")
+            })? + (source_col as usize).checked_mul(4).ok_or_else(|| {
+                format!("EXR preview source col offset overflow: source_col={source_col}")
+            })?;
+            let dest_offset = (preview_y as usize).checked_mul(dst_w4).ok_or_else(|| {
+                format!("EXR preview dest row offset overflow: preview_y={preview_y}")
+            })? + (preview_x as usize).checked_mul(4).ok_or_else(|| {
+                format!("EXR preview dest col offset overflow: preview_x={preview_x}")
+            })?;
             rgba[dest_offset..dest_offset + 4]
                 .copy_from_slice(&decoded.rgba[source_offset..source_offset + 4]);
         }

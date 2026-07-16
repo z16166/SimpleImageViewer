@@ -46,9 +46,7 @@ pub(crate) fn unpack_libraw_rgb16_rows_to_rgba_f32(
     let cap = w
         .checked_mul(h)
         .and_then(|p| p.checked_mul(crate::constants::RGBA_CHANNELS))
-        .ok_or_else(|| {
-            format!("RGB16 buffer capacity overflow: {width}x{height}")
-        })?;
+        .ok_or_else(|| format!("RGB16 buffer capacity overflow: {width}x{height}"))?;
     let mut rgba_f32 = Vec::with_capacity(cap);
     for y in 0..h {
         let row_off = y * row_stride;
@@ -936,7 +934,9 @@ impl RawProcessor {
                 .ok_or_else(|| format!("RAW develop pixel count overflow for {width}x{height}"))?;
             let expected_min = pixel_count
                 .checked_mul(crate::constants::RGB_CHANNELS)
-                .ok_or_else(|| format!("RAW develop RGB buffer size overflow for {width}x{height}"))?;
+                .ok_or_else(|| {
+                    format!("RAW develop RGB buffer size overflow for {width}x{height}")
+                })?;
             if data_len < expected_min {
                 return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
             }
@@ -944,7 +944,9 @@ impl RawProcessor {
             // SINGLE-PASS PACKING OPTIMIZATION:
             let rgba_len = pixel_count
                 .checked_mul(crate::constants::RGBA_CHANNELS)
-                .ok_or_else(|| format!("RAW develop RGBA buffer size overflow for {width}x{height}"))?;
+                .ok_or_else(|| {
+                    format!("RAW develop RGBA buffer size overflow for {width}x{height}")
+                })?;
             let mut rgba = vec![crate::constants::MAX_CHANNEL_VALUE; rgba_len];
             let slice = std::slice::from_raw_parts(data_ptr, expected_min);
 
@@ -974,11 +976,7 @@ impl RawProcessor {
         let expected = (width as usize)
             .checked_mul(height as usize)
             .and_then(|p| p.checked_mul(3))
-            .ok_or_else(|| {
-                format!(
-                    "RGB16 output buffer length overflow: {width}x{height}"
-                )
-            })?;
+            .ok_or_else(|| format!("RGB16 output buffer length overflow: {width}x{height}"))?;
         if rgb16.len() < expected {
             return Err("RGB16 buffer too small".to_string());
         }
@@ -1243,11 +1241,10 @@ impl RawProcessor {
                 if img.colors == crate::constants::RGB_CHANNELS as u16
                     && img.bits == crate::constants::BIT_DEPTH_8 as u16
                 {
-                    let validated_pixels =
-                        crate::constants::validate_static_decode_dimensions(
-                            img.width as u32,
-                            img.height as u32,
-                        )?;
+                    let validated_pixels = crate::constants::validate_static_decode_dimensions(
+                        img.width as u32,
+                        img.height as u32,
+                    )?;
                     let count = validated_pixels as usize;
                     let required_rgb = count
                         .checked_mul(crate::constants::RGB_CHANNELS)
