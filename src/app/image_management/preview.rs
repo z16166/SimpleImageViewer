@@ -314,7 +314,7 @@ impl ImageViewerApp {
                         .get_original_res(update.index)
                         .unwrap_or((preview.width, preview.height));
 
-                    let name = format!("img_hq_preview_{}", update.index);
+                    let name = self.texture_cache.get_or_create_preview_name(update.index);
                     let color_image = egui::ColorImage::from_rgba_unmultiplied(
                         [preview.width as usize, preview.height as usize],
                         preview.rgba(),

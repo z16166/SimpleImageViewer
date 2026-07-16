@@ -62,6 +62,8 @@ pub struct TextureCache {
     evict_furthest_idx: Option<usize>,
     evict_furthest_dist: usize,
     max_size: usize,
+    /// Cached texture names to avoid repeated `format!` allocation on the hot path.
+    preview_names: HashMap<usize, String>,
 }
 
 fn circular_distance(current_index: usize, total_count: usize, idx: usize) -> usize {
@@ -84,6 +86,7 @@ impl TextureCache {
             evict_furthest_idx: None,
             evict_furthest_dist: 0,
             max_size,
+            preview_names: HashMap::new(),
         }
     }
 
@@ -200,10 +203,17 @@ impl TextureCache {
         })
     }
 
+    pub fn get_or_create_preview_name(&mut self, index: usize) -> &str {
+        self.preview_names
+            .entry(index)
+            .or_insert_with(|| format!("img_hq_preview_{index}"))
+    }
+
     pub fn clear_all(&mut self) {
         self.entries.clear();
         self.cached_indices.clear();
         self.cached_index_slot.clear();
+        self.preview_names.clear();
         self.evict_furthest_idx = None;
         self.evict_furthest_dist = 0;
     }
