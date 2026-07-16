@@ -238,7 +238,8 @@ impl ImageLoader {
                                     if shutdown_worker.load(Ordering::Acquire) {
                                         return;
                                     }
-                                    // Woken by LoaderWorkerLifetime::signal_shutdown → delayed_fallback cvar.notify_all()
+                                    // Woken by ImageLoader::request_load → cvar.notify_one()
+                                    // or LoaderWorkerLifetime::signal_shutdown → cvar.notify_all()
                                     cvar.wait(&mut g);
                                     if shutdown_worker.load(Ordering::Acquire) {
                                         return;
@@ -366,7 +367,8 @@ impl ImageLoader {
                                 if shutdown_worker.load(Ordering::Acquire) {
                                     return;
                                 }
-                                // Woken by LoaderWorkerLifetime::signal_shutdown → tile_queue cvar.notify_all()
+                                // Woken by ImageLoader::request_tile → cvar.notify_one()
+                                // or LoaderWorkerLifetime::signal_shutdown → cvar.notify_all()
                                 cvar.wait(&mut heap);
                                 if shutdown_worker.load(Ordering::Acquire) {
                                     return;

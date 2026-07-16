@@ -26,6 +26,56 @@ use crate::loader::{DecodedImage, PreviewStage, TiledImageSource};
 #[cfg(test)]
 use super::BOOTSTRAP_STRIP_VISIBLE_ROW_CAP;
 
+/// Max entries in [`DecodeProbeCache`] — roughly 4× the visible strip row cap, so scrolling
+/// accumulation between directory re-scans is bounded without affecting hit rate.
+pub(crate) const DECODE_PROBE_CACHE_MAX: usize = 256;
+
+/// Bounded FIFO cache for `strip_path_provides_reusable_static_full_decode` probe results.
+/// Evicts oldest entry when capacity is exceeded, avoiding unbounded growth in large directories.
+pub(crate) struct DecodeProbeCache {
+    map: std::collections::HashMap<std::path::PathBuf, bool>,
+    order: std::collections::VecDeque<std::path::PathBuf>,
+    max_size: usize,
+}
+
+impl DecodeProbeCache {
+    pub(crate) fn new(max_size: usize) -> Self {
+        Self {
+            map: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            max_size,
+        }
+    }
+
+    pub(crate) fn get(&self, path: &std::path::Path) -> Option<&bool> {
+        self.map.get(path)
+    }
+
+    pub(crate) fn insert(&mut self, path: std::path::PathBuf, value: bool) {
+        if self.map.contains_key(&path) {
+            self.map.insert(path, value);
+            return;
+        }
+        if self.order.len() >= self.max_size {
+            if let Some(oldest) = self.order.pop_front() {
+                self.map.remove(&oldest);
+            }
+        }
+        self.order.push_back(path.clone());
+        self.map.insert(path, value);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+    }
+
+    pub(crate) fn retain(&mut self, mut f: impl FnMut(&std::path::Path) -> bool) {
+        self.order.retain(|path| f(path.as_path()));
+        self.map.retain(|path, _| f(path.as_path()));
+    }
+}
+
 fn path_extension_matches_any(path: &std::path::Path, candidates: &[&str]) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -506,11 +556,6 @@ impl ImageViewerApp {
             return cached;
         }
         let result = crate::loader::strip_path_provides_reusable_static_full_decode(path);
-        // Bounded cache: paths are already cleared on directory change; this guard
-        // prevents unbounded growth in extreme-sized folders between re-scans.
-        if self.directory_tree_strip_reusable_full_decode_cache.len() >= 4096 {
-            self.directory_tree_strip_reusable_full_decode_cache.clear();
-        }
         self.directory_tree_strip_reusable_full_decode_cache
             .insert(path.to_path_buf(), result);
         result

@@ -2496,7 +2496,10 @@ pub(crate) fn make_test_app() -> ImageViewerApp {
         directory_tree_strip_inflight_cancel: std::collections::HashMap::new(),
         directory_tree_strip_next_job_token: 0,
         directory_tree_strip_static_full_decode_inflight: std::collections::HashSet::new(),
-        directory_tree_strip_reusable_full_decode_cache: std::collections::HashMap::new(),
+        directory_tree_strip_reusable_full_decode_cache:
+            crate::app::directory_tree::DecodeProbeCache::new(
+                crate::app::directory_tree::DECODE_PROBE_CACHE_MAX,
+            ),
         directory_tree_strip_preview_tx: {
             let (tx, _rx) = crossbeam_channel::unbounded();
             tx

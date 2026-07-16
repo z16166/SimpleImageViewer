@@ -42,7 +42,7 @@ use super::{
     MAX_STRIP_GENERATE_INFLIGHT_BOOTSTRAP, MAX_TILED_STRIP_GENERATES_PER_FRAME, domains, view,
 };
 
-mod checks;
+pub(crate) mod checks;
 mod gpu;
 mod poll;
 mod schedule;
@@ -748,6 +748,8 @@ impl ImageViewerApp {
         self.directory_tree_strip_inflight_cancel
             .retain(|path, _| live.contains(path));
         self.directory_tree_strip_static_full_decode_inflight
+            .retain(|path| live.contains(path));
+        self.directory_tree_strip_reusable_full_decode_cache
             .retain(|path| live.contains(path));
         self.directory_tree_strip_tiled_attempted
             .retain(|path| live.contains(path));

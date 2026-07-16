@@ -561,7 +561,7 @@ pub struct ImageViewerApp {
     /// Cached result of `strip_path_provides_reusable_static_full_decode` for PNG/WebP,
     /// avoiding repeated mmap + decoder creation across cold strip schedule calls.
     pub(crate) directory_tree_strip_reusable_full_decode_cache:
-        std::collections::HashMap<PathBuf, bool>,
+        crate::app::directory_tree::DecodeProbeCache,
     pub(crate) directory_tree_strip_preview_tx: crossbeam_channel::Sender<
         crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,
     >,
