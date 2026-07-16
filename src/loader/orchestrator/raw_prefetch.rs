@@ -127,7 +127,9 @@ impl RawOpenPrefetch {
                     }
                 }
                 Some(RawPrefetchEntry::InProgress) => {
-                    cvar.wait_for(&mut inner, super::types::LOADER_WORKER_IDLE_POLL);
+                    // Woken by RawOpenPrefetch::wake_waiters → cvar.notify_all()
+                    // (called from LoaderWorkerLifetime::signal_shutdown)
+                    cvar.wait(&mut inner);
                 }
                 None => return None,
             }
