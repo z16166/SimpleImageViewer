@@ -24,6 +24,16 @@ fn path_or_empty<'a>(files: &'a [std::path::PathBuf], idx: usize) -> &'a std::pa
         .unwrap_or(std::path::Path::new(""))
 }
 
+/// Format a stable texture name into a stack buffer to avoid a per-upload `String` allocation.
+/// Prefix plus `usize::MAX` decimal digits fits comfortably in 64 bytes.
+fn write_preview_name<'a>(prefix: &str, idx: usize, buf: &'a mut [u8; 64]) -> &'a str {
+    let mut cursor = std::io::Cursor::new(&mut buf[..]);
+    use std::io::Write;
+    let _ = std::write!(cursor, "{prefix}{idx}");
+    let len = cursor.position() as usize;
+    std::str::from_utf8(&buf[..len]).expect("preview name is ASCII prefix and digits")
+}
+
 impl ImageViewerApp {
     /// True when the active tile pyramid belongs to the image at [`Self::current_index`].
     pub(crate) fn tiled_canvas_matches_current_index(&self) -> bool {
@@ -712,12 +722,15 @@ impl ImageViewerApp {
                 texture_stage,
             )
         {
+            let name = self
+                .texture_cache
+                .get_or_create_preview_name(idx)
+                .to_owned();
             let (orig_w, orig_h) = self
                 .texture_cache
                 .get_original_res(idx)
                 .unwrap_or((preview.width, preview.height));
 
-            let name = format!("img_hq_preview_{}", idx);
             let color_image = egui::ColorImage::from_rgba_unmultiplied(
                 [preview.width as usize, preview.height as usize],
                 preview.rgba(),
@@ -773,8 +786,9 @@ impl ImageViewerApp {
             [preview.width as usize, preview.height as usize],
             preview.rgba(),
         );
+        let mut name_buf = [0u8; 64];
         let preview_handle = ctx.load_texture(
-            format!("preview_{}", idx),
+            write_preview_name("preview_", idx, &mut name_buf),
             preview_img,
             egui::TextureOptions::LINEAR,
         );
@@ -830,7 +844,8 @@ impl ImageViewerApp {
             [preview.width as usize, preview.height as usize],
             preview.rgba(),
         );
-        let name = format!("img_preview_{}", idx);
+        let mut name_buf = [0u8; 64];
+        let name = write_preview_name("img_preview_", idx, &mut name_buf);
         let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
         self.insert_texture_cache_tracked(
             idx,
