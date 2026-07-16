@@ -700,7 +700,9 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 let max_side = width.max(height);
                 let limit = crate::tile_cache::get_max_texture_side();
 
-                let total_bytes: usize = frames.iter().map(|f| f.rgba().len()).sum();
+                let total_bytes: usize = frames.iter().fold(0usize, |acc, f| {
+                    acc.checked_add(f.rgba().len()).unwrap_or(usize::MAX)
+                });
                 let mb = total_bytes as f64 / (BYTES_PER_MB as f64);
 
                 if max_side > limit {
@@ -737,10 +739,15 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 let max_side = width.max(height);
                 let limit = crate::tile_cache::get_max_texture_side();
 
-                let total_bytes: usize = frames
-                    .iter()
-                    .map(|f| f.fallback.rgba().len() + f.hdr.rgba_f32.len() * 4)
-                    .sum();
+                let total_bytes: usize = frames.iter().fold(0usize, |acc, f| {
+                    let frame_bytes = f
+                        .fallback
+                        .rgba()
+                        .len()
+                        .checked_add(f.hdr.rgba_f32.len().saturating_mul(4))
+                        .unwrap_or(usize::MAX);
+                    acc.checked_add(frame_bytes).unwrap_or(usize::MAX)
+                });
                 let mb = total_bytes as f64 / (BYTES_PER_MB as f64);
 
                 if max_side > limit {

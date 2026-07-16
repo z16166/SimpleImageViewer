@@ -38,7 +38,8 @@ pub(crate) const STRIP_CACHE_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const TILE_CACHE_BUDGET_BYTES: usize = STRIP_CACHE_BUDGET_BYTES;
 
 /// Maximum pixel count for static full-image HDR decode paths (256 megapixels).
-pub(crate) const MAX_STATIC_HDR_DECODE_PIXELS: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_STATIC_HDR_DECODE_PIXELS: u64 =
+    crate::constants::MAX_STATIC_FULL_DECODE_PIXELS;
 
 /// Poll cooperative cancel every N scanlines in owned TIFF row loops.
 pub(crate) const TIFF_SCANLINE_CANCEL_POLL_INTERVAL: u32 = 64;

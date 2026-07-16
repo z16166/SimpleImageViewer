@@ -60,6 +60,18 @@ impl std::fmt::Debug for DecodedImage {
     }
 }
 
+#[inline]
+fn assert_decoded_rgba_len(width: u32, height: u32, len: usize) {
+    // External decoders must hand us a buffer whose length matches width*height*4.
+    // Always-on check (not debug_assert) so Release builds still reject mismatched state.
+    if let Some(expected) = crate::constants::checked_rgba8_len_u32(width, height) {
+        assert!(
+            len == expected,
+            "DecodedImage RGBA length mismatch: {width}x{height} expects {expected} bytes, got {len}"
+        );
+    }
+}
+
 impl DecodedImage {
     #[inline]
     pub fn rgba(&self) -> &[u8] {
@@ -67,6 +79,7 @@ impl DecodedImage {
     }
 
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        assert_decoded_rgba_len(width, height, pixels.len());
         Self {
             width,
             height,
@@ -77,6 +90,7 @@ impl DecodedImage {
 
     #[cfg(test)]
     pub fn new_sdr_deferred_placeholder(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        assert_decoded_rgba_len(width, height, pixels.len());
         Self {
             width,
             height,
@@ -87,6 +101,7 @@ impl DecodedImage {
 
     /// Wrap an existing RGBA8 buffer without copying.
     pub fn from_arc(width: u32, height: u32, pixels: Arc<Vec<u8>>) -> Self {
+        assert_decoded_rgba_len(width, height, pixels.len());
         Self {
             width,
             height,
@@ -100,6 +115,7 @@ impl DecodedImage {
         height: u32,
         pixels: Arc<Vec<u8>>,
     ) -> Self {
+        assert_decoded_rgba_len(width, height, pixels.len());
         Self {
             width,
             height,
@@ -113,6 +129,7 @@ impl DecodedImage {
         height: u32,
         fallback: super::hdr_fallback::HdrSdrFallbackRgba8,
     ) -> Self {
+        assert_decoded_rgba_len(width, height, fallback.pixels.len());
         Self {
             width,
             height,
@@ -293,6 +310,7 @@ impl AnimationFrame {
     }
 
     pub fn new(width: u32, height: u32, pixels: Vec<u8>, delay: std::time::Duration) -> Self {
+        assert_decoded_rgba_len(width, height, pixels.len());
         Self {
             width,
             height,
@@ -307,6 +325,7 @@ impl AnimationFrame {
         pixels: Arc<Vec<u8>>,
         delay: std::time::Duration,
     ) -> Self {
+        assert_decoded_rgba_len(width, height, pixels.len());
         Self {
             width,
             height,

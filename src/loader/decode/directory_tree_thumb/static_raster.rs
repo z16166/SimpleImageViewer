@@ -21,6 +21,10 @@ use crate::loader::{DecodedImage, downsample_decoded_for_strip};
 use super::DirectoryTreeThumbDecode;
 use super::path_extension_ascii_lower;
 
+fn ensure_strip_decoder_dimensions(width: u32, height: u32) -> Result<(), String> {
+    crate::constants::validate_static_decode_dimensions(width, height).map(|_| ())
+}
+
 pub(super) fn static_raster_path_provides_reusable_full_decode(path: &Path) -> bool {
     let Some(ext) = path_extension_ascii_lower(path) else {
         return false;
@@ -159,10 +163,13 @@ fn decode_png_strip_rgba(
     allow_reusable_full: bool,
 ) -> Result<(image::RgbaImage, bool), String> {
     use image::DynamicImage;
+    use image::ImageDecoder;
     use image::codecs::png::PngDecoder;
     use std::io::Cursor;
 
     let decoder = PngDecoder::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    let (width, height) = decoder.dimensions();
+    ensure_strip_decoder_dimensions(width, height)?;
     let reusable_full_allowed =
         allow_reusable_full && !decoder.is_apng().map_err(|e| e.to_string())?;
     let rgba = DynamicImage::from_decoder(decoder)
@@ -173,10 +180,13 @@ fn decode_png_strip_rgba(
 
 fn decode_webp_strip_rgba(bytes: &[u8]) -> Result<(image::RgbaImage, bool), String> {
     use image::DynamicImage;
+    use image::ImageDecoder;
     use image::codecs::webp::WebPDecoder;
     use std::io::Cursor;
 
     let decoder = WebPDecoder::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    let (width, height) = decoder.dimensions();
+    ensure_strip_decoder_dimensions(width, height)?;
     let reusable_full_allowed = !decoder.has_animation();
     let rgba = DynamicImage::from_decoder(decoder)
         .map_err(|e| e.to_string())?
@@ -195,10 +205,18 @@ fn decode_generic_strip_rgba(
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
     decode_reader.no_limits();
-    let rgba = decode_reader
-        .decode()
-        .map_err(|e| e.to_string())?
-        .into_rgba8();
+    let decoder = decode_reader.into_decoder().map_err(|e| e.to_string())?;
+    let (width, height) = {
+        use image::ImageDecoder;
+        decoder.dimensions()
+    };
+    ensure_strip_decoder_dimensions(width, height)?;
+    let rgba = {
+        use image::DynamicImage;
+        DynamicImage::from_decoder(decoder)
+            .map_err(|e| e.to_string())?
+            .into_rgba8()
+    };
     let reusable_full_allowed = matches!(format_hint, Some("bmp" | "tga" | "ico" | "pnm" | "qoi"));
     Ok((rgba, reusable_full_allowed))
 }

@@ -238,14 +238,23 @@ fn make_deep_exr_placeholder_from_mmap(
     mmap: Arc<memmap2::Mmap>,
 ) -> Result<ImageData, String> {
     let (width, height) = crate::hdr::exr_tiled::exr_dimensions_unvalidated_from_mmap(path, mmap)?;
-    let pixel_count = width
-        .checked_mul(height)
+    // Placeholder still allocates full-canvas f32+u8 buffers; apply the same static decode cap.
+    crate::constants::validate_static_decode_dimensions(width, height)?;
+    let pixel_count = u64::from(width)
+        .checked_mul(u64::from(height))
         .ok_or_else(|| format!("Deep EXR placeholder dimensions overflow: {width}x{height}"))?;
-    let mut rgba_f32 = vec![0.0_f32; pixel_count as usize * 4];
+    let rgba_f32_len =
+        usize::try_from(pixel_count.checked_mul(4).ok_or_else(|| {
+            format!("Deep EXR placeholder RGBA length overflow: {width}x{height}")
+        })?)
+        .map_err(|_| {
+            format!("Deep EXR placeholder too large for address space: {width}x{height}")
+        })?;
+    let mut rgba_f32 = vec![0.0_f32; rgba_f32_len];
     for alpha in rgba_f32.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
         *alpha = 1.0;
     }
-    let mut fallback_pixels = vec![0_u8; pixel_count as usize * 4];
+    let mut fallback_pixels = vec![0_u8; rgba_f32_len];
     for alpha in fallback_pixels
         .chunks_exact_mut(4)
         .map(|pixel| &mut pixel[3])

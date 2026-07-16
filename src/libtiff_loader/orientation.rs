@@ -73,6 +73,17 @@ fn apply_orientation_flip_horizontal(pixels: &[u8], w: u32, h: u32) -> (u32, u32
     let width = w as usize;
     let row_bytes = width * crate::constants::RGBA_CHANNELS;
     let mut out = vec![0u8; out_len];
+    let Some(need) = (h as usize).checked_mul(row_bytes) else {
+        log::warn!("orientation RGBA8 horizontal flip size overflow for {w}x{h}");
+        return (w, h, pixels.to_vec());
+    };
+    if need > pixels.len() {
+        log::warn!(
+            "orientation RGBA8 horizontal flip: buffer shorter than {w}x{h} (len={})",
+            pixels.len()
+        );
+        return (w, h, pixels.to_vec());
+    }
     for y in 0..h as usize {
         let src_off = y * row_bytes;
         let dst_off = src_off;
@@ -91,6 +102,17 @@ fn apply_orientation_flip_vertical(pixels: &[u8], w: u32, h: u32) -> (u32, u32, 
     };
     let row_bytes = w as usize * crate::constants::RGBA_CHANNELS;
     let mut out = vec![0u8; out_len];
+    let Some(need) = (h as usize).checked_mul(row_bytes) else {
+        log::warn!("orientation RGBA8 vertical flip size overflow for {w}x{h}");
+        return (w, h, pixels.to_vec());
+    };
+    if need > pixels.len() {
+        log::warn!(
+            "orientation RGBA8 vertical flip: buffer shorter than {w}x{h} (len={})",
+            pixels.len()
+        );
+        return (w, h, pixels.to_vec());
+    }
     for y in 0..h as usize {
         let src_off = y * row_bytes;
         let dst_off = (h as usize - 1 - y) * row_bytes;
@@ -106,6 +128,17 @@ fn apply_orientation_rotate_180(pixels: &[u8], w: u32, h: u32) -> (u32, u32, Vec
     };
     let row_bytes = w as usize * crate::constants::RGBA_CHANNELS;
     let mut out = vec![0u8; out_len];
+    let Some(need) = (h as usize).checked_mul(row_bytes) else {
+        log::warn!("orientation RGBA8 180-degree size overflow for {w}x{h}");
+        return (w, h, pixels.to_vec());
+    };
+    if need > pixels.len() {
+        log::warn!(
+            "orientation RGBA8 180-degree: buffer shorter than {w}x{h} (len={})",
+            pixels.len()
+        );
+        return (w, h, pixels.to_vec());
+    }
     for y in 0..h as usize {
         let src_off = y * row_bytes;
         let dst_off = (h as usize - 1 - y) * row_bytes;

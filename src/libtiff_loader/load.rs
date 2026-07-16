@@ -43,6 +43,70 @@ use super::mmap::{
 use super::orientation::{apply_orientation_buffer, apply_orientation_buffer_f32};
 use crate::loader::{DecodedImage, ImageData};
 
+/// Validate that every strip/tile offset+byte_count entry fits within the mmap.
+///
+/// Returns `Err` when an IFD is malformed (missing offset/byte-count arrays) or
+/// any entry references data beyond the mapped file — defense-in-depth for corrupted
+/// TIFF files that libtiff's own internal guards might not fully catch.
+unsafe fn validate_tiff_offsets(
+    tif: *mut lib::TIFF,
+    guard: &lib::TiffGuard,
+    is_tiled: bool,
+    mmap_len: usize,
+) -> Result<(), String> {
+    let (num, offsets_tag, byte_counts_tag, label) = if is_tiled {
+        // SAFETY: `tif` is a valid libtiff handle; the call is safe as long as the handle is alive.
+        (
+            unsafe { lib::TIFFNumberOfTiles(tif) },
+            lib::TIFFTAG_TILEOFFSETS,
+            lib::TIFFTAG_TILEBYTECOUNTS,
+            "tile",
+        )
+    } else {
+        // SAFETY: `tif` is a valid libtiff handle; the call is safe as long as the handle is alive.
+        (
+            unsafe { lib::TIFFNumberOfStrips(tif) },
+            lib::TIFFTAG_STRIPOFFSETS,
+            lib::TIFFTAG_STRIPBYTECOUNTS,
+            "strip",
+        )
+    };
+
+    // SAFETY: `get_field_u64_array` reads a pointer from libtiff's directory storage;
+    // the handle is alive and we are still in the directory context.
+    let Some(offsets) = (unsafe { guard.get_field_u64_array(offsets_tag) }) else {
+        return Err(format!(
+            "TIFF {label} offset array is missing (corrupted IFD)"
+        ));
+    };
+    let Some(byte_counts) = (unsafe { guard.get_field_u64_array(byte_counts_tag) }) else {
+        return Err(format!(
+            "TIFF {label} byte-count array is missing (corrupted IFD)"
+        ));
+    };
+
+    let mmap_len = mmap_len as u64;
+    for i in 0..num as usize {
+        // SAFETY: libtiff owns these arrays; they live as long as the directory is loaded.
+        let off = unsafe { *offsets.add(i) };
+        let len = unsafe { *byte_counts.add(i) };
+        if len == 0 {
+            continue; // empty strip/tile is legal
+        }
+        let Some(end) = off.checked_add(len) else {
+            return Err(format!(
+                "TIFF {label}[{i}] offset+byte_count wraps: off={off} len={len}"
+            ));
+        };
+        if end > mmap_len {
+            return Err(format!(
+                "TIFF {label}[{i}] offset+byte_count {end} exceeds mmap size {mmap_len}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// IFD0 tags for diagnostics (tests / support).
 #[cfg(test)]
 pub fn peek_tiff_tags(path: &Path) -> Result<String, String> {
@@ -155,6 +219,10 @@ pub(crate) fn load_via_libtiff_from_mmap(
         lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_PHOTOMETRIC, &mut photo);
         lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_COMPRESSION, &mut compression);
         lib::TIFFGetField(handle.as_ptr(), lib::TIFFTAG_ORIENTATION, &mut orientation);
+        // TIFF orientation is defined as 1..=8; treat other values as identity.
+        if !(1..=8).contains(&orientation) {
+            orientation = 1;
+        }
 
         let mut sample_format: u16 = lib::SAMPLEFORMAT_UINT;
         lib::TIFFGetField(
@@ -379,6 +447,23 @@ pub(crate) fn load_via_libtiff_from_mmap(
                         "TIFF tile dimensions {tile_width}x{tile_height} exceed maximum {MAX_TIFF_TILE_DIMENSION}"
                     ));
                 }
+                // TIFF allows edge tiles to extend past the image (padding). That remains legal.
+                // Reject only clearly corrupt cases where a single tile exceeds the canvas on both
+                // axes by more than the hard MAX_TIFF_TILE_DIMENSION bound already checked above
+                // would not catch (e.g. 1x1 image with 8192x8192 tiles is still allowed by MAX).
+                // Extra defense: if either tile side is larger than the image *and* the tile pixel
+                // count exceeds the static decode budget, refuse tiled mode rather than OOM on one tile.
+                let tile_pixels = (tile_width as u64).saturating_mul(tile_height as u64);
+                if (tile_width > width || tile_height > height)
+                    && tile_pixels > MAX_STATIC_HDR_DECODE_PIXELS
+                {
+                    return Err(format!(
+                        "TIFF tile dimensions {tile_width}x{tile_height} exceed image {width}x{height} and pixel budget"
+                    ));
+                }
+
+                // Validate tile offsets fit within the mmap (defense-in-depth).
+                validate_tiff_offsets(handle.as_ptr(), &handle.guard, true, mmap.len())?;
 
                 let tile_bytes = (tile_width as usize)
                     .checked_mul(tile_height as usize)
@@ -408,6 +493,9 @@ pub(crate) fn load_via_libtiff_from_mmap(
                 if rps == 0 {
                     return Err("TIFF strip height is zero".to_string());
                 }
+
+                // Validate strip offsets fit within the mmap (defense-in-depth).
+                validate_tiff_offsets(handle.as_ptr(), &handle.guard, false, mmap.len())?;
 
                 let strip_bytes = (width as usize)
                     .checked_mul(rps as usize)

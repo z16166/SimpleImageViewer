@@ -260,6 +260,17 @@ fn load_via_wic_inner(
             .GetFrame(best_frame_idx)
             .map_err(|e| format!("failed to get frame: {:?}", e))?;
 
+        if width == 0 || height == 0 {
+            return Err(format!("WIC image has zero dimensions ({width}x{height})"));
+        }
+        // Hard ceiling for WIC frame dimensions. Larger claims are treated as corrupt.
+        let max_side = crate::constants::WIC_ABSOLUTE_MAX_SIDE;
+        if width > max_side || height > max_side {
+            return Err(format!(
+                "WIC image dimensions {width}x{height} exceed maximum side {max_side}"
+            ));
+        }
+
         let orientation = orientation_override.unwrap_or_else(|| {
             mmap_out
                 .as_ref()

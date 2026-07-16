@@ -55,6 +55,8 @@ pub(crate) fn load_static_from_mmap(
 
     let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
     let (width, height) = decoder.dimensions();
+    // Malformed headers can claim multi-gigapixel sizes; reject before allocation.
+    crate::constants::validate_static_decode_dimensions(width, height)?;
     // Decode straight into the final RGBA8 buffer when the codec already emits
     // Rgba8/Rgb8, avoiding DynamicImage + into_rgba8 intermediate allocations.
     crate::loader::check_decode_cancel_str(cancel)?;

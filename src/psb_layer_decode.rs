@@ -88,7 +88,9 @@ pub(crate) fn decode_channel_image(
                 .get(2..2 + total_raw_bytes)
                 .ok_or_else(|| "PSD/PSB layer channel raw payload out of bounds".to_string())?;
             if let Some(backing) = backing {
-                Ok(backing.sub_slice(2, 2 + total_raw_bytes))
+                Ok(backing
+                    .sub_slice(2, 2 + total_raw_bytes)
+                    .ok_or_else(|| "PSD/PSB shared slice out of bounds".to_string())?)
             } else {
                 Ok(SharedSlice::new(Arc::from(raw)))
             }
@@ -786,7 +788,7 @@ pub(crate) fn decode_one_layer(
                 params
                     .channel_backing
                     .as_ref()
-                    .map(|b| b.sub_slice(start, end))
+                    .and_then(|b| b.sub_slice(start, end))
                     .as_ref(),
                 width,
                 height,
@@ -826,7 +828,7 @@ pub(crate) fn decode_one_layer(
                         params
                             .channel_backing
                             .as_ref()
-                            .map(|b| b.sub_slice(start, end))
+                            .and_then(|b| b.sub_slice(start, end))
                             .as_ref(),
                         mask_info,
                         record.left,
@@ -857,7 +859,7 @@ pub(crate) fn decode_one_layer(
                     params
                         .channel_backing
                         .as_ref()
-                        .map(|b| b.sub_slice(start, end))
+                        .and_then(|b| b.sub_slice(start, end))
                         .as_ref(),
                     width,
                     height,
@@ -1116,7 +1118,7 @@ pub(crate) fn decode_layers_for_composite(
                 channel_backing: info
                     .channel_data_shared
                     .as_ref()
-                    .map(|s| s.sub_slice(start, end)),
+                    .and_then(|s| s.sub_slice(start, end)),
             },
         )
     };
@@ -1305,7 +1307,7 @@ pub(crate) fn run_composite_pass_cpu_streaming(
                 channel_backing: info
                     .channel_data_shared
                     .as_ref()
-                    .map(|s| s.sub_slice(start, end)),
+                    .and_then(|s| s.sub_slice(start, end)),
             },
         )
     };

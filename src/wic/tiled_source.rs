@@ -40,6 +40,16 @@ pub struct WicTiledSource {
     pub(crate) _mmap: Option<std::sync::Arc<memmap2::Mmap>>,
 }
 
+/// Allocate an RGBA8 buffer for `w`x`h` with checked multiplication (no u32 wraparound).
+fn alloc_rgba8_zeros(w: u32, h: u32) -> Option<Vec<u8>> {
+    let len = crate::constants::checked_rgba8_len_u32(w, h)?;
+    Some(vec![0u8; len])
+}
+
+fn checked_stride_u32(w: u32) -> Option<u32> {
+    crate::constants::checked_rgba8_stride_u32(w)
+}
+
 impl WicTiledSource {
     // extract_tile handles its own converter initialization to avoid deadlocks.
 
@@ -235,8 +245,28 @@ impl WicTiledSource {
                             log_final_w,
                             log_final_h
                         );
-                        let stride = log_final_w * 4;
-                        let mut out = vec![0u8; (stride * log_final_h) as usize];
+                        let Some(stride) = checked_stride_u32(log_final_w) else {
+                            log::warn!(
+                                "WIC [Idx={}]: preview stride overflow for {}x{}",
+                                self.path.display(),
+                                log_final_w,
+                                log_final_h
+                            );
+                            return (0, 0, Vec::new());
+                        };
+                        let Some(out_len) = (stride as u64)
+                            .checked_mul(log_final_h as u64)
+                            .and_then(|n| usize::try_from(n).ok())
+                        else {
+                            log::warn!(
+                                "WIC [Idx={}]: preview buffer overflow for {}x{}",
+                                self.path.display(),
+                                log_final_w,
+                                log_final_h
+                            );
+                            return (0, 0, Vec::new());
+                        };
+                        let mut out = vec![0u8; out_len];
                         let rect = WICRect {
                             X: 0,
                             Y: 0,
@@ -339,8 +369,28 @@ impl WicTiledSource {
                 return (0, 0, Vec::new());
             }
 
-            let stride = out_w * 4;
-            let mut out = vec![0u8; (stride * out_h) as usize];
+            let Some(stride) = checked_stride_u32(out_w) else {
+                log::warn!(
+                    "WIC [Idx={}]: scaler stride overflow for {}x{}",
+                    self.path.display(),
+                    out_w,
+                    out_h
+                );
+                return (0, 0, Vec::new());
+            };
+            let Some(out_len) = (stride as u64)
+                .checked_mul(out_h as u64)
+                .and_then(|n| usize::try_from(n).ok())
+            else {
+                log::warn!(
+                    "WIC [Idx={}]: scaler buffer overflow for {}x{}",
+                    self.path.display(),
+                    out_w,
+                    out_h
+                );
+                return (0, 0, Vec::new());
+            };
+            let mut out = vec![0u8; out_len];
             let rect = WICRect {
                 X: 0,
                 Y: 0,
@@ -385,8 +435,14 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                 const { std::cell::RefCell::new(None) };
         }
 
-        let mut pixels = vec![0u8; (w * h * 4) as usize];
-        let stride = w * 4;
+        let Some(mut pixels) = alloc_rgba8_zeros(w, h) else {
+            log::warn!("[WIC] tile buffer size overflow for {w}x{h}");
+            return std::sync::Arc::new(Vec::new());
+        };
+        let Some(stride) = checked_stride_u32(w) else {
+            log::warn!("[WIC] tile stride overflow for width {w}");
+            return std::sync::Arc::new(Vec::new());
+        };
 
         // Ensure COM is initialized on the current worker thread
         let _com = match ComGuard::new() {
@@ -476,8 +532,11 @@ fn render_source_to_pixels(
             )
             .ok()?;
 
-        let stride = w * 4;
-        let mut out = vec![0u8; (stride * h) as usize];
+        let stride = checked_stride_u32(w)?;
+        let out_len = (stride as u64)
+            .checked_mul(h as u64)
+            .and_then(|n| usize::try_from(n).ok())?;
+        let mut out = vec![0u8; out_len];
         let rect = WICRect {
             X: 0,
             Y: 0,

@@ -39,6 +39,25 @@ use super::thumbnail::extract_embedded_thumbnail;
 
 // --- Scanline Implementation (Mock Tiles from Strips) ---
 
+#[inline]
+fn checked_strip_read_row(strip_idx: u32, rows_per_strip: u32) -> Option<u32> {
+    strip_idx.checked_mul(rows_per_strip)
+}
+
+#[inline]
+fn checked_strip_actual_rows(strip_idx: u32, rows_per_strip: u32, height: u32) -> Option<u32> {
+    let start = checked_strip_read_row(strip_idx, rows_per_strip)?;
+    if start >= height {
+        return Some(0);
+    }
+    let next = strip_idx.checked_add(1)?.checked_mul(rows_per_strip)?;
+    if next > height {
+        Some(height - start)
+    } else {
+        Some(rows_per_strip)
+    }
+}
+
 pub struct LibTiffScanlineSource {
     pub(crate) path: PathBuf,
     pub(crate) mmap: Arc<Mmap>,
@@ -78,12 +97,23 @@ impl LibTiffScanlineSource {
         let strip_len = (unsafe {
             tiff_rgba_strip_buffer_u32_count(handle.as_ptr(), self.width, self.height)
         })?;
-        let read_row = strip_idx * rps;
-        let actual_rows = if (strip_idx + 1) * rps > self.height {
-            self.height - strip_idx * rps
-        } else {
-            rps
+        let Some(read_row) = checked_strip_read_row(strip_idx, rps) else {
+            log::error!(
+                "[{}] TIFF strip row overflow: strip_idx={strip_idx} rows_per_strip={rps}",
+                self.path.display()
+            );
+            return None;
         };
+        let Some(actual_rows) = checked_strip_actual_rows(strip_idx, rps, self.height) else {
+            log::error!(
+                "[{}] TIFF strip actual_rows overflow: strip_idx={strip_idx} rows_per_strip={rps}",
+                self.path.display()
+            );
+            return None;
+        };
+        if actual_rows == 0 {
+            return None;
+        }
         let rgba_len = (self.width as usize)
             .checked_mul(actual_rows as usize)
             .and_then(|p| p.checked_mul(4))?;
@@ -187,12 +217,16 @@ impl TiledImageSource for LibTiffScanlineSource {
                     None => continue,
                 };
 
-                let strip_y_start = strip_idx * rps;
-                let actual_rows = if (strip_idx + 1) * rps > self.height {
-                    self.height - strip_y_start
-                } else {
-                    rps
+                let Some(strip_y_start) = checked_strip_read_row(strip_idx, rps) else {
+                    continue;
                 };
+                let Some(actual_rows) = checked_strip_actual_rows(strip_idx, rps, self.height)
+                else {
+                    continue;
+                };
+                if actual_rows == 0 {
+                    continue;
+                }
 
                 let intersect_y_start = y.max(strip_y_start);
                 let intersect_y_end = (y + h).min(strip_y_start + actual_rows).min(self.height);
@@ -315,7 +349,9 @@ impl TiledImageSource for LibTiffScanlineSource {
                 let y = ((ty as u64 * stride_y_fp) >> 16) as u32;
                 let strip_idx = y / rps;
                 let y_in_strip = y % rps;
-                let read_row = strip_idx * rps;
+                let Some(read_row) = checked_strip_read_row(strip_idx, rps) else {
+                    continue;
+                };
                 let dst_y_offset = (ty as usize)
                     .checked_mul(pw as usize)
                     .and_then(|row| row.checked_mul(4))
@@ -323,11 +359,14 @@ impl TiledImageSource for LibTiffScanlineSource {
 
                 unsafe {
                     if strip_idx != last_strip_idx {
-                        let actual_rows = if (strip_idx + 1) * rps > self.height {
-                            self.height - strip_idx * rps
-                        } else {
-                            rps
+                        let Some(actual_rows) =
+                            checked_strip_actual_rows(strip_idx, rps, self.height)
+                        else {
+                            continue;
                         };
+                        if actual_rows == 0 {
+                            continue;
+                        }
                         zero_rgba_strip_read_span(strip_buf, self.width, rps, actual_rows);
                         if lib::TIFFReadRGBAStrip(tif_ptr, read_row, strip_buf.as_mut_ptr()) != 0 {
                             last_strip_idx = strip_idx;

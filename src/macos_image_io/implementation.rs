@@ -227,12 +227,18 @@ impl crate::loader::TiledImageSource for ImageIoTiledSource {
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
+        let Some(bytes_per_row) = crate::constants::checked_rgba_row_len(w as usize) else {
+            return Arc::new(Vec::new());
+        };
+        if w == 0 || h == 0 {
+            return Arc::new(Vec::new());
+        }
         let mut context = CGContext::create_bitmap_context(
             None,
             w as usize,
             h as usize,
             8,
-            w as usize * 4,
+            bytes_per_row,
             &self.color_space,
             core_graphics::base::kCGImageAlphaPremultipliedLast,
         );
@@ -410,12 +416,18 @@ impl ImageIoTiledSource {
             )
             .unwrap_or_else(|| CGColorSpace::create_device_rgb())
         };
+        let Some(bytes_per_row) = crate::constants::checked_rgba_row_len(pw as usize) else {
+            return (0, 0, Vec::new());
+        };
+        if pw == 0 || ph == 0 {
+            return (0, 0, Vec::new());
+        }
         let mut context = CGContext::create_bitmap_context(
             None,
             pw as usize,
             ph as usize,
             8,
-            pw as usize * 4,
+            bytes_per_row,
             &color_space,
             core_graphics::base::kCGImageAlphaPremultipliedLast,
         );
@@ -458,7 +470,10 @@ impl crate::loader::TiledImageSource for TiffStripCachingSource {
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
-        let mut rgba = vec![255u8; (w * h * 4) as usize];
+        let Some(rgba_len) = crate::constants::checked_rgba8_len_u32(w, h) else {
+            return Arc::new(Vec::new());
+        };
+        let mut rgba = vec![255u8; rgba_len];
 
         if self.orientation <= 1 {
             self.copy_physical_rect_from_strips(x, y, w, h, &mut rgba);
@@ -688,12 +703,18 @@ impl TiffStripCachingSource {
         // with a translation offset. This is the same proven approach used by
         // ImageIoTiledSource::extract_tile, which correctly handles CoreGraphics'
         // bottom-up coordinate system.
+        let Some(bytes_per_row) = crate::constants::checked_rgba_row_len(pw as usize) else {
+            return None;
+        };
+        if pw == 0 || h == 0 {
+            return None;
+        }
         let mut context = CGContext::create_bitmap_context(
             None,
             pw as usize,
             h as usize,
             8,
-            pw as usize * 4,
+            bytes_per_row,
             &self.color_space,
             core_graphics::base::kCGImageAlphaPremultipliedLast,
         );
@@ -842,7 +863,10 @@ impl HugeTiffStrideDecoder {
             _ => return Err("Unsupported color type".into()),
         };
 
-        let mut preview_pixels = vec![0u8; (target_w * target_h * 4) as usize];
+        let Some(preview_len) = crate::constants::checked_rgba8_len_u32(target_w, target_h) else {
+            return Err("TIFF preview buffer size overflow".into());
+        };
+        let mut preview_pixels = vec![0u8; preview_len];
 
         let tiles_across = (width + chunk_w - 1) / chunk_w;
         let tiles_down = (height + chunk_h - 1) / chunk_h;
@@ -1016,7 +1040,10 @@ fn apply_orientation_buffer(
     } else {
         (w, h)
     };
-    let mut out = vec![0u8; (out_w * out_h * 4) as usize];
+    let Some(out_len) = crate::constants::checked_rgba8_len_u32(out_w, out_h) else {
+        return (w, h, pixels);
+    };
+    let mut out = vec![0u8; out_len];
 
     for y in 0..h {
         for x in 0..w {
@@ -1084,8 +1111,14 @@ unsafe fn render_cgimage_to_rgba_sync(
     orientation: u32,
     lw: u32,
     lh: u32,
-) -> DecodedImage {
+) -> Option<DecodedImage> {
     unsafe {
+        if lw == 0 || lh == 0 {
+            return None;
+        }
+        let Some(bytes_per_row) = crate::constants::checked_rgba_row_len(lw as usize) else {
+            return None;
+        };
         let pw = cg_image.width() as u32;
         let ph = cg_image.height() as u32;
         let color_space = CGColorSpace::create_with_name(
@@ -1098,7 +1131,7 @@ unsafe fn render_cgimage_to_rgba_sync(
             lw as usize,
             lh as usize,
             8,
-            lw as usize * 4,
+            bytes_per_row,
             &color_space,
             core_graphics::base::kCGImageAlphaPremultipliedLast,
         );
@@ -1111,7 +1144,7 @@ unsafe fn render_cgimage_to_rgba_sync(
         );
         context.draw_image(rect, &cg_image);
 
-        DecodedImage::new(lw, lh, context.data().to_vec())
+        Some(DecodedImage::new(lw, lh, context.data().to_vec()))
     }
 }
 
@@ -1245,7 +1278,13 @@ fn load_via_image_io_with_mmap(
                 orientation,
                 logical_width,
                 logical_height,
-            );
+            )
+            .ok_or_else(|| {
+                format!(
+                    "Failed to render CGImage to RGBA ({}x{})",
+                    logical_width, logical_height
+                )
+            })?;
             crate::loader::check_decode_cancel_str(cancel)?;
             return Ok(ImageData::Static(decoded));
         }
