@@ -62,11 +62,12 @@ fn image_frame_delay(frame: &image::Frame) -> Duration {
     Duration::from_millis(delay_ms as u64)
 }
 
-fn image_frame_to_animation_frame(frame: image::Frame) -> AnimationFrame {
+fn image_frame_to_animation_frame(frame: image::Frame) -> Result<AnimationFrame, String> {
     let delay = image_frame_delay(&frame);
     let buffer = frame.into_buffer();
     let (width, height) = buffer.dimensions();
-    AnimationFrame::new(width, height, buffer.into_raw(), delay)
+    crate::constants::validate_static_decode_dimensions(width, height)?;
+    Ok(AnimationFrame::new(width, height, buffer.into_raw(), delay))
 }
 
 fn raster_animation_remainder_job(
@@ -135,7 +136,7 @@ fn load_raster_animation_bootstrap_from_mmap(
                     remainder: None,
                 });
             }
-            let first_anim = image_frame_to_animation_frame(first);
+            let first_anim = image_frame_to_animation_frame(first)?;
             log::info!(
                 "[Loader] raster animation bootstrap: 1 frame ({:?}) -- {}",
                 format,
@@ -204,7 +205,7 @@ fn load_raster_animation_bootstrap_from_mmap(
                     remainder: None,
                 });
             }
-            let first_anim = image_frame_to_animation_frame(first);
+            let first_anim = image_frame_to_animation_frame(first)?;
             log::info!(
                 "[Loader] raster animation bootstrap: 1 frame ({:?}) -- {}",
                 format,
@@ -260,7 +261,7 @@ fn load_raster_animation_bootstrap_from_mmap(
                     remainder: None,
                 });
             }
-            let first_anim = image_frame_to_animation_frame(first);
+            let first_anim = image_frame_to_animation_frame(first)?;
             log::info!(
                 "[Loader] raster animation bootstrap: 1 frame ({:?}) -- {}",
                 format,

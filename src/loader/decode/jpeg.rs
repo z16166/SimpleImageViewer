@@ -218,6 +218,9 @@ pub(crate) fn load_jpeg_from_mapped(
         pixels = out_pixels;
     }
 
+    // Re-validate post-orientation final dimensions (orientation may swap w/h).
+    crate::constants::validate_static_decode_dimensions(w, h)?;
+
     Ok(make_image_data(DecodedImage::new(w, h, pixels)))
 }
 

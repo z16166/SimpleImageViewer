@@ -21,7 +21,18 @@ use crate::loader::{DecodedImage, ImageData, TiledImageSource};
 use std::sync::Arc;
 
 pub(crate) fn make_image_data(img: DecodedImage) -> ImageData {
-    let pixel_count = img.width as u64 * img.height as u64;
+    let Some(pixel_count) = (img.width as u64).checked_mul(img.height as u64) else {
+        log::warn!(
+            "[Loader] Image {}x{} dimensions overflow, forcing tiled.",
+            img.width,
+            img.height
+        );
+        return ImageData::Tiled(Arc::new(MemoryImageSource::new(
+            img.width,
+            img.height,
+            img.into_arc_pixels(),
+        )));
+    };
     let max_side = img.width.max(img.height);
     // Use the conservative ABSOLUTE_MAX_TEXTURE_SIDE (8192) for the tiling decision,
     // consistent with WIC, macOS ImageIO, and Linux libtiff paths.
@@ -63,7 +74,20 @@ pub(crate) fn make_hdr_image_data_for_limit(
     fallback: DecodedImage,
     max_texture_side: u32,
 ) -> ImageData {
-    let pixel_count = hdr.width as u64 * hdr.height as u64;
+    let Some(pixel_count) = (hdr.width as u64).checked_mul(hdr.height as u64) else {
+        log::warn!(
+            "[Loader] HDR image {}x{} dimensions overflow, forcing SDR tiled fallback.",
+            hdr.width,
+            hdr.height
+        );
+        let fallback_source = Arc::new(MemoryImageSource::new_with_hdr_sdr_fallback(
+            fallback.width,
+            fallback.height,
+            fallback.into_arc_pixels(),
+            true,
+        ));
+        return ImageData::Tiled(fallback_source);
+    };
     let tiled_limit = crate::tile_cache::get_tiled_threshold();
     let max_side = hdr.width.max(hdr.height);
 
