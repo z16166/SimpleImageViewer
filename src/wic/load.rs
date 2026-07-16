@@ -245,7 +245,7 @@ fn load_via_wic_inner(
                 let mut w = 0;
                 let mut h = 0;
                 if f.GetSize(&mut w, &mut h).is_ok() {
-                    let p = w as u64 * h as u64;
+                    let p = u64::from(w).checked_mul(u64::from(h)).unwrap_or(0);
                     if p > max_p {
                         max_p = p;
                         width = w;
