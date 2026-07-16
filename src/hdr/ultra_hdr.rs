@@ -164,19 +164,17 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_cpu_compose(
 
     let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
-    Ok(compose_ultra_hdr_cpu(
-        crate::hdr::ultra_hdr_compose::UltraHdrComposeInput {
-            width,
-            height,
-            sdr_rgba: &sdr_rgba,
-            gain_rgba: &gain_rgba,
-            gain_width,
-            gain_height,
-            metadata,
-            image_metadata: hdr_metadata_for_ultra_hdr_gain_map(metadata),
-            target_hdr_capacity,
-        },
-    ))
+    compose_ultra_hdr_cpu(crate::hdr::ultra_hdr_compose::UltraHdrComposeInput {
+        width,
+        height,
+        sdr_rgba: &sdr_rgba,
+        gain_rgba: &gain_rgba,
+        gain_width,
+        gain_height,
+        metadata,
+        image_metadata: hdr_metadata_for_ultra_hdr_gain_map(metadata),
+        target_hdr_capacity,
+    })
 }
 
 pub(crate) fn apply_orientation_to_hdr_buffer(

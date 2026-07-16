@@ -227,7 +227,12 @@ impl ExrTiledImageSource {
                 let cap = (tile_width as usize)
                     .checked_mul(tile_height as usize)
                     .and_then(|p| p.checked_mul(4))
-                    .unwrap_or(0);
+                    .ok_or_else(|| {
+                        format!(
+                            "EXR tile {}x{} capacity overflow at ({tile_x},{tile_y})",
+                            tile_width, tile_height
+                        )
+                    })?;
                 let mut rgba = Vec::with_capacity(cap);
                 let start_x = tile_x as usize * 4;
                 let row_len = tile_width as usize * 4;

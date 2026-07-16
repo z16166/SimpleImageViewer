@@ -321,7 +321,10 @@ pub(crate) fn decode_heif_gain_map(
         }
     };
     let mut gain_rgba = Vec::with_capacity(gain_len);
-    let row_bytes = (width as usize).checked_mul(4).unwrap_or(0);
+    let Some(row_bytes) = (width as usize).checked_mul(4) else {
+        log::warn!("[HDR] HEIF gain map row_bytes overflow for {width}x{height}");
+        return None;
+    };
     if stride < row_bytes {
         log::warn!(
             "[HDR] Auxiliary gain map stride {} is less than row bytes {}",

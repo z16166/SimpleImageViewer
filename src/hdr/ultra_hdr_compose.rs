@@ -36,7 +36,9 @@ pub(crate) struct UltraHdrComposeInput<'a> {
 }
 
 #[allow(dead_code)] // tests and tiled preview reference path
-pub(crate) fn compose_ultra_hdr_cpu(input: UltraHdrComposeInput<'_>) -> HdrImageBuffer {
+pub(crate) fn compose_ultra_hdr_cpu(
+    input: UltraHdrComposeInput<'_>,
+) -> Result<HdrImageBuffer, String> {
     let UltraHdrComposeInput {
         width,
         height,
@@ -49,7 +51,7 @@ pub(crate) fn compose_ultra_hdr_cpu(input: UltraHdrComposeInput<'_>) -> HdrImage
         target_hdr_capacity,
     } = input;
     let rgba_len = crate::constants::checked_rgba_buffer_len(width as usize, height as usize)
-        .unwrap_or_else(|| panic!("Ultra HDR compose buffer size overflow for {width}x{height}"));
+        .ok_or_else(|| format!("Ultra HDR compose buffer size overflow for {width}x{height}"))?;
     let mut rgba_f32 = Vec::with_capacity(rgba_len);
     for y in 0..height {
         for x in 0..width {
@@ -66,14 +68,14 @@ pub(crate) fn compose_ultra_hdr_cpu(input: UltraHdrComposeInput<'_>) -> HdrImage
         }
     }
 
-    HdrImageBuffer {
+    Ok(HdrImageBuffer {
         width,
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space: HdrColorSpace::LinearSrgb,
         metadata: image_metadata,
         rgba_f32: Arc::new(rgba_f32),
-    }
+    })
 }
 
 pub(crate) struct UltraHdrTileRegionCompose<'a, F> {

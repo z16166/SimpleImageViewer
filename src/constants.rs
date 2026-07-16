@@ -305,6 +305,9 @@ pub const MAX_ICC_TAG_COUNT: usize = 4096;
 /// Iteration cap for JXL decoder event loops on probes to ensure early termination on bad inputs.
 pub const JXL_PROBE_ITERATION_CAP: usize = 4096;
 
+/// JPEG XL jhgm (gain map) box size limit for DoS protection.
+pub const JXL_MAX_GAIN_MAP_BOX_SIZE: u64 = 32 * 1024 * 1024;
+
 /// Minimum on-disk size that can hold a still-image container header (ISO BMFF `ftyp` is 12 bytes).
 pub const MIN_IMAGE_FILE_BYTES: u64 = 12;
 

@@ -1392,9 +1392,10 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                         },
                         "read JPEG XL jhgm box size",
                     )?;
-                    if box_size > 32 * 1024 * 1024 {
+                    if box_size > crate::constants::JXL_MAX_GAIN_MAP_BOX_SIZE {
                         return Err(format!(
-                            "JPEG XL jhgm box size {box_size} exceeds maximum (32 MB)"
+                            "JPEG XL jhgm box size {box_size} exceeds maximum ({} MB)",
+                            crate::constants::JXL_MAX_GAIN_MAP_BOX_SIZE / (1024 * 1024)
                         ));
                     }
                     current_box_buffer = vec![0_u8; box_size as usize];
