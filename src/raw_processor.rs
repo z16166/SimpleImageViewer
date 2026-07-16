@@ -38,6 +38,7 @@ pub(crate) fn unpack_libraw_rgb16_rows_to_rgba_f32(
     if bytes_per_pixel != 6 {
         return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
     }
+    crate::constants::validate_static_decode_dimensions(width, height)?;
     let w = width as usize;
     let h = height as usize;
     let tight_row_bytes = w * bytes_per_pixel;
@@ -526,6 +527,7 @@ impl RawProcessor {
 
         let w = self.width();
         let h = self.height();
+        crate::constants::validate_static_decode_dimensions(w, h)?;
         let total_pixels = w as usize * h as usize;
         let mut scaled_pixels = vec![0u16; total_pixels];
         let mut scaled_w = 0u32;
@@ -915,6 +917,7 @@ impl RawProcessor {
 
             let width = img.width as u32;
             let height = img.height as u32;
+            crate::constants::validate_static_decode_dimensions(width, height)?;
             let data_ptr = img.data.as_ptr();
             let data_len = img.data_size as usize;
 
@@ -1138,6 +1141,7 @@ impl RawProcessor {
 
             let width = img.width as u32;
             let height = img.height as u32;
+            crate::constants::validate_static_decode_dimensions(width, height)?;
             let data_ptr = img.data.as_ptr();
             let data_len = img.data_size as usize;
             let colors = img.colors as usize;
@@ -1221,6 +1225,10 @@ impl RawProcessor {
                 if img.colors == crate::constants::RGB_CHANNELS as u16
                     && img.bits == crate::constants::BIT_DEPTH_8 as u16
                 {
+                    crate::constants::validate_static_decode_dimensions(
+                        img.width as u32,
+                        img.height as u32,
+                    )?;
                     let count = img.width as usize * img.height as usize;
                     let required_rgb = count
                         .checked_mul(crate::constants::RGB_CHANNELS)
