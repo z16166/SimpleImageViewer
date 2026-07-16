@@ -702,6 +702,7 @@ fn rgba8_from_planar_rgb444(
     if width_i <= 0 || height_i <= 0 {
         return Err("planar RGB: zero-sized plane".to_string());
     }
+    crate::constants::validate_static_decode_dimensions(width_i as u32, height_i as u32)?;
     let w = width_i as usize;
     let h = height_i as usize;
     let has_alpha = unsafe { libheif_sys::heif_image_has_channel(image, heif_channel_Alpha) != 0 };
@@ -807,6 +808,7 @@ pub(crate) fn hdr_buffer_from_interleaved_rgb8_packed(
     if width_i <= 0 || height_i <= 0 {
         return Err("libheif decoded zero-sized image".to_string());
     }
+    crate::constants::validate_static_decode_dimensions(width_i as u32, height_i as u32)?;
     let mut stride = 0_usize;
     let plane = unsafe {
         libheif_sys::heif_image_get_plane_readonly2(
@@ -947,6 +949,7 @@ pub(crate) fn hdr_buffer_from_planar_rgb444(
     if width_i <= 0 || height_i <= 0 {
         return Err("planar RGB: zero-sized plane".to_string());
     }
+    crate::constants::validate_static_decode_dimensions(width_i as u32, height_i as u32)?;
     let w = width_i as usize;
     let h = height_i as usize;
 

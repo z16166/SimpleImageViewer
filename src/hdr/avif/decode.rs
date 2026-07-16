@@ -261,16 +261,18 @@ fn avif_rgba_channel_bytes(depth_out: u32) -> usize {
     if depth_out > 8 { 2 } else { 1 }
 }
 
-/// File-derived AVIF dimensions as a pixel count (overflow-safe).
+/// File-derived AVIF dimensions as a pixel count (overflow-safe, capped at MAX_STATIC_FULL_DECODE_PIXELS).
 #[cfg(feature = "avif-native")]
 fn avif_checked_pixel_count(width: u32, height: u32) -> Result<usize, String> {
+    crate::constants::validate_static_decode_dimensions(width, height)?;
     checked_pixel_area(width as usize, height as usize)
         .ok_or_else(|| format!("AVIF dimensions overflow: {width}x{height}"))
 }
 
-/// File-derived AVIF dimensions as RGBA lane count (`pixel_count * 4`, overflow-safe).
+/// File-derived AVIF dimensions as RGBA lane count (`pixel_count * 4`, overflow-safe, capped).
 #[cfg(feature = "avif-native")]
 fn avif_checked_rgba_lane_count(width: u32, height: u32) -> Result<usize, String> {
+    crate::constants::validate_static_decode_dimensions(width, height)?;
     checked_rgba_buffer_len(width as usize, height as usize)
         .ok_or_else(|| format!("AVIF RGBA buffer size overflow: {width}x{height}"))
 }

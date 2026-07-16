@@ -293,6 +293,8 @@ fn load_via_wic_inner(
         let swap_wh = matches!(orientation, 5..=8);
         let logical_width = if swap_wh { height } else { width };
         let logical_height = if swap_wh { width } else { height };
+        // Validate total pixel count before any allocation or tiled source creation.
+        crate::constants::validate_static_decode_dimensions(logical_width, logical_height)?;
 
         let base_source: IWICBitmapSource =
             frame.cast().map_err(|e| format!("cast failed: {:?}", e))?;
