@@ -150,7 +150,13 @@ impl<'app> GlowWinitApp<'app> {
         native_options: &mut NativeOptions,
     ) -> Result<(GlutinWindowContext, egui_glow::Painter)> {
         profiling::function_scope!();
-        let window_settings = epi_integration::load_window_settings(storage);
+        // When persist_window is false, also skip restoring geometry so hosts like
+        // Windows screensaver `/s` are not reopened with the normal app placement.
+        let window_settings = if native_options.persist_window {
+            epi_integration::load_window_settings(storage)
+        } else {
+            None
+        };
 
         let winit_window_builder = epi_integration::viewport_builder(
             egui_ctx.zoom_factor(),

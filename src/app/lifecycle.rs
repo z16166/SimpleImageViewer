@@ -69,7 +69,20 @@ impl ImageViewerApp {
             requested_vulkan_hdr_metadata,
             initial_hdr_monitor_selection,
         } = init;
-        if settings.fullscreen {
+        // Windows screensaver run covers the virtual/primary rect via Win32 after
+        // HWND creation. Issuing winit Borderless fullscreen here clips to one
+        // monitor and leaves a non-true-fullscreen window on dual-display setups.
+        let apply_winit_fullscreen = settings.fullscreen && {
+            #[cfg(target_os = "windows")]
+            {
+                !run_mode.is_screensaver_run()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                true
+            }
+        };
+        if apply_winit_fullscreen {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }

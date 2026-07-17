@@ -15,10 +15,30 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 //! Install / activate Simple Image Viewer as a Windows system screensaver.
+//!
+//! Also provides multi-monitor covering helpers for `/s` run hosts: winit
+//! borderless fullscreen only targets a single monitor, so display policy
+//! `All` must size the window to the virtual screen explicitly.
 
 use std::path::{Path, PathBuf};
 
 const SCR_FILE_NAME: &str = "SimpleImageViewer.scr";
+
+/// Physical-pixel screen rectangle in Windows virtual-desktop coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ScreenRect {
+    #[inline]
+    pub fn is_valid(self) -> bool {
+        self.width > 0 && self.height > 0
+    }
+}
 
 fn current_exe_path() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|e| format!("current_exe: {e}"))
@@ -145,8 +165,32 @@ pub fn try_embed_preview_window(child: isize, parent: isize) -> Result<(), Strin
     Ok(())
 }
 
-/// Origin (top-left) of the Windows primary monitor in screen coordinates.
-pub fn primary_monitor_origin() -> Option<eframe::egui::Pos2> {
+/// Bounding rectangle of the Windows virtual screen (all monitors).
+pub fn virtual_screen_rect() -> Option<ScreenRect> {
+    use winapi::um::winuser::{
+        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN,
+    };
+
+    unsafe {
+        let x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        Some(ScreenRect {
+            x,
+            y,
+            width: width as u32,
+            height: height as u32,
+        })
+    }
+}
+
+/// Full rectangle of the Windows primary monitor in virtual-desktop coordinates.
+pub fn primary_monitor_rect() -> Option<ScreenRect> {
     use winapi::shared::windef::RECT;
     use winapi::um::winuser::{
         GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow,
@@ -177,9 +221,123 @@ pub fn primary_monitor_origin() -> Option<eframe::egui::Pos2> {
         if GetMonitorInfoW(mon, &mut info) == 0 {
             return None;
         }
-        Some(eframe::egui::pos2(
-            info.rcMonitor.left as f32,
-            info.rcMonitor.top as f32,
-        ))
+        let width = info.rcMonitor.right.saturating_sub(info.rcMonitor.left);
+        let height = info.rcMonitor.bottom.saturating_sub(info.rcMonitor.top);
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        Some(ScreenRect {
+            x: info.rcMonitor.left,
+            y: info.rcMonitor.top,
+            width: width as u32,
+            height: height as u32,
+        })
+    }
+}
+
+/// Cover `hwnd` with a borderless topmost window over `rect` (physical pixels).
+///
+/// Used by screensaver `/s` instead of winit `Fullscreen::Borderless(None)`,
+/// which only covers the current single monitor and cannot span dual displays.
+pub fn cover_window_to_rect(hwnd: isize, rect: ScreenRect) -> Result<(), String> {
+    use winapi::shared::windef::HWND;
+    use winapi::um::winuser::{
+        GWL_EXSTYLE, GWL_STYLE, GetWindowLongW, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_SHOWWINDOW,
+        SetWindowLongW, SetWindowPos, WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_APPWINDOW,
+        WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SIZEBOX,
+        WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
+    };
+
+    if hwnd == 0 {
+        return Err("invalid hwnd".to_string());
+    }
+    if !rect.is_valid() {
+        return Err(format!(
+            "invalid cover rect {}x{} at ({}, {})",
+            rect.width, rect.height, rect.x, rect.y
+        ));
+    }
+
+    let hwnd = hwnd as HWND;
+    // Strip all chrome that would leave a framed window floating across monitors.
+    let chrome = (WS_CAPTION
+        | WS_THICKFRAME
+        | WS_MINIMIZEBOX
+        | WS_MAXIMIZEBOX
+        | WS_SYSMENU
+        | WS_BORDER
+        | WS_DLGFRAME
+        | WS_SIZEBOX) as i32;
+
+    unsafe {
+        let mut style = GetWindowLongW(hwnd, GWL_STYLE);
+        style &= !chrome;
+        style |= WS_POPUP as i32 | WS_VISIBLE as i32;
+        SetWindowLongW(hwnd, GWL_STYLE, style);
+
+        let mut ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        // Prefer toolwindow so the saver is less visible on the taskbar.
+        ex_style |= WS_EX_TOOLWINDOW as i32;
+        ex_style &= !((WS_EX_APPWINDOW | WS_EX_WINDOWEDGE) as i32);
+        SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style);
+
+        let ok = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            rect.x,
+            rect.y,
+            rect.width as i32,
+            rect.height as i32,
+            SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+        );
+        if ok == 0 {
+            return Err("SetWindowPos failed".to_string());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn virtual_screen_rect_is_positive() {
+        let rect = virtual_screen_rect().expect("virtual screen metrics");
+        assert!(rect.is_valid(), "{rect:?}");
+    }
+
+    #[test]
+    fn primary_monitor_rect_is_positive() {
+        let rect = primary_monitor_rect().expect("primary monitor");
+        assert!(rect.is_valid(), "{rect:?}");
+    }
+
+    #[test]
+    fn cover_rejects_invalid_inputs() {
+        assert!(
+            cover_window_to_rect(
+                0,
+                ScreenRect {
+                    x: 0,
+                    y: 0,
+                    width: 100,
+                    height: 100
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            cover_window_to_rect(
+                1,
+                ScreenRect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 100
+                }
+            )
+            .is_err()
+        );
     }
 }

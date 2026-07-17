@@ -28,10 +28,11 @@ use crate::startup::run_mode::{AppRunMode, SaverPhase};
 impl ImageViewerApp {
     /// Per-frame host work for screensaver Run/Preview skins.
     pub(crate) fn tick_screensaver_host(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // Keep fullscreen enforced for run mode.
+        // Keep the logical fullscreen flag for chrome-less layout, but do not
+        // re-issue winit Borderless fullscreen: that only covers one monitor
+        // and fights the explicit multi-monitor cover path below.
         if self.run_mode.is_screensaver_run() && !self.settings.fullscreen {
             self.settings.fullscreen = true;
-            self.pending_fullscreen = Some(true);
         }
 
         self.apply_display_policy_once(ctx);
@@ -168,28 +169,71 @@ impl ImageViewerApp {
         if self.screensaver_display_policy_applied {
             return;
         }
-        self.screensaver_display_policy_applied = true;
-        if self.screensaver_settings.display != ScreensaverDisplayPolicy::Primary {
-            return;
-        }
-        // Best-effort: pin the fullscreen run window to the primary monitor origin.
-        // True multi-monitor spanning for All remains OS/window-manager dependent.
+
         #[cfg(target_os = "windows")]
-        if let Some(origin) = crate::screensaver::windows_register::primary_monitor_origin() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(origin));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-            log::info!(
-                "[screensaver] primary display policy: outer position -> ({}, {})",
-                origin.x,
-                origin.y
-            );
+        {
+            // Wait until the native HWND exists (window may still be hidden on first frames).
+            let hwnd = crate::ipc::current_process_visible_main_window()
+                .or_else(crate::ipc::current_process_main_window);
+            let Some(hwnd) = hwnd else {
+                return;
+            };
+
+            let cover = match self.screensaver_settings.display {
+                ScreensaverDisplayPolicy::All => {
+                    crate::screensaver::windows_register::virtual_screen_rect()
+                }
+                ScreensaverDisplayPolicy::Primary => {
+                    crate::screensaver::windows_register::primary_monitor_rect()
+                }
+            };
+            let Some(cover) = cover else {
+                log::warn!(
+                    "[screensaver] display policy {:?} could not resolve a cover rect",
+                    self.screensaver_settings.display
+                );
+                // Fall back so we do not retry forever with a broken display query.
+                self.screensaver_display_policy_applied = true;
+                return;
+            };
+
+            // Leave any single-monitor borderless fullscreen before covering the target rect.
+            // Otherwise winit keeps the window clipped to one display.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+
+            match crate::screensaver::windows_register::cover_window_to_rect(hwnd, cover) {
+                Ok(()) => {
+                    self.screensaver_display_policy_applied = true;
+                    log::info!(
+                        "[screensaver] display policy {:?} covered hwnd={hwnd:#x} rect=({},{}) {}x{}",
+                        self.screensaver_settings.display,
+                        cover.x,
+                        cover.y,
+                        cover.width,
+                        cover.height
+                    );
+                    ctx.request_repaint();
+                }
+                Err(e) => {
+                    log::warn!("[screensaver] cover_window_to_rect failed ({e}); retry next frame");
+                }
+            }
         }
+
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = ctx;
-            log::info!(
-                "[screensaver] primary display policy requested (non-Windows best-effort noop)"
-            );
+            // Non-Windows: keep winit borderless fullscreen (single-monitor) as best-effort.
+            self.screensaver_display_policy_applied = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+            if self.screensaver_settings.display == ScreensaverDisplayPolicy::Primary {
+                log::info!(
+                    "[screensaver] primary display policy requested (non-Windows best-effort fullscreen)"
+                );
+            } else {
+                log::info!(
+                    "[screensaver] all-display policy on non-Windows uses OS single-monitor fullscreen"
+                );
+            }
         }
     }
 }

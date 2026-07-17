@@ -1243,7 +1243,13 @@ fn create_window(
 ) -> Result<(Window, ViewportBuilder), winit::error::OsError> {
     profiling::function_scope!();
 
-    let window_settings = epi_integration::load_window_settings(storage);
+    // When persist_window is false, also skip restoring geometry so hosts like
+    // Windows screensaver `/s` are not reopened with the normal app placement.
+    let window_settings = if native_options.persist_window {
+        epi_integration::load_window_settings(storage)
+    } else {
+        None
+    };
     let viewport_builder = epi_integration::viewport_builder(
         egui_ctx.zoom_factor(),
         event_loop,

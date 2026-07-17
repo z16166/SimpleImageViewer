@@ -279,6 +279,20 @@ pub fn run() -> eframe::Result {
     let app_icon = load_icon();
     startup_log_phase(&mut prev, startup_t0, "load_icon");
 
+    // Windows `/s` covers the virtual desktop (or primary monitor) via Win32
+    // SetWindowPos after HWND creation. winit Borderless fullscreen only
+    // targets one monitor and leaves a framed/spanning window on dual-display.
+    let screensaver_run_uses_winit_fullscreen = {
+        #[cfg(target_os = "windows")]
+        {
+            false
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            true
+        }
+    };
+
     let (
         viewport_title,
         decorations,
@@ -293,7 +307,8 @@ pub fn run() -> eframe::Result {
         } => (
             rust_i18n::t!("screensaver.window_title").to_string(),
             false,
-            true,
+            screensaver_run_uses_winit_fullscreen,
+            // Temporary size until display-policy cover runs (or single-monitor fullscreen).
             saved_inner_size,
             [320.0_f32, 240.0_f32],
             false,
@@ -588,16 +603,23 @@ pub fn run() -> eframe::Result {
     // to reopen there, not snap back to the primary monitor's centre. eframe
     // applies `centered=true` AFTER `with_position(...)` in winit setup, so
     // leaving it on silently overrides our recall.
-    let center_window_on_open = saved_outer_position.is_none();
+    // Do not center/restore screensaver hosts onto a previous normal-session
+    // placement; that produces a borderless window straddling dual monitors.
+    let center_window_on_open = !run_mode.is_screensaver() && saved_outer_position.is_none();
 
     // Fullscreen uses borderless native fullscreen, not WS_SHOWMAXIMIZED; the patched
     // eframe first-frame show path only applies to maximized windowed restore.
-    let first_frame_show_maximized = settings.window_maximized && !fullscreen;
+    // Screensaver run on Windows covers monitors via Win32, not maximized restore.
+    let first_frame_show_maximized =
+        !run_mode.is_screensaver() && settings.window_maximized && !fullscreen;
 
     let native_options = eframe::NativeOptions {
         viewport,
         centered: center_window_on_open,
         first_frame_show_maximized,
+        // Screensaver hosts must not restore the normal app's window geometry
+        // (position/size/fullscreen) from eframe storage -- that fights /s cover.
+        persist_window: !run_mode.is_screensaver(),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(wgpu_setup),
