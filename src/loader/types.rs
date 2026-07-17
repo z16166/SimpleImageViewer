@@ -98,25 +98,6 @@ impl DecodedImage {
         }
     }
 
-    /// Create a new [`DecodedImage`], returning an error when the pixel buffer
-    /// does not match `width * height * 4`.
-    pub fn try_new(width: u32, height: u32, pixels: Vec<u8>) -> Result<Self, String> {
-        let expected = crate::constants::checked_rgba8_len_u32(width, height)
-            .ok_or_else(|| format!("DecodedImage dimensions overflow: {width}x{height}"))?;
-        if pixels.len() != expected {
-            return Err(format!(
-                "DecodedImage RGBA length mismatch: {width}x{height} expects {expected} bytes, got {}",
-                pixels.len()
-            ));
-        }
-        Ok(Self {
-            width,
-            height,
-            pixels: Arc::new(pixels),
-            sdr_deferred_placeholder: false,
-        })
-    }
-
     #[cfg(test)]
     pub fn new_sdr_deferred_placeholder(width: u32, height: u32, pixels: Vec<u8>) -> Self {
         assert_decoded_rgba_len(width, height, pixels.len());
@@ -137,24 +118,6 @@ impl DecodedImage {
             pixels,
             sdr_deferred_placeholder: false,
         }
-    }
-
-    /// Wrap an existing RGBA8 buffer without copying, returning an error on length mismatch.
-    pub fn try_from_arc(width: u32, height: u32, pixels: Arc<Vec<u8>>) -> Result<Self, String> {
-        let expected = crate::constants::checked_rgba8_len_u32(width, height)
-            .ok_or_else(|| format!("DecodedImage dimensions overflow: {width}x{height}"))?;
-        if pixels.len() != expected {
-            return Err(format!(
-                "DecodedImage RGBA length mismatch: {width}x{height} expects {expected} bytes, got {}",
-                pixels.len()
-            ));
-        }
-        Ok(Self {
-            width,
-            height,
-            pixels,
-            sdr_deferred_placeholder: false,
-        })
     }
 
     pub fn from_arc_sdr_deferred_placeholder(
@@ -364,30 +327,6 @@ impl AnimationFrame {
             pixels: Arc::new(pixels),
             delay,
         }
-    }
-
-    /// Create a new [`AnimationFrame`], returning an error when the pixel buffer
-    /// does not match `width * height * 4`.
-    pub fn try_new(
-        width: u32,
-        height: u32,
-        pixels: Vec<u8>,
-        delay: std::time::Duration,
-    ) -> Result<Self, String> {
-        let expected = crate::constants::checked_rgba8_len_u32(width, height)
-            .ok_or_else(|| format!("AnimationFrame dimensions overflow: {width}x{height}"))?;
-        if pixels.len() != expected {
-            return Err(format!(
-                "AnimationFrame RGBA length mismatch: {width}x{height} expects {expected} bytes, got {}",
-                pixels.len()
-            ));
-        }
-        Ok(Self {
-            width,
-            height,
-            pixels: Arc::new(pixels),
-            delay,
-        })
     }
 
     pub fn from_arc(
