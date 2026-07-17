@@ -581,11 +581,15 @@ impl ImageViewerApp {
         self.pixel_hover_cache = None;
         self.pixel_region_first_point = None;
 
-        // Update resolution if already in cache (for immediate low-res display)
+        // Update resolution if already in cache (for immediate low-res display).
+        // Prefer stored original/full document size; never fall back to preview texture
+        // pixels for tiled images (that would corrupt FitToWindow zoom OSD vs paint).
         if self.texture_cache.contains(self.current_index) {
             if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
                 self.set_current_image_resolution(Some((w, h)));
-            } else if let Some(texture) = self.texture_cache.get(self.current_index) {
+            } else if !self.texture_cache.needs_tile_manager(self.current_index)
+                && let Some(texture) = self.texture_cache.get(self.current_index)
+            {
                 let size = texture.size();
                 self.set_current_image_resolution(Some((size[0] as u32, size[1] as u32)));
             }
@@ -957,7 +961,9 @@ impl ImageViewerApp {
         if self.texture_cache.contains(idx) {
             if let Some((w, h)) = self.texture_cache.get_original_res(idx) {
                 self.set_current_image_resolution(Some((w, h)));
-            } else if let Some(texture) = self.texture_cache.get(idx) {
+            } else if !self.texture_cache.needs_tile_manager(idx)
+                && let Some(texture) = self.texture_cache.get(idx)
+            {
                 let size = texture.size();
                 self.set_current_image_resolution(Some((size[0] as u32, size[1] as u32)));
             }

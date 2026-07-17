@@ -123,7 +123,7 @@ impl ImageViewerApp {
             AppAction::First => self.navigate_first(ctx),
             AppAction::Last => self.navigate_last(ctx),
             AppAction::ZoomIn => {
-                let max_zf = self.max_zoom_factor_for_fit_mode(ctx);
+                let max_zf = self.max_zoom_factor_for_mode(ctx);
                 self.set_zoom_factor((self.zoom_factor * 1.1).min(max_zf));
                 self.invalidate_tile_requests_for_view_change();
             }

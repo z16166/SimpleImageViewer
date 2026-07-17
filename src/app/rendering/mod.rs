@@ -122,7 +122,7 @@ impl ImageViewerApp {
                 if let Some(action) = pointer_hotkey_action {
                     if action == crate::app::input::AppAction::SelectPixelRegion {
                         if let Some(pos) = ui.input(|i| i.pointer.interact_pos())
-                            && let Some(res) = self.current_image_res
+                            && let Some(res) = self.layout_image_resolution()
                         {
                             let img_size = Vec2::new(res.0 as f32, res.1 as f32);
                             let display_rect =
@@ -213,7 +213,7 @@ impl ImageViewerApp {
                 }
 
                 let current_img_size = self
-                    .current_image_res
+                    .layout_image_resolution()
                     .map(|res| Vec2::new(res.0 as f32, res.1 as f32));
 
                 // ── Pixel Inspector hover tooltip & canvas feedback ──────────
