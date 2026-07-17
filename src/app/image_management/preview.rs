@@ -42,6 +42,23 @@ impl ImageViewerApp {
             .is_some_and(|tm| tm.image_index == self.current_index)
     }
 
+    /// Image pixel size used for layout, zoom OSD, and zoom ceilings.
+    ///
+    /// When the tiled canvas is active this is always the document / full pyramid size
+    /// (`TileManager::full_width` x `full_height`), never the HQ preview texture size.
+    /// Preview textures are drawn with UV 0-1 into a dest sized for the full document; using
+    /// preview dimensions for FitToWindow zoom math would make OSD 2000% mean only ~preview-relative
+    /// magnification while Original Size (zoom_factor-based) still reaches true 2000% of full pixels.
+    pub(crate) fn layout_image_resolution(&self) -> Option<(u32, u32)> {
+        if self.tiled_canvas_matches_current_index() {
+            self.tile_manager
+                .as_ref()
+                .map(|tm| (tm.full_width, tm.full_height))
+        } else {
+            self.current_image_res
+        }
+    }
+
     pub(crate) fn invalidate_tile_requests_for_view_change(&mut self) {
         if invalidate_tile_manager_requests_for_view_change(&mut self.tile_manager) {
             self.loader.flush_tile_queue();
@@ -809,7 +826,11 @@ impl ImageViewerApp {
         }
         self.queue_or_upload_raw_gpu_bootstrap_texture(idx, preview, ctx);
         if idx == self.current_index {
-            self.set_current_image_resolution(Some((preview.width, preview.height)));
+            // Keep full-document resolution when a tile pyramid is already authoritative.
+            // Bootstrap preview pixels must not replace layout/OSD zoom math dimensions.
+            if !self.tiled_canvas_matches_current_index() {
+                self.set_current_image_resolution(Some((preview.width, preview.height)));
+            }
             if should_request_repaint_for_asset_update(
                 AssetUpdateKind::PreviewUpgraded,
                 true,
