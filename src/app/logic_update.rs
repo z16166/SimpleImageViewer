@@ -185,18 +185,22 @@ impl ImageViewerApp {
 
         self.sync_linux_vulkan_hdr_metadata();
 
-        // Poll persistence errors from the saver thread
-        while let Ok(err) = self.save_error_rx.try_recv() {
-            log::error!("Settings persistence error: {}", err);
-            self.last_save_error = Some((err, Instant::now()));
-        }
-        while let Ok(err) = self.hotkeys_save_error_rx.try_recv() {
-            log::error!("Hotkeys persistence error: {}", err);
-            self.last_hotkeys_save_error = Some((err, Instant::now()));
-        }
-        while let Ok(err) = self.context_menu_save_error_rx.try_recv() {
-            log::error!("Context menu persistence error: {}", err);
-            self.last_context_menu_save_error = Some((err, Instant::now()));
+        // Poll persistence errors from the unified YAML saver thread
+        while let Ok(err) = self.yaml_save_error_rx.try_recv() {
+            match err {
+                crate::app::background_yaml_saver::YamlSaveError::Settings(message) => {
+                    log::error!("Settings persistence error: {}", message);
+                    self.last_save_error = Some((message, Instant::now()));
+                }
+                crate::app::background_yaml_saver::YamlSaveError::Hotkeys(message) => {
+                    log::error!("Hotkeys persistence error: {}", message);
+                    self.last_hotkeys_save_error = Some((message, Instant::now()));
+                }
+                crate::app::background_yaml_saver::YamlSaveError::ContextMenu(message) => {
+                    log::error!("Context menu persistence error: {}", message);
+                    self.last_context_menu_save_error = Some((message, Instant::now()));
+                }
+            }
         }
 
         // Clear persistence error after 5 seconds

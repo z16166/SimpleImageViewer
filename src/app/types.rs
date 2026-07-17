@@ -749,11 +749,12 @@ pub struct ImageViewerApp {
     /// Last egui time when keyboard Next/Prev was applied (throttles key repeat).
     pub(crate) last_keyboard_nav: Option<f64>,
 
-    // Settings persistence channel
-    pub(crate) save_tx: Sender<Settings>,
-    pub(crate) save_error_rx: Receiver<String>,
+    // Unified YAML persistence channel (settings / hotkeys / context menu).
+    // Request path: unbounded + per-kind coalesce. Error path: bounded, UI-drained.
+    pub(crate) yaml_save_tx: Sender<crate::app::background_yaml_saver::YamlSaveRequest>,
+    pub(crate) yaml_save_error_rx: Receiver<crate::app::background_yaml_saver::YamlSaveError>,
     pub(crate) last_save_error: Option<(String, Instant)>,
-    pub(crate) saver_handle: Option<std::thread::JoinHandle<()>>,
+    pub(crate) yaml_saver_handle: Option<std::thread::JoinHandle<()>>,
 
     // Preload byte budgets (computed at startup from system RAM)
     pub(crate) preload_budget_forward: u64,
@@ -785,9 +786,6 @@ pub struct ImageViewerApp {
     // Runtime hotkeys loaded from siv_hotkeys.yaml
     pub(crate) hotkeys_runtime: crate::hotkeys::RuntimeHotkeyState,
     pub(crate) hotkeys_draft_config: crate::hotkeys::model::HotkeyConfigFile,
-    pub(crate) hotkeys_save_error_rx: Receiver<String>,
-    pub(crate) hotkeys_save_tx: Sender<crate::hotkeys::model::HotkeyConfigFile>,
-    pub(crate) hotkeys_saver_handle: Option<std::thread::JoinHandle<()>>,
     pub(crate) last_hotkeys_save_error: Option<(String, Instant)>,
     pub(crate) hotkeys_apply_success_at: Option<Instant>,
     pub(crate) hotkeys_load_error: Option<String>,
@@ -805,9 +803,6 @@ pub struct ImageViewerApp {
     pub(crate) hotkeys_add_row_need_key_hint: bool,
     pub(crate) context_menu_runtime: crate::context_menu::RuntimeContextMenuState,
     pub(crate) context_menu_draft_config: crate::context_menu::model::ContextMenuConfigFile,
-    pub(crate) context_menu_save_error_rx: Receiver<String>,
-    pub(crate) context_menu_save_tx: Sender<crate::context_menu::model::ContextMenuConfigFile>,
-    pub(crate) context_menu_saver_handle: Option<std::thread::JoinHandle<()>>,
     pub(crate) last_context_menu_save_error: Option<(String, Instant)>,
     pub(crate) context_menu_apply_success_at: Option<Instant>,
     pub(crate) context_menu_apply_error: Option<String>,

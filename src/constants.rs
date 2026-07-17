@@ -164,10 +164,17 @@ pub const MINIMIZED_REPAINT_INTERVAL: std::time::Duration = std::time::Duration:
 /// in flight, Next/Prev are blocked until it settles -- see `keyboard_nav_allowed`.
 pub const KEYBOARD_NAV_MIN_INTERVAL_SECS: f64 = 0.2;
 
-/// Minimum interval between background YAML writes from the async saver threads.
+/// Minimum interval between background YAML writes from the unified async saver thread.
 /// Authoritative persistence happens in `ImageViewerApp::on_exit`; runtime saves are best-effort.
 pub const BACKGROUND_YAML_SAVE_MIN_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(5);
+
+/// Capacity of the UI-bound YAML save error channel.
+///
+/// Errors are rare and drained every logic frame; a small bound is enough as a
+/// backpressure cap if the UI stalls. The saver uses non-blocking `try_send` so a
+/// full channel never stalls disk I/O.
+pub const BACKGROUND_YAML_SAVE_ERROR_CHANNEL_CAPACITY: usize = 16;
 
 /// Color brightness multiplier for HUD text to ensure contrast in light themes.
 pub const MUSIC_HUD_CONTRAST_BOOST: f32 = 2.5;

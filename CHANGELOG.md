@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.1.3] - 2026-07-16
+
+### Improved
+- **More reliable preference saving**: Settings, hotkeys, and context-menu changes now save on independent schedules, so rapid edits to one preference no longer delay the others.
+- **Smoother shutdown while preferences save**: Closing the app is less likely to stall when a background preference write is still in progress; your settings are still written authoritatively on exit.
+
 ## [3.1.2] - 2026-07-16
 
 ### Improved
