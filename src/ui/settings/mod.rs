@@ -105,6 +105,14 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
     if open_dir {
         app.open_directory_dialog(frame);
     }
+    if std::mem::take(&mut app.pending_open_screensaver_directory) {
+        let start = app.screensaver_settings.primary_source().cloned();
+        app.request_folder_picker(
+            frame,
+            crate::app::folder_picker::FolderPickerPurpose::ScreensaverDirectory,
+            start,
+        );
+    }
     if open_music_file {
         app.open_music_file_dialog(frame);
     }
@@ -312,6 +320,7 @@ fn draw_active_settings_tab(
         SettingsTab::Library => library::draw_library_tab(app, ui, actions.open_dir),
         SettingsTab::Viewing => viewing::draw_viewing_tab(app, ui, actions.fullscreen_changed),
         SettingsTab::Slideshow => slideshow::draw_slideshow_tab(app, ui),
+        SettingsTab::Screensaver => crate::screensaver::draw_screensaver_tab(app, ui),
         SettingsTab::Music => music::draw_music_tab(
             app,
             ui,

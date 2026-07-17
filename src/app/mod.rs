@@ -44,6 +44,7 @@ mod preload;
 #[cfg(feature = "preload-debug")]
 mod preload_hdr_gate;
 mod preload_memory;
+mod screensaver_host;
 mod tray_handlers;
 mod types;
 

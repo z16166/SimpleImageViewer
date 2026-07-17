@@ -57,6 +57,7 @@ pub(crate) enum SettingsTab {
     Library,
     Viewing,
     Slideshow,
+    Screensaver,
     Music,
     Appearance,
     Hotkeys,
@@ -66,10 +67,11 @@ pub(crate) enum SettingsTab {
 }
 
 impl SettingsTab {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::Library,
         Self::Viewing,
         Self::Slideshow,
+        Self::Screensaver,
         Self::Music,
         Self::Appearance,
         Self::Hotkeys,
@@ -83,6 +85,7 @@ impl SettingsTab {
             Self::Library => "settings_tab.library",
             Self::Viewing => "settings_tab.viewing",
             Self::Slideshow => "settings_tab.slideshow",
+            Self::Screensaver => "settings_tab.screensaver",
             Self::Music => "settings_tab.music",
             Self::Appearance => "settings_tab.appearance",
             Self::Hotkeys => "settings_tab.hotkeys",
@@ -529,6 +532,14 @@ pub struct ImageViewerApp {
     /// Set to true by the PickDirectory hotkey; consumed in `logic()` to call
     /// `open_directory_dialog` which requires `&eframe::Frame`.
     pub(crate) pending_open_directory: bool,
+    pub(crate) pending_open_screensaver_directory: bool,
+    pub(crate) run_mode: crate::startup::run_mode::AppRunMode,
+    pub(crate) screensaver_settings: crate::screensaver::ScreensaverSettings,
+    pub(crate) screensaver_status_message: Option<String>,
+    pub(crate) screensaver_started_at: std::time::Instant,
+    pub(crate) screensaver_last_pointer_pos: Option<egui::Pos2>,
+    pub(crate) screensaver_preview_embedded: bool,
+    pub(crate) screensaver_display_policy_applied: bool,
     pub(crate) folder_picker: crate::app::folder_picker::FolderPickerRuntime,
     pub(crate) directory_tree: DirectoryTreeRuntime,
     pub(crate) auto_hidden_directory_tree_nav: bool,

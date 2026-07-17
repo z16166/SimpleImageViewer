@@ -537,3 +537,28 @@ status.cut_success: "移动图片成功"
 
 
 
+
+# Screensaver
+settings_tab.screensaver: "屏保"
+section.screensaver_source: "屏保图片来源"
+section.screensaver_playback: "屏保播放"
+section.screensaver_performance: "性能"
+section.screensaver_windows: "Windows 系统屏保"
+label.screensaver_recursive: "扫描子文件夹"
+label.screensaver_exit_on_input: "键盘/鼠标输入后退出"
+label.screensaver_display: "显示器"
+label.screensaver_display_all: "全部"
+label.screensaver_display_primary: "主屏"
+label.screensaver_performance: "配置档"
+label.screensaver_power_save: "省电"
+label.screensaver_quality: "画质"
+label.screensaver_allow_hdr: "允许 HDR（高级）"
+btn.screensaver_install_system: "安装系统屏保"
+btn.screensaver_set_active: "设为当前屏保"
+screensaver.window_title: "屏保"
+screensaver.preview_title: "屏保预览"
+screensaver.config_title: "屏保设置"
+screensaver.windows_hint: "安装会将本程序复制为 .scr 并注册到 Windows 屏保列表。写入 System32 时可能需要管理员权限。"
+screensaver.install_ok: "已安装屏保到 %{path}"
+screensaver.set_active_ok: "已将当前屏保设为 %{path}"
+screensaver.not_installed: "未找到已安装的 .scr。请先安装系统屏保。"

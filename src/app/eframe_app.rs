@@ -23,7 +23,10 @@ use super::types::ImageViewerApp;
 
 impl eframe::App for ImageViewerApp {
     fn on_exit(&mut self) {
-        if self.settings.resume_last_image && !self.image_files.is_empty() {
+        if !self.run_mode.settings_writeback_blocked()
+            && self.settings.resume_last_image
+            && !self.image_files.is_empty()
+        {
             self.settings.last_viewed_image = Some(self.image_files[self.current_index].clone());
         }
         // Persist the last-known window placement. The HDR backend selection
@@ -105,8 +108,17 @@ impl eframe::App for ImageViewerApp {
             .viewpaint_app
             .store(std::ptr::null_mut(), std::sync::atomic::Ordering::Release);
 
-        if let Err(e) = self.settings.save() {
+        if self.run_mode.settings_writeback_blocked() {
+            log::info!("[on_exit] skipping viewer settings writeback (screensaver host)");
+        } else if let Err(e) = self.settings.save() {
             log::error!("[on_exit] Failed to save settings: {}", e);
+        }
+        // Config host persists screensaver YAML on exit. Normal mode already saves on edit via
+        // queue_screensaver_save(); Run/Preview never write screensaver YAML.
+        if self.run_mode.is_screensaver_config()
+            && let Err(e) = self.screensaver_settings.save()
+        {
+            log::error!("[on_exit] Failed to save screensaver settings: {}", e);
         }
         if let Err(e) = crate::hotkeys::io::save_hotkeys_file(&self.hotkeys_runtime.config) {
             log::error!("[on_exit] Failed to save hotkeys: {}", e);
@@ -163,7 +175,7 @@ impl eframe::App for ImageViewerApp {
         if pass.is_root() && self.needs_process_loaded_images() {
             self.process_loaded_images(ctx, &mut Some(frame));
         }
-        if pass.is_root() {
+        if pass.is_root() && !self.run_mode.bypass_tray() {
             self.poll_tray_commands(ctx);
         }
         if self.should_run_logic_shared() {
@@ -218,6 +230,27 @@ impl eframe::App for ImageViewerApp {
         // logic() also runs when a deferred child viewport repaints; pixels_per_point and
         // style there are wrong and would corrupt dark-theme widget colors on the main window.
         self.sync_theme_and_visuals(&ctx);
+
+        // Screensaver host skins: bypass normal chrome, tray, tree, and hotkeys.
+        if self.run_mode.is_screensaver_config() {
+            self.poll_folder_picker_results(&ctx);
+            if std::mem::take(&mut self.pending_open_screensaver_directory) {
+                let start = self.screensaver_settings.primary_source().cloned();
+                self.request_folder_picker(
+                    frame,
+                    crate::app::folder_picker::FolderPickerPurpose::ScreensaverDirectory,
+                    start,
+                );
+            }
+            crate::screensaver::draw_screensaver_config_window(self, ui);
+            return;
+        }
+        if self.run_mode.is_screensaver_run() || self.run_mode.is_screensaver_preview() {
+            self.tick_screensaver_host(&ctx, frame);
+            self.draw_image_canvas_ui(ui, frame);
+            return;
+        }
+
         self.sync_directory_tree_keyboard_focus_with_viewports(&ctx);
         let embedded_nav_available = ui.available_rect_before_wrap();
         self.bootstrap_embedded_directory_tree_panel_layout(&ctx, embedded_nav_available);
@@ -449,6 +482,9 @@ impl ImageViewerApp {
     }
 
     fn ensure_tray_icon(&mut self, was_maximized: bool) -> bool {
+        if self.run_mode.bypass_tray() {
+            return false;
+        }
         if self.tray_state.is_none()
             && let Some(state) = Self::build_tray_state(was_maximized)
         {
@@ -481,6 +517,7 @@ impl ImageViewerApp {
     ) {
         if root_close_requested
             && !self.explicit_quit
+            && !self.run_mode.bypass_tray()
             && self.settings.minimize_to_tray_on_close
             && !Self::is_system_shutting_down()
         {

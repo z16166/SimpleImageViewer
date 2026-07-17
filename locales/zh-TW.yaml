@@ -537,3 +537,28 @@ status.cut_success: "移動圖片成功"
 
 
 
+
+# Screensaver
+settings_tab.screensaver: "螢幕保護"
+section.screensaver_source: "螢幕保護圖片來源"
+section.screensaver_playback: "螢幕保護播放"
+section.screensaver_performance: "效能"
+section.screensaver_windows: "Windows 系統螢幕保護"
+label.screensaver_recursive: "掃描子資料夾"
+label.screensaver_exit_on_input: "鍵盤/滑鼠輸入後退出"
+label.screensaver_display: "顯示器"
+label.screensaver_display_all: "全部"
+label.screensaver_display_primary: "主螢幕"
+label.screensaver_performance: "設定檔"
+label.screensaver_power_save: "省電"
+label.screensaver_quality: "畫質"
+label.screensaver_allow_hdr: "允許 HDR（進階）"
+btn.screensaver_install_system: "安裝系統螢幕保護"
+btn.screensaver_set_active: "設為目前螢幕保護"
+screensaver.window_title: "螢幕保護"
+screensaver.preview_title: "螢幕保護預覽"
+screensaver.config_title: "螢幕保護設定"
+screensaver.windows_hint: "安裝會將本程式複製為 .scr 並註冊到 Windows 螢幕保護列表。寫入 System32 時可能需要系統管理員權限。"
+screensaver.install_ok: "已安裝螢幕保護到 %{path}"
+screensaver.set_active_ok: "已將目前螢幕保護設為 %{path}"
+screensaver.not_installed: "找不到已安裝的 .scr。請先安裝系統螢幕保護。"

@@ -34,6 +34,7 @@ use super::ImageViewerApp;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FolderPickerPurpose {
     ImageDirectory,
+    ScreensaverDirectory,
     MusicDirectory,
     MusicFile,
     FileCopyCutModal,
@@ -269,6 +270,10 @@ impl ImageViewerApp {
 
         match completion.purpose {
             FolderPickerPurpose::ImageDirectory => self.apply_picked_image_directory(picked),
+            FolderPickerPurpose::ScreensaverDirectory => {
+                self.screensaver_settings.sources = vec![picked];
+                self.queue_screensaver_save();
+            }
             FolderPickerPurpose::MusicDirectory => {
                 self.settings.music_path = Some(picked);
                 self.restart_audio_if_enabled();

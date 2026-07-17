@@ -98,22 +98,24 @@ pub fn run() -> eframe::Result {
         }
     }
 
-    // 1. Parse initial image from arguments (needed for IPC)
-    let mut initial_image = None;
-    if let Some(arg) = std::env::args_os().nth(1) {
-        let pic_path = std::path::PathBuf::from(arg);
-        if pic_path.is_file() {
-            initial_image = Some(pic_path);
-        }
-    }
+    // 1. Parse launch mode (normal / screensaver host protocol / CLI kiosk)
+    let run_mode = crate::startup::run_mode::parse_launch_mode(std::env::args_os());
+    let initial_image = run_mode.image_path().cloned();
 
-    // 2. IPC Single-instance check
+    // 2. IPC Single-instance check (bypassed for all screensaver phases)
     let (ipc_tx, ipc_rx) = crossbeam_channel::unbounded();
-    let no_recursive = initial_image.is_some();
-    if crate::ipc::setup_or_forward_args(ipc_tx, initial_image.as_ref(), no_recursive) {
-        // We Successfully forwarded to another instance, exit.
-        shutdown_logger();
-        crate::startup::force_process_exit(0);
+    if !run_mode.bypass_single_instance_ipc() {
+        let no_recursive = initial_image.is_some();
+        if crate::ipc::setup_or_forward_args(ipc_tx, initial_image.as_ref(), no_recursive) {
+            // Successfully forwarded to another instance, exit.
+            shutdown_logger();
+            crate::startup::force_process_exit(0);
+        }
+    } else {
+        log::info!(
+            "[startup] screensaver host mode active; single-instance IPC bypassed ({run_mode:?})"
+        );
+        drop(ipc_tx);
     }
 
     // 3. Primary Instance Initialization
@@ -230,16 +232,43 @@ pub fn run() -> eframe::Result {
     if let Some(h) = dx12_cache_validate_join {
         register_dx12_cache_validate_join_for_exit(h);
     }
-    // Apply command-line overrides to settings
-    if let Some(ref path) = initial_image {
-        if let Some(parent) = path.parent() {
-            settings.set_current_browse_directory(
-                parent.to_path_buf(),
-                !settings.keep_gallery_dir_on_double_click,
-            );
+    // Load screensaver settings early so Run/Config/Preview can apply overrides.
+    let mut screensaver_settings = crate::screensaver::ScreensaverSettings::load();
+    if let Some(cli) = run_mode.screensaver_cli() {
+        screensaver_settings.apply_cli_overrides(cli);
+    }
+
+    // Apply command-line / host-mode overrides to viewer settings
+    match &run_mode {
+        crate::startup::run_mode::AppRunMode::Normal { .. } => {
+            if let Some(ref path) = initial_image {
+                if let Some(parent) = path.parent() {
+                    settings.set_current_browse_directory(
+                        parent.to_path_buf(),
+                        !settings.keep_gallery_dir_on_double_click,
+                    );
+                }
+                settings.auto_switch = false;
+                settings.recursive = false;
+            }
         }
-        settings.auto_switch = false;
-        settings.recursive = false;
+        crate::startup::run_mode::AppRunMode::Screensaver { phase, .. } => {
+            match phase {
+                crate::startup::run_mode::SaverPhase::Run
+                | crate::startup::run_mode::SaverPhase::Preview => {
+                    crate::screensaver::apply_screensaver_to_viewer_settings(
+                        &mut settings,
+                        &screensaver_settings,
+                    );
+                }
+                crate::startup::run_mode::SaverPhase::Config => {
+                    // Config host: small window, no fullscreen slideshow skin.
+                    settings.fullscreen = false;
+                    settings.minimize_to_tray_on_close = false;
+                    settings.auto_switch = false;
+                }
+            }
+        }
     }
 
     let fullscreen = settings.fullscreen;
@@ -250,17 +279,76 @@ pub fn run() -> eframe::Result {
     let app_icon = load_icon();
     startup_log_phase(&mut prev, startup_t0, "load_icon");
 
+    let (
+        viewport_title,
+        decorations,
+        viewport_fullscreen,
+        viewport_inner,
+        viewport_min,
+        use_saved_pos,
+    ) = match &run_mode {
+        crate::startup::run_mode::AppRunMode::Screensaver {
+            phase: crate::startup::run_mode::SaverPhase::Run,
+            ..
+        } => (
+            rust_i18n::t!("screensaver.window_title").to_string(),
+            false,
+            true,
+            saved_inner_size,
+            [320.0_f32, 240.0_f32],
+            false,
+        ),
+        crate::startup::run_mode::AppRunMode::Screensaver {
+            phase: crate::startup::run_mode::SaverPhase::Preview,
+            ..
+        } => (
+            rust_i18n::t!("screensaver.preview_title").to_string(),
+            false,
+            false,
+            [320.0_f32, 240.0_f32],
+            [64.0_f32, 64.0_f32],
+            false,
+        ),
+        crate::startup::run_mode::AppRunMode::Screensaver {
+            phase: crate::startup::run_mode::SaverPhase::Config,
+            ..
+        } => (
+            rust_i18n::t!("screensaver.config_title").to_string(),
+            true,
+            false,
+            [
+                crate::constants::SETTINGS_WINDOW_DEFAULT_WIDTH,
+                crate::constants::SETTINGS_WINDOW_DEFAULT_HEIGHT,
+            ],
+            [
+                crate::constants::SETTINGS_WINDOW_MIN_WIDTH,
+                crate::constants::SETTINGS_WINDOW_MIN_HEIGHT,
+            ],
+            false,
+        ),
+        crate::startup::run_mode::AppRunMode::Normal { .. } => (
+            rust_i18n::t!("app.title").to_string(),
+            true,
+            fullscreen,
+            saved_inner_size,
+            [400.0_f32, 300.0_f32],
+            true,
+        ),
+    };
+
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title(rust_i18n::t!("app.title").to_string())
-        .with_inner_size(saved_inner_size)
-        .with_min_inner_size([400.0, 300.0])
-        .with_decorations(true)
-        .with_fullscreen(fullscreen)
+        .with_title(viewport_title)
+        .with_inner_size(viewport_inner)
+        .with_min_inner_size(viewport_min)
+        .with_decorations(decorations)
+        .with_fullscreen(viewport_fullscreen)
         // Maximize is applied from the app after the hidden window is created.
         .with_maximized(false)
         .with_icon(app_icon);
-    if let Some(pos) = saved_outer_position {
-        viewport = viewport.with_position(pos);
+    if use_saved_pos {
+        if let Some(pos) = saved_outer_position {
+            viewport = viewport.with_position(pos);
+        }
     }
     startup_log_phase(&mut prev, startup_t0, "viewport_builder + overrides");
 
@@ -550,6 +638,8 @@ pub fn run() -> eframe::Result {
                 crate::app::ImageViewerInit {
                     settings,
                     initial_image,
+                    run_mode: run_mode.clone(),
+                    screensaver_settings: screensaver_settings.clone(),
                     ipc_rx,
                     requested_target_format,
                     active_target_format,

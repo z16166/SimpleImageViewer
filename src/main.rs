@@ -89,6 +89,7 @@ mod psb_vector_mask;
 mod psb_zip;
 mod raw_processor;
 mod scanner;
+mod screensaver;
 #[cfg(target_os = "windows")]
 mod seh_handler;
 mod settings;

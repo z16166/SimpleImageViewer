@@ -507,12 +507,12 @@ fn current_process_main_window_with_options(visible_only: bool) -> Option<isize>
 }
 
 #[cfg(windows)]
-fn current_process_main_window() -> Option<isize> {
+pub(crate) fn current_process_main_window() -> Option<isize> {
     current_process_main_window_with_options(false)
 }
 
 #[cfg(windows)]
-fn current_process_visible_main_window() -> Option<isize> {
+pub(crate) fn current_process_visible_main_window() -> Option<isize> {
     current_process_main_window_with_options(true)
 }
 

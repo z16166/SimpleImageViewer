@@ -14,20 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-mod exit;
-pub(crate) mod icon;
-mod launch;
-mod logging;
-mod panic;
-mod phases;
-pub(crate) mod run_mode;
+//! Screensaver host settings, config UI helpers, and platform registration.
 
-#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
-mod wgpu;
+mod settings;
+mod ui;
 
-pub(crate) use exit::force_process_exit;
-pub use launch::run;
-pub(crate) use logging::shutdown_logger;
+#[cfg(target_os = "windows")]
+pub mod windows_register;
 
-#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
-pub(crate) use wgpu::take_and_join_dx12_cache_validate_thread;
+pub use settings::{ScreensaverDisplayPolicy, ScreensaverPerformanceProfile, ScreensaverSettings};
+pub use ui::{
+    apply_screensaver_to_viewer_settings, draw_screensaver_config_window, draw_screensaver_tab,
+};

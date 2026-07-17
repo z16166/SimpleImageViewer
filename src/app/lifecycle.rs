@@ -34,6 +34,8 @@ use std::time::Instant;
 pub struct ImageViewerInit {
     pub settings: Settings,
     pub initial_image: Option<PathBuf>,
+    pub run_mode: crate::startup::run_mode::AppRunMode,
+    pub screensaver_settings: crate::screensaver::ScreensaverSettings,
     pub ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
     pub requested_target_format: eframe::egui_wgpu::RequestedSurfaceFormat,
     pub active_target_format: eframe::egui_wgpu::ActiveSurfaceFormat,
@@ -55,6 +57,8 @@ impl ImageViewerApp {
         let ImageViewerInit {
             settings,
             initial_image,
+            run_mode,
+            screensaver_settings,
             ipc_rx,
             requested_target_format,
             active_target_format,
@@ -539,9 +543,18 @@ impl ImageViewerApp {
             slideshow_paused: false,
             random_slideshow_order_ready: false,
             audio: AudioPlayer::new(),
-            show_settings: settings.last_image_dir.is_none()
+            show_settings: !run_mode.is_screensaver()
+                && settings.last_image_dir.is_none()
                 && settings.transient_image_dir.is_none(),
             settings_tab: crate::app::SettingsTab::Library,
+            run_mode: run_mode.clone(),
+            screensaver_settings,
+            pending_open_screensaver_directory: false,
+            screensaver_status_message: None,
+            screensaver_started_at: std::time::Instant::now(),
+            screensaver_last_pointer_pos: None,
+            screensaver_preview_embedded: false,
+            screensaver_display_policy_applied: false,
             about_icon_texture: None,
             images_ever_loaded: false,
             status_message: rust_i18n::t!("status.open_dir_hint").to_string(),
@@ -658,7 +671,8 @@ impl ImageViewerApp {
             music_seek_timeout: None,
             music_hud_last_activity: Instant::now(),
             cached_audio_devices: Vec::new(),
-            last_show_settings: settings.last_image_dir.is_none()
+            last_show_settings: !run_mode.is_screensaver()
+                && settings.last_image_dir.is_none()
                 && settings.transient_image_dir.is_none(),
             music_hud_drag_offset: Vec2::ZERO,
             hotkeys_runtime,
@@ -746,8 +760,8 @@ impl ImageViewerApp {
         app.refresh_audio_devices();
         app.refresh_directory_tree_toggle_nav_hotkey_chords();
 
-        // Restore last session state
-        if app.directory_tree_settings_active() {
+        // Restore last session state (screensaver uses its own source dir already applied).
+        if !app.run_mode.is_screensaver() && app.directory_tree_settings_active() {
             app.settings.browse_mode = BrowseMode::Tree;
             app.restore_saved_directory_tree_panel_layout();
             app.ensure_directory_tree_reveals_current_browse_dir();
@@ -756,7 +770,7 @@ impl ImageViewerApp {
         if let Some(dir) = app.current_browse_directory() {
             app.reload_current_browse_directory(dir);
         }
-        if app.settings.play_music {
+        if !app.run_mode.is_screensaver() && app.settings.play_music {
             app.settings.music_paused = true; // Always start paused to avoid start-up noise
             app.restart_audio_if_enabled();
         }
@@ -771,11 +785,31 @@ impl ImageViewerApp {
     /// Enqueues a best-effort background YAML write (trailing debounce, ~5s quiet period).
     /// `last_viewed_image` and other session state are persisted authoritatively in `on_exit`.
     pub(crate) fn queue_save(&self) {
+        if self.run_mode.settings_writeback_blocked() {
+            return;
+        }
         let _ = self.yaml_save_tx.send(
             crate::app::background_yaml_saver::YamlSaveRequest::Settings(Box::new(
                 self.settings.clone(),
             )),
         );
+    }
+
+    pub(crate) fn queue_screensaver_save(&self) {
+        // Config and main-settings edits may persist screensaver YAML; Run/Preview do not.
+        if matches!(
+            self.run_mode,
+            crate::startup::run_mode::AppRunMode::Screensaver {
+                phase: crate::startup::run_mode::SaverPhase::Run
+                    | crate::startup::run_mode::SaverPhase::Preview,
+                ..
+            }
+        ) {
+            return;
+        }
+        if let Err(e) = self.screensaver_settings.save() {
+            log::error!("[screensaver] save failed: {e}");
+        }
     }
 
     pub(crate) fn queue_hotkeys_save(&self) {
