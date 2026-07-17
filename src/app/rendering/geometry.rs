@@ -152,6 +152,19 @@ pub(crate) fn unrotated_draw_rect_for_display(
     Rect::from_center_size(rotated_display_rect.center(), size)
 }
 
+/// Max `zoom_factor` for FitToWindow so OSD physical magnification can reach
+/// [`ZOOM_FACTOR_MAX`](crate::constants::ZOOM_FACTOR_MAX) (same as Original Size).
+///
+/// OSD zoom% uses `fit_scale * zoom_factor * pixels_per_point * 100`, so:
+/// `zoom_factor = ZOOM_FACTOR_MAX / (fit_scale * pixels_per_point)`.
+pub(crate) fn max_zoom_factor_to_reach_physical_cap(fit_scale: f32, pixels_per_point: f32) -> f32 {
+    if fit_scale > 0.0 && pixels_per_point > 0.0 {
+        crate::constants::ZOOM_FACTOR_MAX / (fit_scale * pixels_per_point)
+    } else {
+        crate::constants::ZOOM_FACTOR_MAX
+    }
+}
+
 impl ImageViewerApp {
     /// Calculate current absolute display scale relative to image pixels (logical scale).
     pub(crate) fn calculate_effective_scale(&self, img_size: Vec2, screen_rect: Rect) -> f32 {
@@ -195,18 +208,15 @@ impl ImageViewerApp {
         PlaneLayout::from_dest(img_size, rotation, dest)
     }
 
-    /// Maximum zoom factor for FitToWindow mode: caps at the zoom where one
-    /// image pixel maps to one physical screen pixel (i.e. 100%). This prevents
-    /// the OSD from showing values above 100% when zoomed to maximum, which would
-    /// be counterintuitive — going beyond 1:1 pixel mapping offers no useful detail.
+    /// Upper bound for `zoom_factor` in the current scale mode.
     ///
-    /// The hard cap of [`ZOOM_FACTOR_MAX`](crate::constants::ZOOM_FACTOR_MAX) is
-    /// preserved as an absolute upper bound. For OriginalSize mode the full
-    /// range is always available.
-    pub(crate) fn max_zoom_factor_for_fit_mode(&self, ctx: &Context) -> f32 {
+    /// Original Size uses [`ZOOM_FACTOR_MAX`](crate::constants::ZOOM_FACTOR_MAX) directly
+    /// (OSD 2000% when the constant is 20). FitToWindow raises the zoom-factor ceiling so
+    /// the same physical magnification (display size / true pixel size) remains reachable.
+    pub(crate) fn max_zoom_factor_for_mode(&self, ctx: &Context) -> f32 {
         match self.settings.scale_mode {
             ScaleMode::FitToWindow => {
-                if let Some(res) = self.current_image_res {
+                if let Some(res) = self.layout_image_resolution() {
                     let img_size = Vec2::new(res.0 as f32, res.1 as f32);
                     let rotated_size =
                         rotated_image_size_for_display(img_size, self.current_rotation);
@@ -214,16 +224,10 @@ impl ImageViewerApp {
                     if screen_rect.width() > 0.0 && screen_rect.height() > 0.0 {
                         let fit_scale = (screen_rect.width() / rotated_size.x)
                             .min(screen_rect.height() / rotated_size.y);
-                        if fit_scale > 0.0 && self.cached_pixels_per_point > 0.0 {
-                            let max_by_physical = 1.0 / (fit_scale * self.cached_pixels_per_point);
-                            // Never go below 1.0 (don't prevent zoom-in for small images)
-                            // Never exceed the established absolute cap
-                            max_by_physical
-                                .max(1.0)
-                                .min(crate::constants::ZOOM_FACTOR_MAX)
-                        } else {
-                            crate::constants::ZOOM_FACTOR_MAX
-                        }
+                        max_zoom_factor_to_reach_physical_cap(
+                            fit_scale,
+                            self.cached_pixels_per_point,
+                        )
                     } else {
                         crate::constants::ZOOM_FACTOR_MAX
                     }
@@ -271,8 +275,8 @@ impl ImageViewerApp {
             return;
         }
 
-        // 1. Get original image resolution
-        let res = if let Some(r) = self.current_image_res {
+        // 1. Get layout image resolution (full document size when tiled)
+        let res = if let Some(r) = self.layout_image_resolution() {
             r
         } else {
             return;
@@ -428,5 +432,25 @@ mod tests {
         assert_eq!(layout.pivot, dest.center());
         assert_eq!(layout.rotation_steps, 1);
         assert_eq!(layout.effective_scale, 0.5);
+    }
+
+    #[test]
+    fn fit_to_window_max_zoom_reaches_same_physical_cap_as_original() {
+        let fit_scale = 0.4;
+        let ppp = 1.0;
+        let max_zf = max_zoom_factor_to_reach_physical_cap(fit_scale, ppp);
+        assert!((max_zf - 50.0).abs() < 1e-5);
+        let physical_ratio = fit_scale * max_zf * ppp;
+        assert!((physical_ratio - crate::constants::ZOOM_FACTOR_MAX).abs() < 1e-5);
+    }
+
+    #[test]
+    fn fit_to_window_max_zoom_accounts_for_hidpi() {
+        let fit_scale = 0.5;
+        let ppp = 2.0;
+        let max_zf = max_zoom_factor_to_reach_physical_cap(fit_scale, ppp);
+        assert!((max_zf - 20.0).abs() < 1e-5);
+        let physical_ratio = fit_scale * max_zf * ppp;
+        assert!((physical_ratio - crate::constants::ZOOM_FACTOR_MAX).abs() < 1e-5);
     }
 }

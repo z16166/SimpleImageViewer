@@ -131,7 +131,7 @@ impl ImageViewerApp {
             return;
         }
         let old_zoom = self.zoom_factor;
-        let max_zf = self.max_zoom_factor_for_fit_mode(ctx);
+        let max_zf = self.max_zoom_factor_for_mode(ctx);
         self.set_zoom_factor(
             (self.zoom_factor * factor).clamp(crate::constants::ZOOM_FACTOR_MIN, max_zf),
         );
