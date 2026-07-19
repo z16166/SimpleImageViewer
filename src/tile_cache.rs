@@ -19,6 +19,8 @@ use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::LazyLock;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -76,22 +78,39 @@ pub const FALLBACK_TILED_PLANE_SIDE_LIMIT: u32 = 8192;
 /// Minimum configurable single-side tiled-routing limit.
 pub const MIN_TILED_PLANE_SIDE_LIMIT: u32 = 1024;
 
-/// Pixel count threshold above which tiled mode is activated (`A²` for side limit `A`).
-pub static TILED_THRESHOLD: AtomicU64 = AtomicU64::new(
-    (FALLBACK_TILED_PLANE_SIDE_LIMIT as u64) * (FALLBACK_TILED_PLANE_SIDE_LIMIT as u64),
-);
-
-/// Configurable single-side tiled-routing limit (`A`). Independent of GPU upload capability.
+/// Configurable single-side tiled-routing limit (`A`).
+/// Pixel threshold is derived as `A²` in `u64` (no packed-threshold overflow).
 static TILED_SIDE_LIMIT: AtomicU32 = AtomicU32::new(FALLBACK_TILED_PLANE_SIDE_LIMIT);
 
-/// Get the current tiled-mode pixel threshold (`A²`).
-pub fn get_tiled_threshold() -> u64 {
-    TILED_THRESHOLD.load(Ordering::Acquire)
+#[cfg(test)]
+static TILED_THRESHOLD_OVERRIDE_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static TILED_THRESHOLD_OVERRIDE: AtomicU64 = AtomicU64::new(0);
+
+fn pixel_threshold_for_side(side: u32) -> u64 {
+    let side = side as u64;
+    side.saturating_mul(side)
 }
 
 /// Get the current tiled-routing single-side limit (`A`).
 pub fn get_tiled_side_limit() -> u32 {
     TILED_SIDE_LIMIT.load(Ordering::Acquire)
+}
+
+/// Get the current tiled-mode pixel threshold (`A²` in production, as `u64`).
+pub fn get_tiled_threshold() -> u64 {
+    #[cfg(test)]
+    if TILED_THRESHOLD_OVERRIDE_ACTIVE.load(Ordering::Acquire) {
+        return TILED_THRESHOLD_OVERRIDE.load(Ordering::Acquire);
+    }
+    pixel_threshold_for_side(get_tiled_side_limit())
+}
+
+/// Override the pixel threshold independently of side (tests only).
+#[cfg(test)]
+pub fn set_tiled_threshold_override(pixel_threshold: u64) {
+    TILED_THRESHOLD_OVERRIDE.store(pixel_threshold, Ordering::Release);
+    TILED_THRESHOLD_OVERRIDE_ACTIVE.store(true, Ordering::Release);
 }
 
 /// Clamp a preferred side limit into `[min(1024, device_max), device_max]`.
@@ -121,27 +140,39 @@ pub fn quantize_tiled_plane_side_limit(value: u32, device_max: u32, step: u32) -
     clamp_tiled_plane_side_limit(rounded, device_max)
 }
 
-/// Apply tiled-routing side limit `A` and pixel threshold `A²`.
+/// Apply tiled-routing side limit `A`. Pixel threshold is always derived as `A²`.
 pub fn apply_tiled_plane_side_limit(side: u32) {
-    let side = side.max(1);
-    TILED_SIDE_LIMIT.store(side, Ordering::Release);
-    TILED_THRESHOLD.store((side as u64) * (side as u64), Ordering::Release);
+    TILED_SIDE_LIMIT.store(side.max(1), Ordering::Release);
+    #[cfg(test)]
+    TILED_THRESHOLD_OVERRIDE_ACTIVE.store(false, Ordering::Release);
 }
 
 /// Whether image dimensions should use the tiled rendering path for policy `A`.
 ///
-/// Tiles when `width > A` OR `height > A` OR `pixels > get_tiled_threshold()`.
-/// Production keeps the pixel threshold at `A²` via [`apply_tiled_plane_side_limit`];
-/// tests may override the pixel threshold independently.
+/// Tiles when `width > A` OR `height > A` OR `pixels > A²`.
+/// Uses one loaded `side` so the derived threshold cannot race against a newer side.
+/// Tests may override the pixel threshold independently via [`set_tiled_threshold_override`].
 pub fn image_requires_tiled_plane(width: u32, height: u32) -> bool {
     let side = get_tiled_side_limit();
     if width > side || height > side {
         return true;
     }
+    let threshold = {
+        #[cfg(test)]
+        if TILED_THRESHOLD_OVERRIDE_ACTIVE.load(Ordering::Acquire) {
+            TILED_THRESHOLD_OVERRIDE.load(Ordering::Acquire)
+        } else {
+            pixel_threshold_for_side(side)
+        }
+        #[cfg(not(test))]
+        {
+            pixel_threshold_for_side(side)
+        }
+    };
     let Some(pixels) = (width as u64).checked_mul(height as u64) else {
         return true;
     };
-    pixels > get_tiled_threshold()
+    pixels > threshold
 }
 
 /// Maximum texture side length supported by the GPU (hardware / API capability).
@@ -189,19 +220,16 @@ mod tiled_plane_limit_tests {
     fn apply_sets_side_and_squared_pixel_threshold() {
         let _guard = TEST_LOCK.lock();
         let old_side = get_tiled_side_limit();
-        let old_pixels = get_tiled_threshold();
         apply_tiled_plane_side_limit(4096);
         assert_eq!(get_tiled_side_limit(), 4096);
         assert_eq!(get_tiled_threshold(), 4096u64 * 4096u64);
         apply_tiled_plane_side_limit(old_side);
-        TILED_THRESHOLD.store(old_pixels, Ordering::Release);
     }
 
     #[test]
     fn image_requires_tiled_plane_uses_strict_greater_than() {
         let _guard = TEST_LOCK.lock();
         let old_side = get_tiled_side_limit();
-        let old_pixels = get_tiled_threshold();
         apply_tiled_plane_side_limit(1024);
         assert!(!image_requires_tiled_plane(1024, 1024));
         assert!(image_requires_tiled_plane(1025, 1024));
@@ -209,15 +237,14 @@ mod tiled_plane_limit_tests {
         // 1025x1025 exceeds the side limit.
         assert!(image_requires_tiled_plane(1025, 1025));
         // Pixel gate can fire alone when threshold is below A² (test overrides).
-        TILED_THRESHOLD.store(63_999_999, Ordering::Release);
-        TILED_SIDE_LIMIT.store(8192, Ordering::Release);
+        apply_tiled_plane_side_limit(8192);
+        set_tiled_threshold_override(63_999_999);
         assert!(image_requires_tiled_plane(8000, 8000));
         // With synced A / A² policy, exact A x A stays static.
         apply_tiled_plane_side_limit(8192);
         assert!(!image_requires_tiled_plane(8192, 8192));
         assert!(image_requires_tiled_plane(8193, 1));
         apply_tiled_plane_side_limit(old_side);
-        TILED_THRESHOLD.store(old_pixels, Ordering::Release);
     }
 }
 

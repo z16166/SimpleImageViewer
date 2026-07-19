@@ -191,9 +191,9 @@ pub(crate) fn develop_full_resolution(
 /// Demosaic once at full sensor resolution. Used when HQ mode needs better pixels
 /// than the embedded preview provides, or when HQ mode has no embedded preview at all.
 ///
-/// Intentionally **does not** check [`crate::tile_cache::TILED_THRESHOLD`]: HQ without an
+/// Intentionally **does not** check the tiled-routing side/pixel limits: HQ without an
 /// embedded bootstrap is a rare sync path where quality beats loader latency. Very large sensors
-/// may block the loader thread for several seconds — prefer [`load_raw_with_embedded_bootstrap`]
+/// may block the loader thread for several seconds -- prefer [`load_raw_with_embedded_bootstrap`]
 /// when an embedded thumb exists.
 pub(crate) fn develop_hq_preview(
     processor: &mut RawProcessor,

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Shared knobs for decode tests (`TILED_THRESHOLD` overrides).
+//! Shared knobs for decode tests (tiled pixel-threshold overrides).
 
 use parking_lot::{Mutex, MutexGuard};
 use std::sync::LazyLock;
@@ -28,15 +28,14 @@ pub(crate) struct TiledThresholdOverride {
 impl TiledThresholdOverride {
     pub(crate) fn set(value: u64) -> Self {
         let old_threshold = crate::tile_cache::get_tiled_threshold();
-        crate::tile_cache::TILED_THRESHOLD.store(value, std::sync::atomic::Ordering::Release);
+        crate::tile_cache::set_tiled_threshold_override(value);
         Self { old_threshold }
     }
 }
 
 impl Drop for TiledThresholdOverride {
     fn drop(&mut self) {
-        crate::tile_cache::TILED_THRESHOLD
-            .store(self.old_threshold, std::sync::atomic::Ordering::Release);
+        crate::tile_cache::set_tiled_threshold_override(self.old_threshold);
     }
 }
 
