@@ -134,7 +134,9 @@ pub(super) fn draw_viewing_tab(
                     app.reload_after_tiled_plane_side_limit_change();
                     app.queue_save();
                 } else if effective != crate::tile_cache::get_tiled_side_limit() {
+                    // Settings already match; only runtime drifted (e.g. stale atomic).
                     crate::tile_cache::apply_tiled_plane_side_limit(effective);
+                    app.reload_after_tiled_plane_side_limit_change();
                 }
             }
         }
