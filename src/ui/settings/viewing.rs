@@ -20,6 +20,13 @@ use crate::ui::utils::{settings_card, stable_selectable_value, themed_labeled_to
 use eframe::egui::{self, Vec2};
 use rust_i18n::t;
 
+const TILED_PLANE_SIDE_STEP: u32 = 512;
+
+/// Persist slider/drag edits after the gesture ends (same semantics as slideshow).
+fn slider_or_drag_committed(resp: &egui::Response) -> bool {
+    resp.drag_stopped() || (resp.changed() && !resp.dragged())
+}
+
 pub(super) fn draw_viewing_tab(
     app: &mut ImageViewerApp,
     ui: &mut egui::Ui,
@@ -73,6 +80,41 @@ pub(super) fn draw_viewing_tab(
                 }
             });
         });
+        ui.add_space(6.0);
+        {
+            let device_max = crate::tile_cache::get_max_texture_side();
+            let min_side = crate::tile_cache::MIN_TILED_PLANE_SIDE_LIMIT.min(device_max);
+            let side_resp = ui
+                .horizontal(|ui| {
+                    ui.label(t!("label.tiled_plane_side_limit"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut app.settings.tiled_plane_side_limit)
+                                .range(min_side..=device_max)
+                                .speed(TILED_PLANE_SIDE_STEP as f64)
+                                .suffix(" px"),
+                        )
+                    })
+                    .inner
+                })
+                .inner
+                .on_hover_text(t!("hint.tiled_plane_side_limit"));
+            if slider_or_drag_committed(&side_resp) {
+                let effective = crate::tile_cache::quantize_tiled_plane_side_limit(
+                    app.settings.tiled_plane_side_limit,
+                    device_max,
+                    TILED_PLANE_SIDE_STEP,
+                );
+                if effective != app.settings.tiled_plane_side_limit
+                    || effective != crate::tile_cache::get_tiled_side_limit()
+                {
+                    app.settings.tiled_plane_side_limit = effective;
+                    crate::tile_cache::apply_tiled_plane_side_limit(effective);
+                    app.reload_current();
+                    app.queue_save();
+                }
+            }
+        }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(t!("label.hdr_gain_map_sdr_display"));

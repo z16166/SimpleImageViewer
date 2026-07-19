@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.1.4] - 2026-07-19
+
+### Added
+- **Configurable tiled rendering threshold**: In Display settings you can set when large images switch to tiled rendering (default remains 8192). Raise it on capable GPUs for more full-image rendering, or lower it to tile earlier.
+
 ## [3.1.3] - 2026-07-16
 
 ### Fixed

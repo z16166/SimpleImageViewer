@@ -33,23 +33,16 @@ pub(crate) fn make_image_data(img: DecodedImage) -> ImageData {
             img.into_arc_pixels(),
         )));
     };
-    let max_side = img.width.max(img.height);
-    // Use the conservative ABSOLUTE_MAX_TEXTURE_SIDE (8192) for the tiling decision,
-    // consistent with WIC, macOS ImageIO, and Linux libtiff paths.
-    // Images exceeding 8192 on any side benefit from the tiled preview pipeline
-    // (instant EXIF preview + async HQ preview) regardless of GPU capability.
-    // The GPU's actual texture limit (often 16384) is used only at the wgpu device
-    // level to allow tile textures of any supported size.
-    let limit = crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE;
+    let side_limit = crate::tile_cache::get_tiled_side_limit();
     let tiled_limit = crate::tile_cache::get_tiled_threshold();
 
-    if pixel_count >= tiled_limit || max_side > limit {
+    if crate::tile_cache::image_requires_tiled_plane(img.width, img.height) {
         log::info!(
-            "[Loader] Image {}x{} ({:.1} MP) exceeds GPU limit ({}) or threshold ({:.1} MP). Using forced tiling.",
+            "[Loader] Image {}x{} ({:.1} MP) exceeds tiled side limit ({}) or pixel threshold ({:.1} MP). Using forced tiling.",
             img.width,
             img.height,
             pixel_count as f64 / 1_000_000.0,
-            limit,
+            side_limit,
             tiled_limit as f64 / 1_000_000.0
         );
         ImageData::Tiled(Arc::new(MemoryImageSource::new(
@@ -66,7 +59,7 @@ pub(crate) fn make_hdr_image_data(
     hdr: crate::hdr::types::HdrImageBuffer,
     fallback: DecodedImage,
 ) -> ImageData {
-    make_hdr_image_data_for_limit(hdr, fallback, crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE)
+    make_hdr_image_data_for_limit(hdr, fallback, crate::tile_cache::get_tiled_side_limit())
 }
 
 pub(crate) fn make_hdr_image_data_for_limit(
@@ -91,9 +84,9 @@ pub(crate) fn make_hdr_image_data_for_limit(
     let tiled_limit = crate::tile_cache::get_tiled_threshold();
     let max_side = hdr.width.max(hdr.height);
 
-    if pixel_count >= tiled_limit || max_side > max_texture_side {
+    if pixel_count > tiled_limit || max_side > max_texture_side {
         log::info!(
-            "[Loader] HDR image {}x{} exceeds callback texture limit ({}) or threshold ({:.1} MP). Using SDR tiled fallback.",
+            "[Loader] HDR image {}x{} exceeds tiled side limit ({}) or threshold ({:.1} MP). Using SDR tiled fallback.",
             hdr.width,
             hdr.height,
             max_texture_side,

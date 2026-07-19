@@ -317,15 +317,9 @@ fn load_via_wic_inner(
             final_source = src;
         }
 
-        let pixel_count = logical_width as u64 * logical_height as u64;
-        let tiled_limit = crate::tile_cache::get_tiled_threshold();
-        // For WIC, use the conservative 8192 limit for the tiling decision
-        // rather than the GPU's actual limit (which may be 16384).
+        // Configurable tiled-routing side limit (default 8192), not the GPU upload cap.
         // WIC's tiled source provides a much better UX for wide/tall images:
         // it shows an EXIF preview instantly while loading tiles in the background.
-        // The GPU's real limit is used in make_image_data() for non-WIC images
-        // that are already fully decoded in memory.
-        let limit = crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE;
 
         // If it's a RAW file, we ALWAYS want a fast preview path for the initial placeholder,
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
@@ -363,7 +357,7 @@ fn load_via_wic_inner(
             }
         }
 
-        if pixel_count >= tiled_limit || logical_width > limit || logical_height > limit || is_raw {
+        if crate::tile_cache::image_requires_tiled_plane(logical_width, logical_height) || is_raw {
             // Virtualized path: Create a cached WIC bitmap source to avoid redundant O(N^2) decoding.
             // WICBitmapCacheOnDemand will keep decoded scanlines in memory as we request tiles.
             crate::loader::check_decode_cancel_str(cancel)?;

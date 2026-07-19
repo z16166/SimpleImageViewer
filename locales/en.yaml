@@ -102,6 +102,8 @@ hint.raw_demosaic_mode: "GPU mode accelerates standard Bayer RAW via compute sha
 demosaic.cpu: "CPU (LibRaw OpenMP)"
 demosaic.gpu: "GPU (Compute Shader)"
 label.scale_mode: "Scale Mode(press Z to toggle)"
+label.tiled_plane_side_limit: "Tiled rendering threshold"
+hint.tiled_plane_side_limit: "When an image's width or height exceeds this value, or its total pixels exceed this value squared, the viewer uses tiled rendering. Default is 8192. The maximum is limited by your current GPU/API texture size."
 label.hdr_gain_map_sdr_display: "HDR gain-map on SDR display"
 hint.hdr_gain_map_sdr_display: "For HDR images with an embedded SDR master (Ultra HDR, AVIF, HEIF/HEIC, JXL). Applies only on SDR monitors; native HDR output is unchanged."
 hdr_gain_map_sdr.embedded_master: "Embedded SDR master"

@@ -53,7 +53,7 @@ impl ImageViewerApp {
 
     pub fn new(cc: &eframe::CreationContext<'_>, init: ImageViewerInit) -> Self {
         let ImageViewerInit {
-            settings,
+            mut settings,
             initial_image,
             ipc_rx,
             requested_target_format,
@@ -306,9 +306,19 @@ impl ImageViewerApp {
 
         // Apply hardware budgets to global caches
         crate::tile_cache::set_max_tiles_base(tier.gpu_cache_tiles());
-        crate::tile_cache::TILED_THRESHOLD.store(
-            tier.tiled_threshold_pixels(),
-            std::sync::atomic::Ordering::Release,
+        // Tiled-routing policy comes from settings (side limit A, pixel gate A²),
+        // clamped to the device texture capability -- not HardwareTier.
+        let effective_tiled_side = crate::tile_cache::clamp_tiled_plane_side_limit(
+            settings.tiled_plane_side_limit,
+            max_texture_side,
+        );
+        settings.tiled_plane_side_limit = effective_tiled_side;
+        crate::tile_cache::apply_tiled_plane_side_limit(effective_tiled_side);
+        log::info!(
+            "Tiled plane side limit: {} (pixel threshold {} MP, device max {})",
+            effective_tiled_side,
+            (effective_tiled_side as u64 * effective_tiled_side as u64) as f64 / 1_000_000.0,
+            max_texture_side
         );
         crate::loader::PREVIEW_LIMIT.store(
             tier.max_preview_size(),

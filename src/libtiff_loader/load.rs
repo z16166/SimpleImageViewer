@@ -437,9 +437,7 @@ pub(crate) fn load_via_libtiff_from_mmap(
             force_static = true;
         }
 
-        let limit = crate::tile_cache::get_max_texture_side();
-        let tiled_threshold = crate::tile_cache::get_tiled_threshold();
-        let is_large = pixel_count >= tiled_threshold || width > limit || height > limit;
+        let is_large = crate::tile_cache::image_requires_tiled_plane(width, height);
 
         if !force_static && is_large {
             if lib::TIFFIsTiled(handle.as_ptr()) != 0 {

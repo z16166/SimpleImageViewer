@@ -201,10 +201,6 @@ impl HardwareTier {
         }
     }
 
-    pub fn tiled_threshold_pixels(&self) -> u64 {
-        64_000_000 // Reverted to 64MP for all tiers as requested
-    }
-
     pub fn max_preview_size(&self) -> u32 {
         match self {
             Self::Low => 1024,

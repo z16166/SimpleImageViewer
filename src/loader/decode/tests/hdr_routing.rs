@@ -84,7 +84,8 @@ fn load_hdr_routes_threshold_sized_images_to_tiled_fallback() {
     ));
     let bytes = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n\x80\x80\x80\x81";
     std::fs::write(&path, bytes).expect("write test HDR");
-    let _threshold_override = TiledThresholdOverride::set(1);
+    // Pixel gate is strict `>`; 1x1 exceeds threshold 0 and must take the tiled path.
+    let _threshold_override = TiledThresholdOverride::set(0);
 
     let image_data =
         load_hdr(&path, 1.0, HdrToneMapSettings::default(), None).expect("load tiny HDR");

@@ -761,13 +761,7 @@ fn feed_rgba8_absolute_blank_flags(
 /// Same limits as [`super::assemble::make_image_data`], applied to PSB header dims so
 /// multi-GB documents skip full-canvas decode.
 fn psd_header_requires_disk_tiled(width: u32, height: u32) -> bool {
-    let Some(pixel_count) = (width as u64).checked_mul(height as u64) else {
-        // Overflow implies absurdly large dimensions → always force tiling.
-        return true;
-    };
-    let max_side = width.max(height);
-    pixel_count >= crate::tile_cache::get_tiled_threshold()
-        || max_side > crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
+    crate::tile_cache::image_requires_tiled_plane(width, height)
 }
 
 /// Returns true if the extension belongs to a format that we prefer to load

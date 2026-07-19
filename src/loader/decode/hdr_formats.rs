@@ -152,10 +152,7 @@ fn route_exr_tiled_source(
     file_bytes: Option<&[u8]>,
     cancel: Option<&AtomicBool>,
 ) -> Result<Option<ImageData>, String> {
-    let pixel_count = source.width() as u64 * source.height() as u64;
-    let tiled_limit = crate::tile_cache::get_tiled_threshold();
-    let max_side = source.width().max(source.height());
-    if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
+    if !crate::tile_cache::image_requires_tiled_plane(source.width(), source.height()) {
         return exr_tiled_source_to_static_hdr(path, source, file_bytes, cancel).map(Some);
     }
 
@@ -179,10 +176,7 @@ pub(crate) fn try_load_disk_backed_radiance_hdr_from_mmap(
     check_decode_cancel_str(cancel)?;
     let source =
         crate::hdr::radiance_tiled::RadianceHdrTiledImageSource::open_from_mmap(path, mmap)?;
-    let pixel_count = source.width() as u64 * source.height() as u64;
-    let tiled_limit = crate::tile_cache::get_tiled_threshold();
-    let max_side = source.width().max(source.height());
-    if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
+    if !crate::tile_cache::image_requires_tiled_plane(source.width(), source.height()) {
         return Ok(None);
     }
 

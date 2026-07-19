@@ -1257,8 +1257,7 @@ fn load_via_image_io_with_mmap(
             (physical_width, physical_height)
         };
 
-        let tiled_threshold = crate::tile_cache::get_tiled_threshold();
-        if (logical_width as u64 * logical_height as u64) < tiled_threshold {
+        if !crate::tile_cache::image_requires_tiled_plane(logical_width, logical_height) {
             // Stage boundary before OS ImageIO decode.
             crate::loader::check_decode_cancel_str(cancel)?;
             let options_decode = CFDictionary::from_CFType_pairs(&[(

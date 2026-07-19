@@ -148,14 +148,10 @@ pub(crate) fn load_jpeg_from_mapped(
         ) {
             Ok(hdr) => {
                 crate::loader::check_decode_cancel_str(cancel)?;
-                let pixel_count = hdr.width as u64 * hdr.height as u64;
-                let tiled_limit = crate::tile_cache::get_tiled_threshold();
-                let max_side = hdr.width.max(hdr.height);
                 let use_tiled_deferred = hdr.rgba_f32.is_empty()
                     && crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata(&hdr.metadata)
                         .is_some()
-                    && (pixel_count >= tiled_limit
-                        || max_side >= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
+                    && crate::tile_cache::image_requires_tiled_plane(hdr.width, hdr.height);
                 if use_tiled_deferred {
                     let Some(deferred) =
                         crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata(&hdr.metadata)
