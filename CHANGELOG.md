@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [3.1.3] - 2026-07-16
 
 ### Fixed
+- **Complete screensaver images on every display**: With Windows `/s` set to all displays, each monitor now shows a complete, correctly proportioned image instead of a different cropped section of one desktop-wide image.
 - **Fit-to-window zoom past 100%**: In fit-to-window mode you can zoom in beyond actual pixel size again, up to the same 2000% magnification as original-size mode.
 - **Huge tiled zoom OSD**: Fit-to-window zoom percentage for giant tiled images (for example large PSB files) now uses the full document size, so 2000% matches original-size magnification instead of tracking a smaller preview.
 - **True multi-monitor screensaver coverage**: On dual-display Windows PCs, `/s` screensaver mode no longer opens as one borderless window straddling both screens. It now covers the full desktop when set to all displays, or the primary monitor only when that policy is selected.

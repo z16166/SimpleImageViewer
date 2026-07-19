@@ -189,6 +189,70 @@ pub fn virtual_screen_rect() -> Option<ScreenRect> {
     }
 }
 
+/// Physical rectangles for every active monitor in the Windows virtual desktop.
+///
+/// The `/s` host still uses one native window so Windows can reliably dismiss it
+/// on input. Rendering, however, must treat these rectangles as independent
+/// canvases; fitting once to the virtual desktop splits one image across screens.
+pub fn monitor_rects() -> Vec<ScreenRect> {
+    use winapi::shared::minwindef::{BOOL, LPARAM};
+    use winapi::shared::windef::{HDC, HMONITOR, LPRECT, RECT};
+    use winapi::um::winuser::{EnumDisplayMonitors, GetMonitorInfoW, MONITORINFO};
+
+    unsafe extern "system" fn collect_monitor_rect(
+        monitor: HMONITOR,
+        _: HDC,
+        _: LPRECT,
+        data: LPARAM,
+    ) -> BOOL {
+        // `data` is the address of `rects` passed immediately below to
+        // EnumDisplayMonitors and remains valid for the synchronous callback.
+        let Some(rects) = (unsafe { (data as *mut Vec<ScreenRect>).as_mut() }) else {
+            return 0;
+        };
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            rcMonitor: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            rcWork: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            dwFlags: 0,
+        };
+        if unsafe { GetMonitorInfoW(monitor, &mut info) } != 0 {
+            let width = info.rcMonitor.right.saturating_sub(info.rcMonitor.left);
+            let height = info.rcMonitor.bottom.saturating_sub(info.rcMonitor.top);
+            if width > 0 && height > 0 {
+                rects.push(ScreenRect {
+                    x: info.rcMonitor.left,
+                    y: info.rcMonitor.top,
+                    width: width as u32,
+                    height: height as u32,
+                });
+            }
+        }
+        1
+    }
+
+    let mut rects = Vec::new();
+    unsafe {
+        EnumDisplayMonitors(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            Some(collect_monitor_rect),
+            &mut rects as *mut Vec<ScreenRect> as LPARAM,
+        );
+    }
+    rects
+}
+
 /// Full rectangle of the Windows primary monitor in virtual-desktop coordinates.
 pub fn primary_monitor_rect() -> Option<ScreenRect> {
     use winapi::shared::windef::RECT;

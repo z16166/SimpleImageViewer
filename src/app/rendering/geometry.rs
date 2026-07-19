@@ -19,6 +19,9 @@ use crate::app::ScaleMode;
 use crate::app::directory_tree::DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID;
 use eframe::egui::{self, Context, Pos2, Rect, Vec2};
 
+#[cfg(target_os = "windows")]
+use crate::screensaver::windows_register::ScreenRect;
+
 fn clamp_non_empty_canvas_rect(rect: Rect, fallback: Rect) -> Rect {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         fallback
@@ -61,6 +64,33 @@ pub(crate) fn main_window_canvas_rects(
 /// Image paint area within the main window (excludes embedded directory-tree side panel).
 pub(crate) fn main_window_canvas_paint_rect(available: Rect, embedded_panel: Option<Rect>) -> Rect {
     main_window_canvas_rects(available, 0.0, embedded_panel).0
+}
+
+/// Maps a physical Windows monitor rectangle into the logical canvas occupied
+/// by the virtual-desktop-sized `/s` host. Scaling by the virtual desktop is
+/// intentional: a spanning winit window exposes one logical coordinate space,
+/// while monitor coordinates remain physical pixels.
+#[cfg(target_os = "windows")]
+fn virtual_screen_rect_to_canvas_rect(
+    monitor: ScreenRect,
+    virtual_screen: ScreenRect,
+    canvas: Rect,
+) -> Option<Rect> {
+    if !monitor.is_valid() || !virtual_screen.is_valid() || canvas.is_negative() {
+        return None;
+    }
+    let scale_x = canvas.width() / virtual_screen.width as f32;
+    let scale_y = canvas.height() / virtual_screen.height as f32;
+    let min = Pos2::new(
+        canvas.left() + (monitor.x - virtual_screen.x) as f32 * scale_x,
+        canvas.top() + (monitor.y - virtual_screen.y) as f32 * scale_y,
+    );
+    let max = Pos2::new(
+        min.x + monitor.width as f32 * scale_x,
+        min.y + monitor.height as f32 * scale_y,
+    );
+    let mapped = Rect::from_min_max(min, max).intersect(canvas);
+    (mapped.width() > 0.0 && mapped.height() > 0.0).then_some(mapped)
 }
 
 /// Pan offset update for zoom-about-point; `canvas_rect` must match [`ImageViewerApp::compute_display_rect`].
@@ -166,6 +196,28 @@ pub(crate) fn max_zoom_factor_to_reach_physical_cap(fit_scale: f32, pixels_per_p
 }
 
 impl ImageViewerApp {
+    /// Independent image-fit canvases for Windows `/s --display=all`.
+    ///
+    /// A single native window covers the virtual desktop, but each monitor must
+    /// receive a complete image rather than one section of a virtual-wide fit.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn screensaver_monitor_canvas_rects(&self, canvas: Rect) -> Option<Vec<Rect>> {
+        if !self.run_mode.is_screensaver_run()
+            || self.screensaver_settings.display
+                != crate::screensaver::ScreensaverDisplayPolicy::All
+        {
+            return None;
+        }
+        let virtual_screen = crate::screensaver::windows_register::virtual_screen_rect()?;
+        let rects: Vec<_> = crate::screensaver::windows_register::monitor_rects()
+            .into_iter()
+            .filter_map(|monitor| {
+                virtual_screen_rect_to_canvas_rect(monitor, virtual_screen, canvas)
+            })
+            .collect();
+        (rects.len() > 1).then_some(rects)
+    }
+
     /// Calculate current absolute display scale relative to image pixels (logical scale).
     pub(crate) fn calculate_effective_scale(&self, img_size: Vec2, screen_rect: Rect) -> f32 {
         match self.settings.scale_mode {
@@ -386,6 +438,48 @@ mod tests {
         let content = Rect::from_min_max(Pos2::ZERO, Pos2::new(400.0, 800.0));
         let panel = Rect::from_min_max(Pos2::ZERO, Pos2::new(500.0, 800.0));
         assert_eq!(main_window_canvas_paint_rect(content, Some(panel)), content);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn virtual_monitor_rects_map_to_independent_canvas_regions() {
+        let virtual_screen = ScreenRect {
+            x: -1920,
+            y: 0,
+            width: 3840,
+            height: 1080,
+        };
+        let canvas = Rect::from_min_max(Pos2::ZERO, Pos2::new(1920.0, 540.0));
+        let left = virtual_screen_rect_to_canvas_rect(
+            ScreenRect {
+                x: -1920,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            virtual_screen,
+            canvas,
+        )
+        .expect("left monitor maps into canvas");
+        let right = virtual_screen_rect_to_canvas_rect(
+            ScreenRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            virtual_screen,
+            canvas,
+        )
+        .expect("right monitor maps into canvas");
+        assert_eq!(
+            left,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(960.0, 540.0))
+        );
+        assert_eq!(
+            right,
+            Rect::from_min_max(Pos2::new(960.0, 0.0), Pos2::new(1920.0, 540.0))
+        );
     }
 
     #[test]

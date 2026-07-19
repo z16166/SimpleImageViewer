@@ -63,6 +63,37 @@ impl ImageViewerApp {
             (tm.full_width, tm.full_height)
         };
         let img_size = Vec2::new(full_width as f32, full_height as f32);
+
+        // The tiled renderer normally uses the whole virtual-desktop canvas to
+        // select visible tiles. In `/s --display=all` that would still split a
+        // single image between monitors, so use the already-decoded preview as
+        // one complete, independently fitted image per display.
+        #[cfg(target_os = "windows")]
+        if let Some(monitors) = self.screensaver_monitor_canvas_rects(screen_rect)
+            && let Some(preview) = self
+                .tile_manager
+                .as_ref()
+                .and_then(|manager| manager.preview_texture.as_ref())
+        {
+            for monitor in monitors {
+                let layout = self.compute_plane_layout(img_size, monitor);
+                draw_plane(
+                    ui,
+                    monitor,
+                    crate::app::rendering::geometry::unrotated_draw_rect_for_display(
+                        layout.dest,
+                        layout.rotation_steps,
+                    ),
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    &layout,
+                    PlaneDrawSource::SdrTexture {
+                        texture_id: preview.id(),
+                        color: Color32::WHITE,
+                    },
+                );
+            }
+            return;
+        }
         let layout = self.compute_plane_layout(img_size, screen_rect);
         let rotated_img_size = layout.rotated_image_size;
         let dest = layout.dest;

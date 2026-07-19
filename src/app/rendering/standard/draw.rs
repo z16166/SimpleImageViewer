@@ -161,6 +161,29 @@ impl ImageViewerApp {
             Vec2::splat(1.0)
         };
 
+        // `/s` uses one Win32 window across the virtual desktop. Fit the same
+        // texture inside every physical monitor sub-canvas so no display shows
+        // only a cropped section of the slideshow image.
+        #[cfg(target_os = "windows")]
+        if let Some(monitors) = self.screensaver_monitor_canvas_rects(screen_rect) {
+            let Some(texture) = texture.as_ref() else {
+                return;
+            };
+            for monitor in monitors {
+                let layout = self.compute_plane_layout(img_size, monitor);
+                draw_sdr_texture_plane(
+                    ui,
+                    monitor,
+                    texture.id(),
+                    layout.unrotated_dest,
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                    &layout,
+                );
+            }
+            return;
+        }
+
         if canvas_resp.dragged() && !self.is_pixel_region_selection_active(ui.ctx()) {
             self.pan_offset += canvas_resp.drag_delta();
             self.invalidate_tile_requests_for_view_change();
