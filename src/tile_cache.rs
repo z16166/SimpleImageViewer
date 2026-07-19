@@ -130,10 +130,15 @@ pub fn resolve_tiled_plane_side_limit(preferred: Option<u32>, device_max: u32) -
     }
 }
 
-/// Round `value` to the nearest multiple of `step`, then clamp to the legal range.
+/// Clamp into the legal range, then round to the nearest multiple of `step`.
+///
+/// Clamp runs first so `saturating_add(step / 2)` cannot saturate near `u32::MAX`
+/// before division; a final clamp covers edge cases where rounding overshoots
+/// a non-multiple `device_max`.
 pub fn quantize_tiled_plane_side_limit(value: u32, device_max: u32, step: u32) -> u32 {
     let step = step.max(1);
-    let rounded = value
+    let clamped = clamp_tiled_plane_side_limit(value, device_max);
+    let rounded = clamped
         .saturating_add(step / 2)
         .saturating_div(step)
         .saturating_mul(step);

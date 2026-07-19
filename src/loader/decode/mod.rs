@@ -697,17 +697,18 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             if let Some(first) = frames.first() {
                 let width = first.width;
                 let height = first.height;
-                let max_side = width.max(height);
-                let limit = crate::tile_cache::get_max_texture_side();
 
                 let total_bytes: usize = frames.iter().fold(0usize, |acc, f| {
                     acc.checked_add(f.rgba().len()).unwrap_or(usize::MAX)
                 });
                 let mb = total_bytes as f64 / (BYTES_PER_MB as f64);
 
-                if max_side > limit {
+                // Same tiled-routing policy as still images (side A / pixels A²).
+                // Runtime A is always <= device max_texture_dimension_2d, so this
+                // also covers hard GPU upload limits.
+                if crate::tile_cache::image_requires_tiled_plane(width, height) {
                     log::warn!(
-                        "[{}] Animated image ({}x{}) exceeds GPU limits. Falling back to tiled static mode.",
+                        "[{}] Animated image ({}x{}) exceeds tiled side/pixel limit. Falling back to tiled static mode.",
                         file_name,
                         width,
                         height
@@ -736,8 +737,6 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
             if let Some(first) = frames.first() {
                 let width = first.width();
                 let height = first.height();
-                let max_side = width.max(height);
-                let limit = crate::tile_cache::get_max_texture_side();
 
                 let total_bytes: usize = frames.iter().fold(0usize, |acc, f| {
                     let frame_bytes = f
@@ -750,9 +749,9 @@ pub(crate) fn load_image_file(request: ImageLoadRequest<'_>) -> LoadResult {
                 });
                 let mb = total_bytes as f64 / (BYTES_PER_MB as f64);
 
-                if max_side > limit {
+                if crate::tile_cache::image_requires_tiled_plane(width, height) {
                     log::warn!(
-                        "[{}] HDR animated image ({}x{}) exceeds GPU limits. Using first-frame SDR fallback.",
+                        "[{}] HDR animated image ({}x{}) exceeds tiled side/pixel limit. Using first-frame SDR fallback.",
                         file_name,
                         width,
                         height

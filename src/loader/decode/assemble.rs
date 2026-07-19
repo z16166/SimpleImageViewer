@@ -84,6 +84,9 @@ pub(crate) fn make_hdr_image_data_for_limit(
     let tiled_limit = crate::tile_cache::get_tiled_threshold();
     let max_side = hdr.width.max(hdr.height);
 
+    // Not `image_requires_tiled_plane`: the side gate here is the caller-supplied
+    // `max_texture_side` (e.g. HDR callback / test limit), which may differ from the
+    // global Display tiled-routing policy `A`. Pixel gate still uses the global A².
     if pixel_count > tiled_limit || max_side > max_texture_side {
         log::info!(
             "[Loader] HDR image {}x{} exceeds tiled side limit ({}) or threshold ({:.1} MP). Using SDR tiled fallback.",
