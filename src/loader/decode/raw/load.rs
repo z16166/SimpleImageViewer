@@ -442,7 +442,6 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
                 width,
                 height,
                 area,
-                threshold,
                 refine_tx,
                 final_lr_flip,
                 hdr_target_capacity,

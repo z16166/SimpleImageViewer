@@ -121,14 +121,15 @@ pub(super) fn draw_viewing_tab(
                     device_max,
                     TILED_PLANE_SIDE_STEP,
                 );
-                // At device max, store None so the setting keeps following the GPU/API.
-                let new_setting = if effective >= device_max {
-                    None
-                } else {
-                    Some(effective)
-                };
-                if new_setting != app.settings.tiled_plane_side_limit {
-                    app.settings.tiled_plane_side_limit = new_setting;
+                // Compare against the resolved value, not the raw Option, so a stored
+                // preference above device_max is not rewritten on a no-op commit.
+                if effective != resolved {
+                    // At device max, store None so the setting keeps following the GPU/API.
+                    app.settings.tiled_plane_side_limit = if effective >= device_max {
+                        None
+                    } else {
+                        Some(effective)
+                    };
                     crate::tile_cache::apply_tiled_plane_side_limit(effective);
                     app.reload_current();
                     app.queue_save();

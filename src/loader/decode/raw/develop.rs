@@ -54,7 +54,6 @@ pub(crate) struct FullResolutionRawDevelopRequest<'a> {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) area: u64,
-    pub(crate) threshold: u64,
     pub(crate) refine_tx: Sender<RefinementRequest>,
     pub(crate) final_lr_flip: i32,
     pub(crate) hdr_target_capacity: f32,
@@ -72,7 +71,6 @@ pub(crate) fn develop_full_resolution(
         width,
         height,
         area,
-        threshold,
         refine_tx,
         final_lr_flip,
         hdr_target_capacity,
@@ -80,10 +78,9 @@ pub(crate) fn develop_full_resolution(
         osd_ctx,
         cancel,
     } = request;
-    if area < threshold
-        && width <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
-        && height <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
-    {
+    // Same tiled-routing predicate as other loaders: static develop when
+    // width/height <= A and pixels <= A² (strict greater-than triggers tiling).
+    if !crate::tile_cache::image_requires_tiled_plane(width, height) {
         log::info!(
             "[Loader] RAW {}x{} ({:.1} MP) — full develop (no embedded preview).",
             width,

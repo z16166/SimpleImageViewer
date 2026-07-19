@@ -53,7 +53,7 @@ impl ImageViewerApp {
 
     pub fn new(cc: &eframe::CreationContext<'_>, init: ImageViewerInit) -> Self {
         let ImageViewerInit {
-            mut settings,
+            settings,
             initial_image,
             ipc_rx,
             requested_target_format,
@@ -307,16 +307,12 @@ impl ImageViewerApp {
         // Apply hardware budgets to global caches
         crate::tile_cache::set_max_tiles_base(tier.gpu_cache_tiles());
         // Tiled-routing policy: None follows device max_texture_dimension_2d.
+        // Clamp for runtime only -- do not rewrite the persisted preference in memory
+        // (a later unrelated queue_save would otherwise permanently shrink a higher saved A).
         let effective_tiled_side = crate::tile_cache::resolve_tiled_plane_side_limit(
             settings.tiled_plane_side_limit,
             max_texture_side,
         );
-        // Keep None as "auto"; do not materialize device_max into the saved setting.
-        if let Some(preferred) = settings.tiled_plane_side_limit {
-            settings.tiled_plane_side_limit = Some(
-                crate::tile_cache::clamp_tiled_plane_side_limit(preferred, max_texture_side),
-            );
-        }
         crate::tile_cache::apply_tiled_plane_side_limit(effective_tiled_side);
         log::info!(
             "Tiled plane side limit: {} ({} , pixel threshold {:.1} MP, device max {})",
