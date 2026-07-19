@@ -73,7 +73,9 @@ pub fn set_max_tiles_base(max_tiles: usize) {
 }
 
 /// Fallback single-side tiled-routing limit before the GPU adapter is known.
-/// Runtime default follows `max_texture_dimension_2d` once the device is available.
+/// Runtime default follows `max_texture_dimension_2d` once the device is available
+/// (`apply_tiled_plane_side_limit` shortly after startup). Until then the derived
+/// pixel gate is `8192²` (~67.1 MP), slightly above the old hard-coded 64 MP constant.
 pub const FALLBACK_TILED_PLANE_SIDE_LIMIT: u32 = 8192;
 /// Minimum configurable single-side tiled-routing limit.
 pub const MIN_TILED_PLANE_SIDE_LIMIT: u32 = 1024;

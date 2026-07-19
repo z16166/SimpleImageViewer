@@ -62,10 +62,12 @@ pub(crate) fn make_hdr_image_data(
     make_hdr_image_data_for_limit(hdr, fallback, crate::tile_cache::get_tiled_side_limit())
 }
 
+/// Build HDR `ImageData` using a caller-supplied tiled side limit (not necessarily
+/// the global Display policy `A`, and not the hardware `get_max_texture_side()`).
 pub(crate) fn make_hdr_image_data_for_limit(
     hdr: crate::hdr::types::HdrImageBuffer,
     fallback: DecodedImage,
-    max_texture_side: u32,
+    tiled_side_limit: u32,
 ) -> ImageData {
     let Some(pixel_count) = (hdr.width as u64).checked_mul(hdr.height as u64) else {
         log::warn!(
@@ -85,14 +87,14 @@ pub(crate) fn make_hdr_image_data_for_limit(
     let max_side = hdr.width.max(hdr.height);
 
     // Not `image_requires_tiled_plane`: the side gate here is the caller-supplied
-    // `max_texture_side` (e.g. HDR callback / test limit), which may differ from the
-    // global Display tiled-routing policy `A`. Pixel gate still uses the global A².
-    if pixel_count > tiled_limit || max_side > max_texture_side {
+    // `tiled_side_limit` (e.g. test override), which may differ from the global
+    // Display tiled-routing policy `A`. Pixel gate still uses the global A².
+    if pixel_count > tiled_limit || max_side > tiled_side_limit {
         log::info!(
             "[Loader] HDR image {}x{} exceeds tiled side limit ({}) or threshold ({:.1} MP). Using SDR tiled fallback.",
             hdr.width,
             hdr.height,
-            max_texture_side,
+            tiled_side_limit,
             tiled_limit as f64 / 1_000_000.0
         );
         let fallback_source = Arc::new(MemoryImageSource::new_with_hdr_sdr_fallback(
