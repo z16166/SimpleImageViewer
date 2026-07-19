@@ -258,8 +258,7 @@ fn settings_tab_selected_fill(palette: &crate::theme::ThemePalette) -> Color32 {
 }
 
 pub(super) enum SliderTrackMode {
-    /// Caller-specified track width (e.g. grid rows that size the slider outside `add_slider`).
-    #[allow(dead_code)]
+    /// Caller-specified track width (e.g. compact controls that must not span the pane).
     Fixed(f32),
     Elastic,
 }

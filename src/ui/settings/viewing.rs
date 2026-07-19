@@ -21,11 +21,11 @@ use eframe::egui::{self, Vec2};
 use rust_i18n::t;
 
 const TILED_PLANE_SIDE_STEP: u32 = 512;
-
-/// Persist slider/drag edits after the gesture ends (same semantics as slideshow).
-fn slider_or_drag_committed(resp: &egui::Response) -> bool {
-    resp.drag_stopped() || (resp.changed() && !resp.dragged())
-}
+const TILED_PLANE_SIDE_SLIDER_VALUE_WIDTH: f32 = 72.0;
+/// Keep the track compact so opening the settings window is less likely to
+/// click-through onto the far end of a full-width slider (device max).
+const TILED_PLANE_SIDE_SLIDER_TRACK_WIDTH: f32 = 160.0;
+const TILED_PLANE_SIDE_DRAFT_ID: &str = "tiled_plane_side_limit_slider_draft";
 
 pub(super) fn draw_viewing_tab(
     app: &mut ImageViewerApp,
@@ -84,34 +84,56 @@ pub(super) fn draw_viewing_tab(
         {
             let device_max = crate::tile_cache::get_max_texture_side();
             let min_side = crate::tile_cache::MIN_TILED_PLANE_SIDE_LIMIT.min(device_max);
+            let resolved = crate::tile_cache::resolve_tiled_plane_side_limit(
+                app.settings.tiled_plane_side_limit,
+                device_max,
+            );
+            let draft_id = egui::Id::new(TILED_PLANE_SIDE_DRAFT_ID);
+            let mut current = ui
+                .ctx()
+                .data(|data| data.get_temp::<u32>(draft_id))
+                .unwrap_or(resolved);
             let side_resp = ui
                 .horizontal(|ui| {
                     ui.label(t!("label.tiled_plane_side_limit"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut app.settings.tiled_plane_side_limit)
-                                .range(min_side..=device_max)
-                                .speed(TILED_PLANE_SIDE_STEP as f64)
+                        super::add_slider(
+                            ui,
+                            TILED_PLANE_SIDE_SLIDER_VALUE_WIDTH,
+                            egui::Slider::new(&mut current, min_side..=device_max)
+                                .step_by(TILED_PLANE_SIDE_STEP as f64)
+                                .clamping(egui::SliderClamping::Edits)
                                 .suffix(" px"),
+                            super::SliderTrackMode::Fixed(TILED_PLANE_SIDE_SLIDER_TRACK_WIDTH),
                         )
                     })
                     .inner
                 })
                 .inner
                 .on_hover_text(t!("hint.tiled_plane_side_limit"));
-            if slider_or_drag_committed(&side_resp) {
+            if side_resp.dragged() {
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(draft_id, current));
+            } else if side_resp.drag_stopped() || (side_resp.changed() && !side_resp.dragged()) {
+                ui.ctx().data_mut(|data| data.remove::<u32>(draft_id));
                 let effective = crate::tile_cache::quantize_tiled_plane_side_limit(
-                    app.settings.tiled_plane_side_limit,
+                    current,
                     device_max,
                     TILED_PLANE_SIDE_STEP,
                 );
-                if effective != app.settings.tiled_plane_side_limit
-                    || effective != crate::tile_cache::get_tiled_side_limit()
-                {
-                    app.settings.tiled_plane_side_limit = effective;
+                // At device max, store None so the setting keeps following the GPU/API.
+                let new_setting = if effective >= device_max {
+                    None
+                } else {
+                    Some(effective)
+                };
+                if new_setting != app.settings.tiled_plane_side_limit {
+                    app.settings.tiled_plane_side_limit = new_setting;
                     crate::tile_cache::apply_tiled_plane_side_limit(effective);
                     app.reload_current();
                     app.queue_save();
+                } else if effective != crate::tile_cache::get_tiled_side_limit() {
+                    crate::tile_cache::apply_tiled_plane_side_limit(effective);
                 }
             }
         }

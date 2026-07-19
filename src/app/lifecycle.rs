@@ -306,17 +306,26 @@ impl ImageViewerApp {
 
         // Apply hardware budgets to global caches
         crate::tile_cache::set_max_tiles_base(tier.gpu_cache_tiles());
-        // Tiled-routing policy comes from settings (side limit A, pixel gate A²),
-        // clamped to the device texture capability -- not HardwareTier.
-        let effective_tiled_side = crate::tile_cache::clamp_tiled_plane_side_limit(
+        // Tiled-routing policy: None follows device max_texture_dimension_2d.
+        let effective_tiled_side = crate::tile_cache::resolve_tiled_plane_side_limit(
             settings.tiled_plane_side_limit,
             max_texture_side,
         );
-        settings.tiled_plane_side_limit = effective_tiled_side;
+        // Keep None as "auto"; do not materialize device_max into the saved setting.
+        if let Some(preferred) = settings.tiled_plane_side_limit {
+            settings.tiled_plane_side_limit = Some(
+                crate::tile_cache::clamp_tiled_plane_side_limit(preferred, max_texture_side),
+            );
+        }
         crate::tile_cache::apply_tiled_plane_side_limit(effective_tiled_side);
         log::info!(
-            "Tiled plane side limit: {} (pixel threshold {} MP, device max {})",
+            "Tiled plane side limit: {} ({} , pixel threshold {:.1} MP, device max {})",
             effective_tiled_side,
+            if settings.tiled_plane_side_limit.is_none() {
+                "auto"
+            } else {
+                "manual"
+            },
             (effective_tiled_side as u64 * effective_tiled_side as u64) as f64 / 1_000_000.0,
             max_texture_side
         );

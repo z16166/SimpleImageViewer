@@ -474,10 +474,11 @@ pub struct Settings {
     pub last_copy_cut_dir: Option<PathBuf>,
     #[serde(default)]
     pub minimize_to_tray_on_close: bool,
-    /// Single-side limit `A` for tiled-vs-static routing (default 8192).
+    /// Single-side limit `A` for tiled-vs-static routing.
+    /// `None` follows the current device `max_texture_dimension_2d`.
     /// Tiles when width/height `> A` or total pixels `> A²`.
-    #[serde(default = "default_tiled_plane_side_limit")]
-    pub tiled_plane_side_limit: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiled_plane_side_limit: Option<u32>,
 }
 
 fn default_interval() -> f32 {
@@ -520,9 +521,6 @@ fn default_raw_demosaic_mode() -> RawDemosaicMode {
 }
 fn default_raw_demosaic_method() -> RawDemosaicMethod {
     RawDemosaicMethod::Ppg
-}
-fn default_tiled_plane_side_limit() -> u32 {
-    crate::tile_cache::DEFAULT_TILED_PLANE_SIDE_LIMIT
 }
 
 impl Default for Settings {
@@ -594,7 +592,7 @@ impl Default for Settings {
             directory_tree_list_preview_size: DirectoryTreeListPreviewSize::Small,
             last_copy_cut_dir: None,
             minimize_to_tray_on_close: false,
-            tiled_plane_side_limit: default_tiled_plane_side_limit(),
+            tiled_plane_side_limit: None,
         };
         settings.normalize_browse_directory_fields();
         settings
@@ -1053,16 +1051,18 @@ mod tests {
     }
 
     #[test]
-    fn default_tiled_plane_side_limit_is_8192() {
+    fn default_tiled_plane_side_limit_follows_device() {
         let settings = Settings::default();
-        assert_eq!(
-            settings.tiled_plane_side_limit,
-            crate::tile_cache::DEFAULT_TILED_PLANE_SIDE_LIMIT
-        );
+        assert_eq!(settings.tiled_plane_side_limit, None);
         let from_empty: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
+        assert_eq!(from_empty.tiled_plane_side_limit, None);
         assert_eq!(
-            from_empty.tiled_plane_side_limit,
-            crate::tile_cache::DEFAULT_TILED_PLANE_SIDE_LIMIT
+            crate::tile_cache::resolve_tiled_plane_side_limit(None, 16384),
+            16384
+        );
+        assert_eq!(
+            crate::tile_cache::resolve_tiled_plane_side_limit(Some(8192), 16384),
+            8192
         );
     }
 

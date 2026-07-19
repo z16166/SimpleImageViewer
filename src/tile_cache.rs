@@ -70,18 +70,19 @@ pub fn set_max_tiles_base(max_tiles: usize) {
     }
 }
 
-/// Default single-side limit for the tiled-vs-static routing policy.
-pub const DEFAULT_TILED_PLANE_SIDE_LIMIT: u32 = 8192;
+/// Fallback single-side tiled-routing limit before the GPU adapter is known.
+/// Runtime default follows `max_texture_dimension_2d` once the device is available.
+pub const FALLBACK_TILED_PLANE_SIDE_LIMIT: u32 = 8192;
 /// Minimum configurable single-side tiled-routing limit.
 pub const MIN_TILED_PLANE_SIDE_LIMIT: u32 = 1024;
 
 /// Pixel count threshold above which tiled mode is activated (`A²` for side limit `A`).
 pub static TILED_THRESHOLD: AtomicU64 = AtomicU64::new(
-    (DEFAULT_TILED_PLANE_SIDE_LIMIT as u64) * (DEFAULT_TILED_PLANE_SIDE_LIMIT as u64),
+    (FALLBACK_TILED_PLANE_SIDE_LIMIT as u64) * (FALLBACK_TILED_PLANE_SIDE_LIMIT as u64),
 );
 
 /// Configurable single-side tiled-routing limit (`A`). Independent of GPU upload capability.
-static TILED_SIDE_LIMIT: AtomicU32 = AtomicU32::new(DEFAULT_TILED_PLANE_SIDE_LIMIT);
+static TILED_SIDE_LIMIT: AtomicU32 = AtomicU32::new(FALLBACK_TILED_PLANE_SIDE_LIMIT);
 
 /// Get the current tiled-mode pixel threshold (`A²`).
 pub fn get_tiled_threshold() -> u64 {
@@ -98,6 +99,16 @@ pub fn clamp_tiled_plane_side_limit(value: u32, device_max: u32) -> u32 {
     let upper = device_max.max(1);
     let lower = MIN_TILED_PLANE_SIDE_LIMIT.min(upper);
     value.clamp(lower, upper)
+}
+
+/// Resolve the effective side limit `A`.
+///
+/// `None` means follow the current device `max_texture_dimension_2d`.
+pub fn resolve_tiled_plane_side_limit(preferred: Option<u32>, device_max: u32) -> u32 {
+    match preferred {
+        Some(value) => clamp_tiled_plane_side_limit(value, device_max),
+        None => clamp_tiled_plane_side_limit(device_max, device_max),
+    }
 }
 
 /// Round `value` to the nearest multiple of `step`, then clamp to the legal range.
@@ -158,6 +169,13 @@ mod tiled_plane_limit_tests {
         assert_eq!(clamp_tiled_plane_side_limit(512, 16384), 1024);
         assert_eq!(clamp_tiled_plane_side_limit(4096, 4096), 4096);
         assert_eq!(clamp_tiled_plane_side_limit(512, 512), 512);
+    }
+
+    #[test]
+    fn resolve_none_follows_device_max() {
+        assert_eq!(resolve_tiled_plane_side_limit(None, 16384), 16384);
+        assert_eq!(resolve_tiled_plane_side_limit(None, 8192), 8192);
+        assert_eq!(resolve_tiled_plane_side_limit(Some(4096), 16384), 4096);
     }
 
     #[test]
