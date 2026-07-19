@@ -69,7 +69,10 @@ pub(crate) fn make_hdr_image_data_for_limit(
     fallback: DecodedImage,
     tiled_side_limit: u32,
 ) -> ImageData {
-    let Some(pixel_count) = (hdr.width as u64).checked_mul(hdr.height as u64) else {
+    if (hdr.width as u64)
+        .checked_mul(hdr.height as u64)
+        .is_none()
+    {
         log::warn!(
             "[Loader] HDR image {}x{} dimensions overflow, forcing SDR tiled fallback.",
             hdr.width,
@@ -82,14 +85,15 @@ pub(crate) fn make_hdr_image_data_for_limit(
             true,
         ));
         return ImageData::Tiled(fallback_source);
-    };
-    let tiled_limit = crate::tile_cache::get_tiled_threshold();
-    let max_side = hdr.width.max(hdr.height);
+    }
 
-    // Not `image_requires_tiled_plane`: the side gate here is the caller-supplied
-    // `tiled_side_limit` (e.g. test override), which may differ from the global
-    // Display tiled-routing policy `A`. Pixel gate still uses the global A².
-    if pixel_count > tiled_limit || max_side > tiled_side_limit {
+    // Caller-supplied side (global A or a test override); same predicate as other loaders.
+    if crate::tile_cache::image_requires_tiled_plane_with_side(
+        hdr.width,
+        hdr.height,
+        tiled_side_limit,
+    ) {
+        let tiled_limit = (tiled_side_limit as u64).saturating_mul(tiled_side_limit as u64);
         log::info!(
             "[Loader] HDR image {}x{} exceeds tiled side limit ({}) or threshold ({:.1} MP). Using SDR tiled fallback.",
             hdr.width,

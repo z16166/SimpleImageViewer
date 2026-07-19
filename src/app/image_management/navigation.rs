@@ -109,8 +109,9 @@ impl ImageViewerApp {
     }
 
     /// Drop gain-map HDR caches in the preload window and reload the current image after
-    /// [`crate::settings::HdrGainMapSdrDisplayMode`] changes. Unlike [`Self::reload_current`],
-    /// this applies to HEIF/AVIF/JPEG-R gain-map files, not only RAW.
+    /// [`crate::settings::HdrGainMapSdrDisplayMode`] changes. Unlike
+    /// [`Self::reload_after_raw_display_settings_change`], this applies to HEIF/AVIF/JPEG-R
+    /// gain-map files, not only RAW.
     pub(crate) fn reload_after_hdr_gain_map_sdr_display_change(&mut self) {
         if self.image_files.is_empty() {
             return;
@@ -257,7 +258,12 @@ impl ImageViewerApp {
         }
     }
 
-    pub(crate) fn reload_current(&mut self) {
+    /// Invalidate RAW caches and reload after Display RAW settings change
+    /// (`raw_high_quality` / demosaic mode). No-op when the folder has no RAW files.
+    ///
+    /// Not a general "reload current image" helper -- non-RAW formats need a dedicated
+    /// path (e.g. [`Self::reload_after_tiled_plane_side_limit_change`]).
+    pub(crate) fn reload_after_raw_display_settings_change(&mut self) {
         if self.image_files.is_empty() {
             return;
         }
@@ -292,10 +298,75 @@ impl ImageViewerApp {
         self.schedule_preloads(true);
     }
 
+    /// Re-decode the current image (and evict the preload window) after the Display
+    /// tiled-routing side limit changes. Unlike
+    /// [`Self::reload_after_raw_display_settings_change`] (RAW-only), this covers
+    /// JPEG/PNG/HEIF/PSD and every other format whose Static vs Tiled choice depends
+    /// on policy `A`.
+    pub(crate) fn reload_after_tiled_plane_side_limit_change(&mut self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+
+        self.invalidate_decode_profile_epoch();
+        self.loader.cancel_all();
+
+        let current = self.current_index;
+        let count = self.image_files.len();
+        for idx in 0..count {
+            if idx != current
+                && !prefetch_window_contains(
+                    current,
+                    count,
+                    idx,
+                    self.prefetch_window_max_distance,
+                )
+            {
+                continue;
+            }
+            self.texture_cache.remove(idx);
+            self.clear_installed_display_mode(idx);
+            self.remove_hdr_image_index(idx);
+            self.prefetched_tiles.remove(&idx);
+            self.deferred_sdr_uploads.remove(&idx);
+            self.animation_cache.remove(&idx);
+            self.pending_anim_frames.remove(&idx);
+            crate::tile_cache::PIXEL_CACHE.write().remove_image(idx);
+            if idx == current {
+                self.tile_manager = None;
+                self.set_current_image_resolution(None);
+                self.animation = None;
+                self.prev_texture = None;
+                self.prev_hdr_image = None;
+                self.prev_transition_rect = None;
+                self.transition_start = None;
+                self.pending_transition_target = None;
+                self.pixel_data_source = None;
+            }
+        }
+
+        crate::preload_debug!(
+            "[PreloadDebug] tiled_side_limit_reload A={} current_idx={}",
+            crate::tile_cache::get_tiled_side_limit(),
+            current,
+        );
+
+        self.loader.request_load(
+            current,
+            self.image_files[current].clone(),
+            self.settings.raw_high_quality,
+            self.raw_demosaic_mode_for_index(current),
+            self.settings.psd_hidden_layer_strategy,
+        );
+        self.schedule_preloads(true);
+        self.wake_root_for_logic();
+    }
+
     /// Re-decode PSD/PSB after [`Settings::psd_hidden_layer_strategy`] changes.
     ///
-    /// Unlike [`Self::reload_current`] (RAW-only), this clears failed-load marks so a previously
-    /// unopenable PSD can be retried without restarting the process.
+    /// Unlike [`Self::reload_after_raw_display_settings_change`] (RAW-only), this clears
+    /// failed-load marks so a previously unopenable PSD can be retried without restarting
+    /// the process.
     pub(crate) fn reload_after_psd_hidden_layer_strategy_change(&mut self) {
         if self.image_files.is_empty() {
             return;

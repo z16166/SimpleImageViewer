@@ -130,7 +130,7 @@ Click a folder in the tree to give it keyboard focus. Click the image list to mo
 | Setting | Description |
 |---|---|
 | **Library** | Pick image folder with **Pick** or `Ctrl + O` (main window), recursive scan toggle, preload toggle, RAW+JPEG and PSD/PSB+JPEG pair handling (show both / skip primary / skip JPG-JPEG), keep the saved gallery folder unchanged when opening an image by double-click, and resume viewing toggle |
-| **Display** | Full-screen toggle, scale-mode selector, OSD info visibility, **High-Quality RAW preview** toggle, and **Demosaicing Mode (CPU / GPU)** when HQ RAW is enabled |
+| **Display** | Full-screen toggle, scale-mode selector, OSD info visibility, tiled-rendering threshold, **High-Quality RAW preview** toggle, and **Demosaicing Mode (CPU / GPU)** when HQ RAW is enabled |
 | **Slideshow** | Enable auto-advance to next image, set interval, and toggle loop or random-order playback |
 | **Background Music** | Enable music, pick file or folder, navigation controls (⏮ ⏪ ▶/⏸ ⏩ ⏭), and adjust volume |
 | **Font & UI** | Choose system font family, interface size, and UI **Theme** (Dark/Light/System) |

@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - **Configurable tiled rendering threshold**: In Display settings you can set when large images switch to tiled rendering. By default it follows your GPU/API texture size limit; lower it if you want tiling to start earlier.
 
+### Fixed
+- **Tiled threshold applies immediately**: Changing the Display tiled-rendering threshold reloads the current image for every format, not only RAW folders.
+
 ## [3.1.3] - 2026-07-16
 
 ### Fixed

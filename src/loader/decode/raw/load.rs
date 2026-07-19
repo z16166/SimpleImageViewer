@@ -398,7 +398,6 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
     let area = (width as u64)
         .checked_mul(height as u64)
         .ok_or_else(|| format!("RAW developed dimensions overflow: {width}x{height}"))?;
-    let threshold = crate::tile_cache::get_tiled_threshold();
     let hq_refine_requires_tiling = crate::tile_cache::image_requires_tiled_plane(width, height);
     let osd_ctx = RawOsdContext::new(
         (processor.raw_width(), processor.raw_height()),
@@ -458,7 +457,7 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
     // 3. final_lr_flip must be 0 (GPU demosaic does not support orientation flip; rotation should be handled in display shader).
     // 4. The raw processor must report compatibility with the GPU demosaic Bayer pattern.
     // 5. Image dimensions must not exceed the maximum GPU texture dimension (GPU_DEMOSAIC_MAX_DIMENSION) to prevent rendering failures.
-    // 6. Image area must be under the threshold to avoid exceeding GPU memory budgets.
+    // 6. Image area must stay under GPU_DEMOSAIC_MAX_PIXELS (fixed ~64 MP; not Display tiled A²).
     // 7. Device/backend must support RAW demosaic compute (set at app startup).
     let use_gpu_demosaic = high_quality
         && raw_demosaic_mode == crate::settings::RawDemosaicMode::Gpu
@@ -467,7 +466,7 @@ pub(crate) fn load_raw(request: RawLoadRequest<'_>) -> Result<RawLoadOutput, Str
         && processor.is_gpu_demosaic_compatible()
         && width <= GPU_DEMOSAIC_MAX_DIMENSION
         && height <= GPU_DEMOSAIC_MAX_DIMENSION
-        && area < threshold;
+        && area < crate::constants::GPU_DEMOSAIC_MAX_PIXELS;
 
     if high_quality
         && raw_demosaic_mode == crate::settings::RawDemosaicMode::Gpu

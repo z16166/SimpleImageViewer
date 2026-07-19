@@ -26,6 +26,10 @@ pub const HQ_PREVIEW_MONITOR_HEADROOM: f32 = 1.1;
 /// We cap it at 8192 to be safe across different frameworks and platforms.
 pub const ABSOLUTE_MAX_TEXTURE_SIDE: u32 = 8192;
 
+/// Fixed pixel-area cap for GPU RAW demosaic eligibility (~64 MP).
+/// Independent of the Display tiled-routing side limit (`A` / `A²`).
+pub const GPU_DEMOSAIC_MAX_PIXELS: u64 = 64_000_000;
+
 /// Hard ceiling for a single WIC frame side. Larger claims are treated as corrupt headers.
 /// Allows tiled wide/tall images beyond GPU texture side, but bounds DoS from absurd sizes.
 pub const WIC_ABSOLUTE_MAX_SIDE: u32 = ABSOLUTE_MAX_TEXTURE_SIDE * 8;

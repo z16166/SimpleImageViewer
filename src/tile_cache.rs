@@ -160,7 +160,11 @@ pub fn apply_tiled_plane_side_limit(side: u32) {
 /// Uses one loaded `side` so the derived threshold cannot race against a newer side.
 /// Tests may override the pixel threshold independently via [`set_tiled_threshold_override`].
 pub fn image_requires_tiled_plane(width: u32, height: u32) -> bool {
-    let side = get_tiled_side_limit();
+    image_requires_tiled_plane_with_side(width, height, get_tiled_side_limit())
+}
+
+/// Same as [`image_requires_tiled_plane`], but with an explicit side limit (e.g. tests).
+pub fn image_requires_tiled_plane_with_side(width: u32, height: u32, side: u32) -> bool {
     if width > side || height > side {
         return true;
     }

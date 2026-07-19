@@ -131,7 +131,7 @@ pub(super) fn draw_viewing_tab(
                         Some(effective)
                     };
                     crate::tile_cache::apply_tiled_plane_side_limit(effective);
-                    app.reload_current();
+                    app.reload_after_tiled_plane_side_limit_change();
                     app.queue_save();
                 } else if effective != crate::tile_cache::get_tiled_side_limit() {
                     crate::tile_cache::apply_tiled_plane_side_limit(effective);
@@ -222,7 +222,7 @@ pub(super) fn draw_viewing_tab(
         .on_hover_text(t!("hint.raw_high_quality"))
         .changed()
         {
-            app.reload_current();
+            app.reload_after_raw_display_settings_change();
             app.queue_save();
         }
 
@@ -251,7 +251,7 @@ pub(super) fn draw_viewing_tab(
                             );
                         });
                     if old_mode != app.settings.raw_demosaic_mode {
-                        app.reload_current();
+                        app.reload_after_raw_display_settings_change();
                         app.queue_save();
                     }
                 });

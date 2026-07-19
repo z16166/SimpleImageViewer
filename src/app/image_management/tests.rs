@@ -1064,21 +1064,37 @@ fn install_image_error_sets_message_when_current() {
 }
 
 #[test]
-fn reload_current_does_not_reload_psd_only_directory() {
+fn reload_after_raw_display_settings_change_skips_psd_only_directory() {
     let mut app = make_test_app();
     set_test_image_files(&mut app, &["a.psd"]);
     app.current_index = 0;
     app.error_message = Some("load failed".into());
     app.main_loader_failed_indices.insert(0);
 
-    app.reload_current();
+    app.reload_after_raw_display_settings_change();
 
     assert!(
         !app.loader.is_loading(0),
-        "reload_current is RAW-only and must not start a PSD reload"
+        "RAW display settings reload must not start a PSD reload"
     );
     assert!(app.error_message.is_some());
     assert!(app.main_loader_failed_indices.contains(&0));
+}
+
+#[test]
+fn tiled_plane_side_limit_change_reloads_non_raw_current() {
+    let mut app = make_test_app();
+    set_test_image_files(&mut app, &["a.jpg", "b.png"]);
+    app.current_index = 0;
+    app.tile_manager = None;
+    app.pixel_data_source = None;
+
+    app.reload_after_tiled_plane_side_limit_change();
+
+    assert!(
+        app.loader.is_loading(0),
+        "changing tiled side limit must re-request the current non-RAW image"
+    );
 }
 
 #[test]
