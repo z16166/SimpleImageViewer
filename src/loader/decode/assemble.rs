@@ -63,16 +63,14 @@ pub(crate) fn make_hdr_image_data(
 }
 
 /// Build HDR `ImageData` using a caller-supplied tiled side limit (not necessarily
-/// the global Display policy `A`, and not the hardware `get_max_texture_side()`).
+/// the global runtime policy `A` from [`crate::tile_cache::get_tiled_side_limit`],
+/// and not the hardware [`crate::tile_cache::get_max_texture_side`]).
 pub(crate) fn make_hdr_image_data_for_limit(
     hdr: crate::hdr::types::HdrImageBuffer,
     fallback: DecodedImage,
     tiled_side_limit: u32,
 ) -> ImageData {
-    if (hdr.width as u64)
-        .checked_mul(hdr.height as u64)
-        .is_none()
-    {
+    if (hdr.width as u64).checked_mul(hdr.height as u64).is_none() {
         log::warn!(
             "[Loader] HDR image {}x{} dimensions overflow, forcing SDR tiled fallback.",
             hdr.width,

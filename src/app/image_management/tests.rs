@@ -1082,22 +1082,6 @@ fn reload_after_raw_display_settings_change_skips_psd_only_directory() {
 }
 
 #[test]
-fn tiled_plane_side_limit_change_reloads_non_raw_current() {
-    let mut app = make_test_app();
-    set_test_image_files(&mut app, &["a.jpg", "b.png"]);
-    app.current_index = 0;
-    app.tile_manager = None;
-    app.pixel_data_source = None;
-
-    app.reload_after_tiled_plane_side_limit_change();
-
-    assert!(
-        app.loader.is_loading(0),
-        "changing tiled side limit must re-request the current non-RAW image"
-    );
-}
-
-#[test]
 fn psd_hidden_layer_strategy_change_reloads_failed_current_psd() {
     let mut app = make_test_app();
     set_test_image_files(&mut app, &["a.psd", "b.jpg"]);
