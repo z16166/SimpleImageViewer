@@ -67,6 +67,7 @@ fn assert_ultra_hdr_hdr_base_route(hdr: &HdrImageBuffer) {
 
 #[test]
 fn gain_map_corpora_samples_load_as_static_hdr() {
+    let _threshold_lock = lock_tiled_threshold_for_test();
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/gain_map_samples");
     for name in [
         "sample_iso_backward.jpg",
@@ -100,6 +101,7 @@ fn gain_map_corpora_samples_load_as_static_hdr() {
 
 #[test]
 fn paris_exif_orientation_5_jpeg_loads_transposed_dimensions() {
+    let _threshold_lock = lock_tiled_threshold_for_test();
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/paris_exif_orientation_5.jpg");
     if !path.is_file() {
@@ -298,7 +300,6 @@ fn ultra_hdr_original_corpus_loads_as_hdr_image_data() {
 
 #[test]
 fn ultra_hdr_threshold_sized_jpeg_routes_to_file_backed_hdr_tiles() {
-    let _threshold_lock = lock_tiled_threshold_for_test();
     let root = std::env::var_os("SIV_ULTRA_HDR_SAMPLES_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"F:\HDR\Ultra_HDR_Samples"));
@@ -358,6 +359,7 @@ fn ultra_hdr_threshold_sized_jpeg_routes_to_file_backed_hdr_tiles() {
 
 #[test]
 fn generated_8k_gcontainer_routes_to_hdr_tiled_when_present() {
+    let _threshold_lock = lock_tiled_threshold_for_test();
     let path = std::env::var_os("SIV_GENERATED_ULTRA_HDR_8K")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"f:\hdr\ultra_hdr_8192.jpg"));

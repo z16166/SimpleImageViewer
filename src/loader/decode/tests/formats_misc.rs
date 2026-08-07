@@ -104,7 +104,6 @@ fn load_psd_small_decoded_routes_to_static() {
 
 #[test]
 fn load_psd_routes_to_memory_tiled_when_under_low_threshold() {
-    let _lock = lock_tiled_threshold_for_test();
     let _threshold = TiledThresholdOverride::set(1);
     let path = write_temp_psd(&craft_rgb8_raw_psd(4, 2));
     let (data, _osd) = load_psd(
@@ -133,7 +132,6 @@ fn load_psd_routes_to_memory_tiled_when_under_low_threshold() {
 #[test]
 fn load_psb_disk_tiled_keeps_nonblank_flat() {
     // Header over tiled threshold forces PSB disk tiling; non-blank flat must stay tiled.
-    let _lock = lock_tiled_threshold_for_test();
     let _threshold = TiledThresholdOverride::set(1);
     let mut planar = vec![0u8; 4 * 2 * 3];
     planar[0] = 12;
@@ -174,7 +172,6 @@ fn load_psb_disk_tiled_keeps_nonblank_flat() {
 fn load_psb_disk_tiled_blank_flat_degrades_off_blank_tiled() {
     // Layers-only / blank-flat oversized PSB must not stick on blank disk tiling.
     // With no layers and no IR thumb, P2/P3 fail -- that is preferable to forever-blank tiles.
-    let _lock = lock_tiled_threshold_for_test();
     let _threshold = TiledThresholdOverride::set(1);
     let planar = vec![0u8; 4 * 2 * 3];
     let path = write_temp_psd(&craft_rgb8_raw_psb(4, 2, &planar));

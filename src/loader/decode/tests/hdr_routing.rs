@@ -25,11 +25,10 @@ use crate::loader::decode::assemble::make_hdr_image_data_for_limit;
 use crate::loader::decode::hdr_formats::load_hdr;
 use crate::loader::{DecodedImage, ImageData};
 
-use super::support::{TiledThresholdOverride, lock_tiled_threshold_for_test};
+use super::support::TiledThresholdOverride;
 
 #[test]
 fn supported_hdr_image_data_keeps_float_buffer_with_sdr_fallback() {
-    let _threshold_lock = lock_tiled_threshold_for_test();
     let _threshold_override = TiledThresholdOverride::set(u64::MAX);
     let hdr = HdrImageBuffer {
         width: 2,
@@ -77,7 +76,6 @@ fn oversized_hdr_uses_existing_sdr_fallback_routing() {
 
 #[test]
 fn load_hdr_routes_threshold_sized_images_to_tiled_fallback() {
-    let _threshold_lock = lock_tiled_threshold_for_test();
     let path = std::env::temp_dir().join(format!(
         "simple_image_viewer_loader_hdr_route_{}.hdr",
         std::process::id()
@@ -109,7 +107,6 @@ fn load_hdr_routes_threshold_sized_images_to_tiled_fallback() {
 
 #[test]
 fn load_radiance_hdr_routes_small_images_to_float_image_data() {
-    let _threshold_lock = lock_tiled_threshold_for_test();
     let path = std::env::temp_dir().join(format!(
         "simple_image_viewer_loader_hdr_static_route_{}.hdr",
         std::process::id()

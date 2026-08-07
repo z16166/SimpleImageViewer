@@ -23,7 +23,7 @@ use crate::loader::ImageData;
 use crate::loader::decode::detect::load_via_content_detection;
 use crate::loader::decode::hdr_formats::{load_hdr, try_load_disk_backed_exr_hdr};
 
-use super::support::{TiledThresholdOverride, lock_tiled_threshold_for_test};
+use super::support::TiledThresholdOverride;
 
 fn openexr_images_root() -> Option<PathBuf> {
     std::env::var_os("SIV_OPENEXR_IMAGES_DIR")
@@ -115,7 +115,6 @@ fn collect_exr_files(root: &Path, files: &mut Vec<PathBuf>) {
 
 #[test]
 fn gray_ramps_load_with_visible_fallback_pixels() {
-    let _threshold_lock = lock_tiled_threshold_for_test();
     let _threshold_override = TiledThresholdOverride::set(u64::MAX);
     let Some(root) = openexr_images_root() else {
         eprintln!(
