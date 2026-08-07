@@ -19,20 +19,31 @@
 use parking_lot::MutexGuard;
 
 pub(crate) struct TiledThresholdOverride {
-    old_threshold: u64,
+    was_active: bool,
+    old_value: u64,
 }
 
 impl TiledThresholdOverride {
     pub(crate) fn set(value: u64) -> Self {
-        let old_threshold = crate::tile_cache::get_tiled_threshold();
+        let (was_active, old_value) = crate::tile_cache::tiled_threshold_override_snapshot();
         crate::tile_cache::set_tiled_threshold_override(value);
-        Self { old_threshold }
+        Self {
+            was_active,
+            old_value,
+        }
     }
 }
 
 impl Drop for TiledThresholdOverride {
     fn drop(&mut self) {
-        crate::tile_cache::set_tiled_threshold_override(self.old_threshold);
+        if self.was_active {
+            // Override was already active before `set`: restore its prior value.
+            crate::tile_cache::set_tiled_threshold_override(self.old_value);
+        } else {
+            // Override was inactive before `set`: deactivate it rather than
+            // leaving it permanently active with a stale value.
+            crate::tile_cache::clear_tiled_threshold_override();
+        }
     }
 }
 

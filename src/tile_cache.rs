@@ -138,6 +138,23 @@ pub fn set_tiled_threshold_override(pixel_threshold: u64) {
     TILED_THRESHOLD_OVERRIDE_ACTIVE.store(true, Ordering::Release);
 }
 
+/// Deactivate the pixel-threshold override, restoring the derived
+/// `min(A^2, budget)` gate (tests only).
+#[cfg(test)]
+pub fn clear_tiled_threshold_override() {
+    TILED_THRESHOLD_OVERRIDE_ACTIVE.store(false, Ordering::Release);
+}
+
+/// Snapshot of the override state: `(was_active, value)`. Used by test
+/// helpers to save/restore the override around a scoped change.
+#[cfg(test)]
+pub fn tiled_threshold_override_snapshot() -> (bool, u64) {
+    (
+        TILED_THRESHOLD_OVERRIDE_ACTIVE.load(Ordering::Acquire),
+        TILED_THRESHOLD_OVERRIDE.load(Ordering::Acquire),
+    )
+}
+
 /// Apply tiled-routing side limit `A`. Pixel threshold is derived as
 /// `min(A^2, pixel_budget)` (see [`apply_tiled_pixel_budget`]).
 pub fn apply_tiled_plane_side_limit(side: u32) {
