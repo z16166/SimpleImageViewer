@@ -74,11 +74,9 @@ pub fn set_max_tiles_base(max_tiles: usize) {
 
 /// Fallback single-side tiled-routing limit before the GPU adapter is known.
 /// Runtime default follows `max_texture_dimension_2d` once the device is available
-/// (`apply_tiled_plane_side_limit` shortly after startup). Until then the derived
-/// pixel gate is `8192²` (~67.1 MP), slightly above the old hard-coded 64 MP constant.
+/// via [`apply_tiled_plane_side_limit`]. Until then the derived pixel gate is
+/// `8192²` (~67.1 MP), slightly above the old hard-coded 64 MP constant.
 pub const FALLBACK_TILED_PLANE_SIDE_LIMIT: u32 = 8192;
-/// Minimum configurable single-side tiled-routing limit.
-pub const MIN_TILED_PLANE_SIDE_LIMIT: u32 = 1024;
 
 /// Configurable single-side tiled-routing limit (`A`).
 /// Pixel threshold is derived as `A²` in `u64` (no packed-threshold overflow).
@@ -113,38 +111,6 @@ pub fn get_tiled_threshold() -> u64 {
 pub fn set_tiled_threshold_override(pixel_threshold: u64) {
     TILED_THRESHOLD_OVERRIDE.store(pixel_threshold, Ordering::Release);
     TILED_THRESHOLD_OVERRIDE_ACTIVE.store(true, Ordering::Release);
-}
-
-/// Clamp a preferred side limit into `[min(1024, device_max), device_max]`.
-pub fn clamp_tiled_plane_side_limit(value: u32, device_max: u32) -> u32 {
-    let upper = device_max.max(1);
-    let lower = MIN_TILED_PLANE_SIDE_LIMIT.min(upper);
-    value.clamp(lower, upper)
-}
-
-/// Resolve the effective side limit `A`.
-///
-/// `None` means follow the current device `max_texture_dimension_2d`.
-pub fn resolve_tiled_plane_side_limit(preferred: Option<u32>, device_max: u32) -> u32 {
-    match preferred {
-        Some(value) => clamp_tiled_plane_side_limit(value, device_max),
-        None => clamp_tiled_plane_side_limit(device_max, device_max),
-    }
-}
-
-/// Clamp into the legal range, then round to the nearest multiple of `step`.
-///
-/// Clamp runs first so `saturating_add(step / 2)` cannot saturate near `u32::MAX`
-/// before division; a final clamp covers edge cases where rounding overshoots
-/// a non-multiple `device_max`.
-pub fn quantize_tiled_plane_side_limit(value: u32, device_max: u32, step: u32) -> u32 {
-    let step = step.max(1);
-    let clamped = clamp_tiled_plane_side_limit(value, device_max);
-    let rounded = clamped
-        .saturating_add(step / 2)
-        .saturating_div(step)
-        .saturating_mul(step);
-    clamp_tiled_plane_side_limit(rounded, device_max)
 }
 
 /// Apply tiled-routing side limit `A`. Pixel threshold is always derived as `A²`.
@@ -188,7 +154,8 @@ pub fn image_requires_tiled_plane_with_side(width: u32, height: u32, side: u32) 
 
 /// Maximum texture side length supported by the GPU (hardware / API capability).
 /// Updated at startup from `adapter.limits().max_texture_dimension_2d`.
-/// Not the user-configurable tiled-routing policy -- see [`get_tiled_side_limit`].
+/// Startup also sets the tiled-routing side limit `A` to this value via
+/// [`apply_tiled_plane_side_limit`]; tests may temporarily lower `A`.
 pub static MAX_TEXTURE_SIDE: AtomicU32 =
     AtomicU32::new(crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
 
@@ -203,29 +170,6 @@ mod tiled_plane_limit_tests {
     use std::sync::LazyLock;
 
     static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-    #[test]
-    fn clamp_respects_device_max_and_floor() {
-        assert_eq!(clamp_tiled_plane_side_limit(8192, 16384), 8192);
-        assert_eq!(clamp_tiled_plane_side_limit(20000, 16384), 16384);
-        assert_eq!(clamp_tiled_plane_side_limit(512, 16384), 1024);
-        assert_eq!(clamp_tiled_plane_side_limit(4096, 4096), 4096);
-        assert_eq!(clamp_tiled_plane_side_limit(512, 512), 512);
-    }
-
-    #[test]
-    fn resolve_none_follows_device_max() {
-        assert_eq!(resolve_tiled_plane_side_limit(None, 16384), 16384);
-        assert_eq!(resolve_tiled_plane_side_limit(None, 8192), 8192);
-        assert_eq!(resolve_tiled_plane_side_limit(Some(4096), 16384), 4096);
-    }
-
-    #[test]
-    fn quantize_uses_step_512() {
-        assert_eq!(quantize_tiled_plane_side_limit(8200, 16384, 512), 8192);
-        assert_eq!(quantize_tiled_plane_side_limit(8448, 16384, 512), 8704);
-        assert_eq!(quantize_tiled_plane_side_limit(16384, 16384, 512), 16384);
-    }
 
     #[test]
     fn apply_sets_side_and_squared_pixel_threshold() {

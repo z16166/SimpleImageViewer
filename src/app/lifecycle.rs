@@ -306,24 +306,11 @@ impl ImageViewerApp {
 
         // Apply hardware budgets to global caches
         crate::tile_cache::set_max_tiles_base(tier.gpu_cache_tiles());
-        // Tiled-routing policy: None follows device max_texture_dimension_2d.
-        // Clamp for runtime only -- do not rewrite the persisted preference in memory
-        // (a later unrelated queue_save would otherwise permanently shrink a higher saved A).
-        let effective_tiled_side = crate::tile_cache::resolve_tiled_plane_side_limit(
-            settings.tiled_plane_side_limit,
-            max_texture_side,
-        );
-        crate::tile_cache::apply_tiled_plane_side_limit(effective_tiled_side);
+        crate::tile_cache::apply_tiled_plane_side_limit(max_texture_side);
         log::info!(
-            "Tiled plane side limit: {} ({} , pixel threshold {:.1} MP, device max {})",
-            effective_tiled_side,
-            if settings.tiled_plane_side_limit.is_none() {
-                "auto"
-            } else {
-                "manual"
-            },
-            (effective_tiled_side as u64 * effective_tiled_side as u64) as f64 / 1_000_000.0,
-            max_texture_side
+            "Tiled plane side limit: {} (device max, pixel threshold {:.1} MP)",
+            max_texture_side,
+            (max_texture_side as u64 * max_texture_side as u64) as f64 / 1_000_000.0
         );
         crate::loader::PREVIEW_LIMIT.store(
             tier.max_preview_size(),
