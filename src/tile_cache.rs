@@ -190,17 +190,25 @@ pub fn get_max_texture_side() -> u32 {
     MAX_TEXTURE_SIDE.load(Ordering::Acquire)
 }
 
+/// Shared lock guarding all tiled-routing test mutations (side limit, pixel
+/// budget, threshold override). All tests that mutate these process-wide
+/// atomics -- both in this module and in `src/loader/decode/tests` -- must
+/// hold this lock, otherwise parallel tests can race on the same statics.
+#[cfg(test)]
+static TILED_ROUTING_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+#[cfg(test)]
+pub fn lock_tiled_routing_for_test() -> parking_lot::MutexGuard<'static, ()> {
+    TILED_ROUTING_TEST_LOCK.lock()
+}
+
 #[cfg(test)]
 mod tiled_plane_limit_tests {
     use super::*;
-    use parking_lot::Mutex;
-    use std::sync::LazyLock;
-
-    static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn apply_sets_side_and_squared_pixel_threshold() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = lock_tiled_routing_for_test();
         let old_side = get_tiled_side_limit();
         let old_budget = get_tiled_pixel_budget();
         apply_tiled_plane_side_limit(4096);
@@ -213,7 +221,7 @@ mod tiled_plane_limit_tests {
 
     #[test]
     fn large_side_clamps_threshold_to_pixel_budget() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = lock_tiled_routing_for_test();
         let old_side = get_tiled_side_limit();
         let old_budget = get_tiled_pixel_budget();
         apply_tiled_pixel_budget(DEFAULT_TILED_PIXEL_BUDGET);
@@ -229,7 +237,7 @@ mod tiled_plane_limit_tests {
 
     #[test]
     fn image_requires_tiled_plane_uses_strict_greater_than() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = lock_tiled_routing_for_test();
         let old_side = get_tiled_side_limit();
         let old_budget = get_tiled_pixel_budget();
         apply_tiled_pixel_budget(DEFAULT_TILED_PIXEL_BUDGET);

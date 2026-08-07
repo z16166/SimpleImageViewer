@@ -16,10 +16,7 @@
 
 //! Shared knobs for decode tests (tiled pixel-threshold overrides).
 
-use parking_lot::{Mutex, MutexGuard};
-use std::sync::LazyLock;
-
-static TILED_THRESHOLD_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+use parking_lot::MutexGuard;
 
 pub(crate) struct TiledThresholdOverride {
     old_threshold: u64,
@@ -39,6 +36,9 @@ impl Drop for TiledThresholdOverride {
     }
 }
 
+/// Guards tiled-routing test mutations (side limit, pixel budget, threshold
+/// override). Delegates to the single shared lock in `tile_cache` so this
+/// module's tests cannot race against `tile_cache`'s own tiled-plane tests.
 pub(crate) fn lock_tiled_threshold_for_test() -> MutexGuard<'static, ()> {
-    TILED_THRESHOLD_TEST_LOCK.lock()
+    crate::tile_cache::lock_tiled_routing_for_test()
 }
