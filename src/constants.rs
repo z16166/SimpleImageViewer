@@ -27,7 +27,8 @@ pub const HQ_PREVIEW_MONITOR_HEADROOM: f32 = 1.1;
 pub const ABSOLUTE_MAX_TEXTURE_SIDE: u32 = 8192;
 
 /// Fixed pixel-area cap for GPU RAW demosaic eligibility (~64 MP).
-/// Independent of the Display tiled-routing side limit (`A` / `A²`).
+/// Independent of the Display tiled-routing gate (`min(A^2, pixel_budget)`);
+/// see `tile_cache::get_tiled_threshold`.
 pub const GPU_DEMOSAIC_MAX_PIXELS: u64 = 64_000_000;
 
 /// Hard ceiling for a single WIC frame side. Larger claims are treated as corrupt headers.

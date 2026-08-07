@@ -91,7 +91,7 @@ pub(crate) fn make_hdr_image_data_for_limit(
         hdr.height,
         tiled_side_limit,
     ) {
-        let tiled_limit = (tiled_side_limit as u64).saturating_mul(tiled_side_limit as u64);
+        let tiled_limit = crate::tile_cache::tiled_pixel_threshold_for_side(tiled_side_limit);
         log::info!(
             "[Loader] HDR image {}x{} exceeds tiled side limit ({}) or threshold ({:.1} MP). Using SDR tiled fallback.",
             hdr.width,

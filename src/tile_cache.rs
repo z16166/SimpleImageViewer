@@ -75,12 +75,25 @@ pub fn set_max_tiles_base(max_tiles: usize) {
 /// Fallback single-side tiled-routing limit before the GPU adapter is known.
 /// Runtime default follows `max_texture_dimension_2d` once the device is available
 /// via [`apply_tiled_plane_side_limit`]. Until then the derived pixel gate is
-/// `8192²` (~67.1 MP), slightly above the old hard-coded 64 MP constant.
+/// `min(8192^2, budget)` (~67.1 MP before clamping), slightly above the old
+/// hard-coded 64 MP constant.
 pub const FALLBACK_TILED_PLANE_SIDE_LIMIT: u32 = 8192;
 
-/// Configurable single-side tiled-routing limit (`A`).
-/// Pixel threshold is derived as `A²` in `u64` (no packed-threshold overflow).
+/// Default pixel-area budget applied on top of the side-derived `A^2` gate
+/// (product decision: Option B). Prevents a static full-buffer decode from
+/// scaling to the full `A^2` on very large GPU texture limits (e.g. ~268 MP
+/// on 16K adapters). Matches `HardwareTier::tiled_threshold_pixels()` for
+/// all tiers.
+pub const DEFAULT_TILED_PIXEL_BUDGET: u64 = 64_000_000;
+
+/// Single-side tiled-routing limit (`A`), derived from the device's
+/// `max_texture_dimension_2d`. Not user-configurable.
 static TILED_SIDE_LIMIT: AtomicU32 = AtomicU32::new(FALLBACK_TILED_PLANE_SIDE_LIMIT);
+
+/// Pixel-area budget applied on top of `A^2` (see [`get_tiled_threshold`]).
+/// Defaults to [`DEFAULT_TILED_PIXEL_BUDGET`]; startup overrides it via
+/// [`apply_tiled_pixel_budget`] from `HardwareTier::tiled_threshold_pixels`.
+static TILED_PIXEL_BUDGET: AtomicU64 = AtomicU64::new(DEFAULT_TILED_PIXEL_BUDGET);
 
 #[cfg(test)]
 static TILED_THRESHOLD_OVERRIDE_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -92,18 +105,30 @@ fn pixel_threshold_for_side(side: u32) -> u64 {
     side.saturating_mul(side)
 }
 
+/// Effective pixel threshold: `min(A^2, pixel_budget)`.
+fn effective_tiled_pixel_threshold(side: u32) -> u64 {
+    pixel_threshold_for_side(side).min(get_tiled_pixel_budget())
+}
+
 /// Get the current tiled-routing single-side limit (`A`).
 pub fn get_tiled_side_limit() -> u32 {
     TILED_SIDE_LIMIT.load(Ordering::Acquire)
 }
 
-/// Get the current tiled-mode pixel threshold (`A²` in production, as `u64`).
+/// Get the current tiled-mode pixel-area budget applied on top of `A^2`.
+pub fn get_tiled_pixel_budget() -> u64 {
+    TILED_PIXEL_BUDGET.load(Ordering::Acquire)
+}
+
+/// Apply the pixel-area budget used to cap the tiled-mode gate at `min(A^2, budget)`.
+pub fn apply_tiled_pixel_budget(budget: u64) {
+    TILED_PIXEL_BUDGET.store(budget.max(1), Ordering::Release);
+}
+
+/// Get the current tiled-mode pixel threshold (`min(A^2, budget)` in
+/// production, as `u64`).
 pub fn get_tiled_threshold() -> u64 {
-    #[cfg(test)]
-    if TILED_THRESHOLD_OVERRIDE_ACTIVE.load(Ordering::Acquire) {
-        return TILED_THRESHOLD_OVERRIDE.load(Ordering::Acquire);
-    }
-    pixel_threshold_for_side(get_tiled_side_limit())
+    tiled_pixel_threshold_for_side(get_tiled_side_limit())
 }
 
 /// Override the pixel threshold independently of side (tests only).
@@ -113,7 +138,8 @@ pub fn set_tiled_threshold_override(pixel_threshold: u64) {
     TILED_THRESHOLD_OVERRIDE_ACTIVE.store(true, Ordering::Release);
 }
 
-/// Apply tiled-routing side limit `A`. Pixel threshold is always derived as `A²`.
+/// Apply tiled-routing side limit `A`. Pixel threshold is derived as
+/// `min(A^2, pixel_budget)` (see [`apply_tiled_pixel_budget`]).
 pub fn apply_tiled_plane_side_limit(side: u32) {
     TILED_SIDE_LIMIT.store(side.max(1), Ordering::Release);
     #[cfg(test)]
@@ -122,11 +148,23 @@ pub fn apply_tiled_plane_side_limit(side: u32) {
 
 /// Whether image dimensions should use the tiled rendering path for policy `A`.
 ///
-/// Tiles when `width > A` OR `height > A` OR `pixels > A²`.
+/// Tiles when `width > A` OR `height > A` OR `pixels > min(A^2, pixel_budget)`.
 /// Uses one loaded `side` so the derived threshold cannot race against a newer side.
 /// Tests may override the pixel threshold independently via [`set_tiled_threshold_override`].
 pub fn image_requires_tiled_plane(width: u32, height: u32) -> bool {
     image_requires_tiled_plane_with_side(width, height, get_tiled_side_limit())
+}
+
+/// Effective pixel threshold for an explicit side limit (`min(A^2, budget)`,
+/// or the test override when active). Shared by
+/// [`image_requires_tiled_plane_with_side`] and callers that need to log the
+/// same value the routing decision used.
+pub fn tiled_pixel_threshold_for_side(side: u32) -> u64 {
+    #[cfg(test)]
+    if TILED_THRESHOLD_OVERRIDE_ACTIVE.load(Ordering::Acquire) {
+        return TILED_THRESHOLD_OVERRIDE.load(Ordering::Acquire);
+    }
+    effective_tiled_pixel_threshold(side)
 }
 
 /// Same as [`image_requires_tiled_plane`], but with an explicit side limit (e.g. tests).
@@ -134,18 +172,7 @@ pub fn image_requires_tiled_plane_with_side(width: u32, height: u32, side: u32) 
     if width > side || height > side {
         return true;
     }
-    let threshold = {
-        #[cfg(test)]
-        if TILED_THRESHOLD_OVERRIDE_ACTIVE.load(Ordering::Acquire) {
-            TILED_THRESHOLD_OVERRIDE.load(Ordering::Acquire)
-        } else {
-            pixel_threshold_for_side(side)
-        }
-        #[cfg(not(test))]
-        {
-            pixel_threshold_for_side(side)
-        }
-    };
+    let threshold = tiled_pixel_threshold_for_side(side);
     let Some(pixels) = (width as u64).checked_mul(height as u64) else {
         return true;
     };
@@ -175,31 +202,54 @@ mod tiled_plane_limit_tests {
     fn apply_sets_side_and_squared_pixel_threshold() {
         let _guard = TEST_LOCK.lock();
         let old_side = get_tiled_side_limit();
+        let old_budget = get_tiled_pixel_budget();
         apply_tiled_plane_side_limit(4096);
+        // A^2 < 64MP budget, so the effective threshold stays A^2 unclamped.
         assert_eq!(get_tiled_side_limit(), 4096);
         assert_eq!(get_tiled_threshold(), 4096u64 * 4096u64);
         apply_tiled_plane_side_limit(old_side);
+        apply_tiled_pixel_budget(old_budget);
+    }
+
+    #[test]
+    fn large_side_clamps_threshold_to_pixel_budget() {
+        let _guard = TEST_LOCK.lock();
+        let old_side = get_tiled_side_limit();
+        let old_budget = get_tiled_pixel_budget();
+        apply_tiled_pixel_budget(DEFAULT_TILED_PIXEL_BUDGET);
+        apply_tiled_plane_side_limit(16384);
+        // 16384^2 (~268 MP) far exceeds the 64MP budget, so the effective
+        // threshold clamps to the budget, not A^2.
+        assert_eq!(get_tiled_side_limit(), 16384);
+        assert_eq!(get_tiled_threshold(), DEFAULT_TILED_PIXEL_BUDGET);
+        assert!(DEFAULT_TILED_PIXEL_BUDGET < 16384u64 * 16384u64);
+        apply_tiled_plane_side_limit(old_side);
+        apply_tiled_pixel_budget(old_budget);
     }
 
     #[test]
     fn image_requires_tiled_plane_uses_strict_greater_than() {
         let _guard = TEST_LOCK.lock();
         let old_side = get_tiled_side_limit();
+        let old_budget = get_tiled_pixel_budget();
+        apply_tiled_pixel_budget(DEFAULT_TILED_PIXEL_BUDGET);
         apply_tiled_plane_side_limit(1024);
         assert!(!image_requires_tiled_plane(1024, 1024));
         assert!(image_requires_tiled_plane(1025, 1024));
         assert!(image_requires_tiled_plane(1024, 1025));
         // 1025x1025 exceeds the side limit.
         assert!(image_requires_tiled_plane(1025, 1025));
-        // Pixel gate can fire alone when threshold is below A² (test overrides).
+        // Pixel gate can fire alone when threshold is below A^2 (test overrides).
         apply_tiled_plane_side_limit(8192);
         set_tiled_threshold_override(63_999_999);
         assert!(image_requires_tiled_plane(8000, 8000));
-        // With synced A / A² policy, exact A x A stays static.
+        // With A=8192, A^2 (~67.1 MP) exceeds the 64MP budget, so the
+        // effective threshold clamps to the budget and 8192x8192 now tiles.
         apply_tiled_plane_side_limit(8192);
-        assert!(!image_requires_tiled_plane(8192, 8192));
+        assert!(image_requires_tiled_plane(8192, 8192));
         assert!(image_requires_tiled_plane(8193, 1));
         apply_tiled_plane_side_limit(old_side);
+        apply_tiled_pixel_budget(old_budget);
     }
 }
 

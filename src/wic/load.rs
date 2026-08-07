@@ -317,8 +317,8 @@ fn load_via_wic_inner(
             final_source = src;
         }
 
-        // Configurable tiled-routing side limit (default follows device
-        // max_texture_dimension_2d), not the GPU upload cap.
+        // Tiled-routing side limit follows the device max_texture_dimension_2d
+        // (not user-configurable); see `tile_cache::apply_tiled_plane_side_limit`.
         // WIC's tiled source provides a much better UX for wide/tall images:
         // it shows an EXIF preview instantly while loading tiles in the background.
 

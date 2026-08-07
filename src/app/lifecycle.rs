@@ -308,10 +308,15 @@ impl ImageViewerApp {
         crate::tile_cache::set_max_tiles_base(tier.gpu_cache_tiles());
         let tiled_side = crate::tile_cache::get_max_texture_side();
         crate::tile_cache::apply_tiled_plane_side_limit(tiled_side);
+        let tiled_pixel_budget = tier.tiled_threshold_pixels();
+        crate::tile_cache::apply_tiled_pixel_budget(tiled_pixel_budget);
+        let tiled_threshold = crate::tile_cache::get_tiled_threshold();
         log::info!(
-            "Tiled plane side limit: {} (device max, pixel threshold {:.1} MP)",
+            "Tiled plane side limit: A={} (device max), pixel budget={:.1} MP, \
+             effective threshold={:.1} MP",
             tiled_side,
-            (tiled_side as u64 * tiled_side as u64) as f64 / 1_000_000.0
+            tiled_pixel_budget as f64 / 1_000_000.0,
+            tiled_threshold as f64 / 1_000_000.0
         );
         crate::loader::PREVIEW_LIMIT.store(
             tier.max_preview_size(),

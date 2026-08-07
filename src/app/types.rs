@@ -208,6 +208,14 @@ impl HardwareTier {
             Self::High => crate::constants::MAX_QUALITY_PREVIEW_SIZE, // Capped at 4k to prevent VRAM spikes
         }
     }
+
+    /// Pixel-area budget applied on top of the device-derived `A^2` tiled
+    /// gate (see `tile_cache::apply_tiled_pixel_budget`). All tiers
+    /// currently share one budget; this hook is kept so tiers can diverge
+    /// later (e.g. a lower budget on `Low` to route more images to tiling).
+    pub fn tiled_threshold_pixels(&self) -> u64 {
+        crate::tile_cache::DEFAULT_TILED_PIXEL_BUDGET
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileOpError {
