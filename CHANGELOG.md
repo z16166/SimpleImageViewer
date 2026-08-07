@@ -2,14 +2,6 @@
 
 All notable changes to this project will be documented in this file.
 
-## [3.1.4] - 2026-07-19
-
-### Added
-- **Tiled rendering threshold in Display settings**: Shows when large images switch to tiled rendering. Best left at your graphics device maximum (usually no need to change); handy when screenshotting settings for support.
-
-### Fixed
-- **Tiled threshold applies immediately**: Changing the Display tiled-rendering threshold reloads the current image for every format, not only RAW folders.
-
 ## [3.1.3] - 2026-07-16
 
 ### Fixed
