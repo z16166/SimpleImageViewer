@@ -306,11 +306,12 @@ impl ImageViewerApp {
 
         // Apply hardware budgets to global caches
         crate::tile_cache::set_max_tiles_base(tier.gpu_cache_tiles());
-        crate::tile_cache::apply_tiled_plane_side_limit(max_texture_side);
+        let tiled_side = crate::tile_cache::get_max_texture_side();
+        crate::tile_cache::apply_tiled_plane_side_limit(tiled_side);
         log::info!(
             "Tiled plane side limit: {} (device max, pixel threshold {:.1} MP)",
-            max_texture_side,
-            (max_texture_side as u64 * max_texture_side as u64) as f64 / 1_000_000.0
+            tiled_side,
+            (tiled_side as u64 * tiled_side as u64) as f64 / 1_000_000.0
         );
         crate::loader::PREVIEW_LIMIT.store(
             tier.max_preview_size(),
