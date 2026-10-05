@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.1.4] - 2026-10-05
+
+### Fixed
+- **Linux / macOS quit shortcut**: **Ctrl+Q** now exits immediately, the same way as the tray Exit command, instead of sending a window-close request that the Linux Wayland paint path could drop.
+- **In-app window close on Wayland**: A synthesized close from the app is no longer cleared in the same frame as the fullscreen command path, so Linux quit and other `Close` commands can complete.
+
 ## [3.1.3] - 2026-07-16
 
 ### Fixed

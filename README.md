@@ -107,6 +107,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `Ctrl + →` / `Ctrl + ←` | Rotate 90° CW / CCW |
 | `Ctrl + ↑` / `Ctrl + ↓` | Increase / decrease HDR exposure by **0.5 EV** |
 | `Alt + Wheel Down / Up` | Rotate 90° CW / CCW |
+| `Ctrl + Q` | Quit (Linux / macOS) |
 | `Alt+F4` | Quit (Windows) |
 
 #### Directory tree (when the folder tree has focus)

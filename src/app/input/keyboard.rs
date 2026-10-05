@@ -58,10 +58,13 @@ impl ImageViewerApp {
             }
         });
 
-        if let Some(act) = action
-            && act == AppAction::ToggleSettings
-        {
-            self.dispatch_action(act, ctx);
+        if let Some(act) = action {
+            match act {
+                AppAction::ToggleSettings => self.dispatch_action(act, ctx),
+                #[cfg(not(target_os = "windows"))]
+                AppAction::Quit => self.dispatch_action(act, ctx),
+                _ => {}
+            }
         }
     }
 

@@ -56,6 +56,9 @@ Redistributables for the Win7 CI zip (not patched crates):
 | `src/native/run.rs` | Synchronous `RepaintNow` chain on all desktop OSes | Upstream still limits immediate repaint chaining to Windows only. |
 | `src/native/run.rs` | `sync_repaint_in_progress` reentrancy guard | Prevents nested `RepaintNow` → `run_ui_and_paint` during one event dispatch. |
 | `src/native/wgpu_integration.rs` | `App::logic` before every viewport paint | Upstream still calls `logic` only from ROOT `update`. |
+| `src/native/wgpu_integration.rs` | Consume viewport input Close events before deferred commands | Fork still applies commands before paint; do not clear events after `ViewportCommand::Close`. |
+| `src/native/glow_integration.rs` | Same Close-event ordering as wgpu | Same as above. |
+| `src/native/viewport_event_lifecycle.rs` | Shared consume-before-output Close protocol | Keep if the command-before-paint ordering remains. |
 | `src/native/wgpu_integration.rs` | Autosave on child viewport paint (ROOT window) | Upstream still gates `maybe_autosave` on ROOT paint only. |
 | `src/native/glow_integration.rs` | Same `logic` + autosave patches as wgpu | Same as above for glow backend. |
 | `src/native/epi_integration.rs` | ROOT `update` skips duplicate `logic` | Must stay paired with wgpu/glow `logic` call sites. |

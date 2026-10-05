@@ -111,6 +111,7 @@ Simple Image Viewer 是一款轻量、快速的桌面图片查看器。它在后
 | `Ctrl + →` / `Ctrl + ←` | 顺时针 / 逆时针旋转 90° |
 | `Ctrl + ↑` / `Ctrl + ↓` | HDR 曝光度每次 **+0.5 / −0.5 EV** |
 | `Alt + 滚轮 下 / 上` | 顺时针 / 逆时针旋转 90° |
+| `Ctrl + Q` | 退出（Linux / macOS） |
 | `Alt+F4` | 退出（Windows） |
 
 #### 目录树（树形目录获得焦点时）

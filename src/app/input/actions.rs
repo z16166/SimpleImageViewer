@@ -189,8 +189,10 @@ impl ImageViewerApp {
             }
             #[cfg(not(target_os = "windows"))]
             AppAction::Quit => {
+                // Match tray Exit. ViewportCommand::Close can be dropped on the
+                // same frame by the eframe command-before-paint path on Wayland.
                 self.explicit_quit = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.quit_process_now();
             }
             AppAction::SelectPixelRegion => {
                 // Handled directly in rendering/mod.rs canvas layer

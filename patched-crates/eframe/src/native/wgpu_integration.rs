@@ -693,11 +693,8 @@ impl WgpuWinitRunning<'_> {
             };
             let mut raw_input = egui_winit.take_egui_input(window);
             if let Some(physical_size) = viewport.current_physical_size {
-                let rect = screen_rect_from_physical_size(
-                    &integration.egui_ctx,
-                    window,
-                    physical_size,
-                );
+                let rect =
+                    screen_rect_from_physical_size(&integration.egui_ctx, window, physical_size);
                 log::debug!(
                     "[WGPU ScreenRect Overwrite] viewport={:?} physical_size={:?} screen_rect={:?}",
                     viewport_id,
@@ -790,9 +787,7 @@ impl WgpuWinitRunning<'_> {
                     }
                 }
             }
-            integration
-                .egui_ctx
-                .request_repaint_of(ViewportId::ROOT);
+            integration.egui_ctx.request_repaint_of(ViewportId::ROOT);
             shared
                 .borrow()
                 .viewports
@@ -838,6 +833,12 @@ impl WgpuWinitRunning<'_> {
                 painter,
                 viewport_from_window,
             );
+            // Consume this frame's native Close *before* output commands. The fork
+            // applies ViewportCommand::Close before paint; clearing afterwards
+            // dropped in-app quit (Linux Ctrl+Q).
+            if let Some(viewport) = viewports.get_mut(&viewport_id) {
+                super::viewport_event_lifecycle::consume_applied_input_events(&mut viewport.info);
+            }
         }
 
         let transition_paint = process_deferred_viewport_commands(&integration.egui_ctx, shared);
@@ -865,8 +866,6 @@ impl WgpuWinitRunning<'_> {
                 return Ok(EventResult::Wait);
             };
 
-            viewport.info.events.clear(); // they should have been processed
-
             let Viewport {
                 window: Some(window),
                 egui_winit: Some(egui_winit),
@@ -882,9 +881,7 @@ impl WgpuWinitRunning<'_> {
             let vsync_secs = if is_visible {
                 let clipped_primitives = match transition_paint {
                     TransitionPaint::Blank => vec![],
-                    TransitionPaint::Content => {
-                        egui_ctx.tessellate(shapes, pixels_per_point)
-                    }
+                    TransitionPaint::Content => egui_ctx.tessellate(shapes, pixels_per_point),
                     TransitionPaint::None => egui_ctx.tessellate(shapes, pixels_per_point),
                 };
 
@@ -1005,8 +1002,7 @@ impl WgpuWinitRunning<'_> {
             } else {
                 Ok(EventResult::Wait)
             }
-        } else if let Some(root_window_id) = root_window_id_for_repaint
-        {
+        } else if let Some(root_window_id) = root_window_id_for_repaint {
             // request_redraw alone is not enough on Windows when ROOT did not receive the
             // RedrawRequested that triggered this child paint; paint ROOT synchronously.
             Ok(EventResult::RepaintNow(root_window_id))
@@ -1328,11 +1324,7 @@ fn render_immediate_viewport(
 
         let mut input = egui_winit.take_egui_input(window);
         if let Some(physical_size) = viewport.current_physical_size {
-            let rect = screen_rect_from_physical_size(
-                egui_ctx,
-                window,
-                physical_size,
-            );
+            let rect = screen_rect_from_physical_size(egui_ctx, window, physical_size);
             log::debug!(
                 "[WGPU Immediate ScreenRect Overwrite] viewport={:?} physical_size={:?} screen_rect={:?}",
                 ids.this,
