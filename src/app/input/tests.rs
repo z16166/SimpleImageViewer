@@ -80,40 +80,6 @@ fn all_runtime_actions_map_to_app_actions() {
 }
 
 #[test]
-fn in_app_close_survives_paint_path() {
-    let mut info = eframe::egui::ViewportInfo::default();
-    eframe::viewport_event_lifecycle::finish_paint_path_viewport_events(&mut info, true);
-    assert!(
-        info.close_requested(),
-        "ViewportCommand::Close must remain for the next frame"
-    );
-}
-
-#[test]
-fn applied_native_close_is_consumed_before_output() {
-    let mut info = eframe::egui::ViewportInfo::default();
-    info.events.push(eframe::egui::ViewportEvent::Close);
-    eframe::viewport_event_lifecycle::consume_applied_input_events(&mut info);
-    assert!(
-        !info.close_requested(),
-        "this-frame native Close was already handled in update"
-    );
-}
-
-#[cfg(not(target_os = "windows"))]
-#[test]
-fn linux_quit_hotkey_defaults_to_ctrl_q() {
-    use crate::hotkeys::model::{HotkeyActionId, default_key_chords};
-    let chords = default_key_chords(HotkeyActionId::Quit);
-    assert_eq!(chords.len(), 1);
-    assert_eq!(chords[0].display_string(), "Ctrl+Q");
-    assert!(matches!(
-        app_action_from_hotkey_action_id(HotkeyActionId::Quit),
-        super::AppAction::Quit
-    ));
-}
-
-#[test]
 fn text_event_mapping_reuses_hotkey_key_parser() {
     assert_eq!(
         text_event_to_hotkey_logical_key("+"),

@@ -511,6 +511,7 @@ impl ImageViewerApp {
                         }
                         if !self.images_ever_loaded {
                             self.show_settings = false;
+                            self.clear_hotkey_capture_state();
                         }
                         self.images_ever_loaded = true;
                         first_batch_current_load_pending = true;

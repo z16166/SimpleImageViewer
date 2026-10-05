@@ -155,6 +155,7 @@ impl ImageViewerApp {
                     && canvas_resp.clicked_by(egui::PointerButton::Primary)
                 {
                     self.show_settings = false;
+                    self.clear_hotkey_capture_state();
                 }
 
                 if self.image_files.is_empty() {

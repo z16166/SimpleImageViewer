@@ -833,9 +833,9 @@ impl WgpuWinitRunning<'_> {
                 painter,
                 viewport_from_window,
             );
-            // Consume this frame's native Close *before* output commands. The fork
-            // applies ViewportCommand::Close before paint; clearing afterwards
-            // dropped in-app quit (Linux Ctrl+Q).
+            // Drop events `update` already applied, before deferred commands.
+            // Clearing after ViewportCommand::Close discards the synthetic Close
+            // on every desktop backend (commands-before-paint).
             if let Some(viewport) = viewports.get_mut(&viewport_id) {
                 super::viewport_event_lifecycle::consume_applied_input_events(&mut viewport.info);
             }
