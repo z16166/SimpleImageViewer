@@ -1982,6 +1982,12 @@ impl ImageViewerApp {
 
             // SAFETY: see `DirectoryTreeRuntime::viewpaint_app` safety contract.
             let app = unsafe { &mut *ptr };
+            // Quit is handled here because keyboard dispatch runs only in the ROOT
+            // ui pass. Nav hotkeys stay blocked while a modal or settings panel is open.
+            #[cfg(not(target_os = "windows"))]
+            if ui.ctx().input(|input| app.quit_hotkey_pressed(input)) {
+                app.dispatch_action(crate::app::input::AppAction::Quit, ui.ctx());
+            }
             if !cross_viewport_hotkeys_blocked.load(Ordering::Acquire) {
                 let chords = toggle_nav_hotkey_chords.load();
                 if let Some(chord) = ui.ctx().input(|input| {

@@ -24,6 +24,11 @@ use eframe::egui::{self, Context, Key};
 
 impl ImageViewerApp {
     pub(crate) fn handle_keyboard(&mut self, ctx: &Context) {
+        // Close sites clear the capture immediately. This pass is the fallback
+        // for any other path that hides the panel before the next key.
+        if !self.show_settings && self.is_hotkey_capture_active() {
+            self.clear_hotkey_capture_state();
+        }
         // High-level layer detection
         if self.active_modal.is_some() {
             self.handle_modal_input(ctx);
@@ -36,6 +41,10 @@ impl ImageViewerApp {
 
     /// Layer 3: Input handling when a modal dialog is active.
     fn handle_modal_input(&mut self, ctx: &Context) {
+        #[cfg(not(target_os = "windows"))]
+        if ctx.input(|i| self.quit_hotkey_pressed(i)) {
+            self.dispatch_action(AppAction::Quit, ctx);
+        }
         ctx.input(|i| {
             // Escape always dismisses any modal
             if i.key_pressed(Key::Escape) {
@@ -47,21 +56,31 @@ impl ImageViewerApp {
     /// Layer 2: Input handling when the non-modal settings panel is open.
     fn handle_settings_input(&mut self, ctx: &Context) {
         let mut action: Option<AppAction> = None;
+        #[cfg(not(target_os = "windows"))]
+        let mut quit = false;
         let capturing = self.is_hotkey_capture_active();
         ctx.input(|i| {
             if !capturing {
                 action = self.map_key_to_action(i);
+                #[cfg(not(target_os = "windows"))]
+                {
+                    quit = self.quit_hotkey_pressed(i);
+                }
             }
             // Escape closes settings unless a hotkey capture session is active (allows ESC binding).
             if !capturing && i.key_pressed(Key::Escape) {
                 self.show_settings = false;
+                self.clear_hotkey_capture_state();
             }
         });
 
-        if let Some(act) = action
-            && act == AppAction::ToggleSettings
-        {
-            self.dispatch_action(act, ctx);
+        #[cfg(not(target_os = "windows"))]
+        if quit {
+            self.dispatch_action(AppAction::Quit, ctx);
+        }
+
+        if let Some(AppAction::ToggleSettings) = action {
+            self.dispatch_action(AppAction::ToggleSettings, ctx);
         }
     }
 
@@ -107,6 +126,11 @@ impl ImageViewerApp {
         if let Some(act) = action {
             self.dispatch_action(act, ctx);
         }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) fn quit_hotkey_pressed(&self, i: &egui::InputState) -> bool {
+        !self.is_hotkey_capture_active() && self.map_key_to_action(i) == Some(AppAction::Quit)
     }
 
     fn map_key_to_action(&self, i: &egui::InputState) -> Option<AppAction> {

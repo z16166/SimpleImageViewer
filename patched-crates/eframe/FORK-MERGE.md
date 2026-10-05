@@ -56,6 +56,9 @@ Redistributables for the Win7 CI zip (not patched crates):
 | `src/native/run.rs` | Synchronous `RepaintNow` chain on all desktop OSes | Upstream still limits immediate repaint chaining to Windows only. |
 | `src/native/run.rs` | `sync_repaint_in_progress` reentrancy guard | Prevents nested `RepaintNow` → `run_ui_and_paint` during one event dispatch. |
 | `src/native/wgpu_integration.rs` | `App::logic` before every viewport paint | Upstream still calls `logic` only from ROOT `update`. |
+| `src/native/wgpu_integration.rs` | Consume already-applied viewport events before deferred commands | Fork still applies commands before paint. Do not clear `viewport.info.events` after `ViewportCommand::Close`. |
+| `src/native/glow_integration.rs` | Same Close-event ordering as wgpu | Same as above. |
+| `src/native/viewport_event_lifecycle.rs` | `consume_applied_input_events` only | Keep while commands run before paint. |
 | `src/native/wgpu_integration.rs` | Autosave on child viewport paint (ROOT window) | Upstream still gates `maybe_autosave` on ROOT paint only. |
 | `src/native/glow_integration.rs` | Same `logic` + autosave patches as wgpu | Same as above for glow backend. |
 | `src/native/epi_integration.rs` | ROOT `update` skips duplicate `logic` | Must stay paired with wgpu/glow `logic` call sites. |
@@ -68,7 +71,7 @@ Redistributables for the Win7 CI zip (not patched crates):
 2. Copy upstream sources into `patched-crates/*` (or merge in a scratch branch).
 3. Grep `SimpleImageViewer` / `Simple Image Viewer fork` -- restore every block.
 4. Re-apply Win7 blocks in `wgpu-hal` if `legacy-win7-gles` feature still exists.
-5. Build desktop targets; smoke-test **Embedded** and **Detached** directory-tree navigation on Windows and at least one non-Windows OS.
+5. Build desktop targets; smoke-test **Embedded** and **Detached** directory-tree navigation on Windows and at least one non-Windows OS. On **macOS**, press **Cmd+Q** once in addition to **Ctrl+Q**. winit 0.30's default app menu (left on; eframe never calls `with_default_menu(false)`) binds Quit to key equivalent `q` / `terminate:` (`winit` `platform_impl/macos/menu.rs`). AppKit handles that before a key event reaches the window, so Cmd+Q does not run `quit_hotkey_pressed`. Confirm the process still exits and `on_exit` saves preferences. Re-check both keys if that menu item is replaced.
 6. Build `--features legacy_win7` on Windows; smoke-test Win7 VM or forced `WGPU_GL_BACKEND` tiers.
 7. Verify settings autosave while the detached nav window stays focused (ISSUE-20 regression).
 8. Verify detached nav paint: scan/dir-tree drains still run; HDR/placement/dialog code runs only on ROOT pass (`LogicPass::is_root()`).
@@ -80,6 +83,8 @@ Redistributables for the Win7 CI zip (not patched crates):
 - Do not use `frame.winit_window()` / HDR frame APIs from aux-triggered passes unless intentionally ROOT-scoped.
 - **Immediate viewports** (`show_viewport_immediate`) do not receive `App::logic` during `render_immediate_viewport`; Simple Image Viewer uses **`show_viewport_deferred` only** for the detached directory-tree window.
 - **`viewpaint_app` raw pointer** (`src/app/directory_tree/mod.rs`, `app.rs`): Detached strip GPU upload and image-list context menu read `ImageViewerApp` via `AtomicPtr` on the UI thread only. This assumes eframe keeps the app as a stable `Box<dyn App>` for the process lifetime (no re-box / move of the instance). Re-verify after any upstream change to `App` ownership or viewport paint scheduling; if upstream ever moves the app object, replace the pointer with an explicit cross-viewport snapshot or channel.
+- **Close + CancelClose in one frame**: `consume_applied_input_events` runs before deferred commands, so `ViewportCommand::Close` leaves a synthetic `ViewportEvent::Close` for the next frame. `CancelClose` does not clear it: `EpiIntegration::update` only checks `CancelClose` against a `close_requested` already present in that frame's `RawInput`, and `process_viewport_commands` ignores `CancelClose`. Before this ordering, `events.clear()` after the commands dropped the synthetic Close, so the window stayed open. The app does not emit both together: non-Windows quit calls `quit_process_now`, and the directory-tree window sends `Close` without `CancelClose`.
+- **macOS Cmd+Q**: The in-app quit binding is Ctrl+Q (`command` counts as Ctrl only when winit delivers the key). winit's default menu already owns Cmd+Q via `terminate:`. Do not document Cmd+Q as this hotkey unless step 5 shows the key event actually arrives.
 
 ## Upstream follow-up (optional)
 

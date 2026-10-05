@@ -88,6 +88,15 @@ impl ImageViewerApp {
         self.hotkeys_add_row_need_key_hint = false;
     }
 
+    /// Drop an in-progress hotkey capture and cancel the add-row dialog.
+    /// Closing the settings panel does not run the capture poll, so a leftover
+    /// target would make the next key a normal shortcut instead of a binding.
+    pub(crate) fn clear_hotkey_capture_state(&mut self) {
+        self.hotkeys_capture_target = None;
+        self.hotkeys_add_row_dialog_open = false;
+        self.reset_hotkeys_add_row_dialog_state();
+    }
+
     pub(crate) fn hotkeys_status_message(&self) -> Option<String> {
         build_hotkeys_issue_message(
             self.hotkeys_load_error.as_deref(),

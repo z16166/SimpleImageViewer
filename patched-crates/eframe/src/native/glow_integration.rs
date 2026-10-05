@@ -603,7 +603,10 @@ impl GlowWinitRunning<'_> {
                 log::debug!(
                     "[Glow Sync Resize Executed] resizing viewport={:?} from={:?} to={:?}",
                     viewport_id,
-                    glutin.viewports.get(&viewport_id).and_then(|vp| vp.current_physical_size),
+                    glutin
+                        .viewports
+                        .get(&viewport_id)
+                        .and_then(|vp| vp.current_physical_size),
                     live_size
                 );
                 glutin.resize(viewport_id, live_size);
@@ -628,11 +631,7 @@ impl GlowWinitRunning<'_> {
             };
             let mut raw_input = egui_winit.take_egui_input(&window);
             if let Some(physical_size) = viewport.current_physical_size {
-                let rect = screen_rect_from_physical_size(
-                    &egui_ctx,
-                    &window,
-                    physical_size,
-                );
+                let rect = screen_rect_from_physical_size(&egui_ctx, &window, physical_size);
                 log::debug!(
                     "[Glow ScreenRect Overwrite] viewport={:?} physical_size={:?} screen_rect={:?}",
                     viewport_id,
@@ -769,6 +768,12 @@ impl GlowWinitRunning<'_> {
                 &integration.egui_ctx,
                 &full_output.viewport_output,
             );
+            // Drop events `update` already applied, before deferred commands.
+            // Clearing after ViewportCommand::Close discards the synthetic Close
+            // on every desktop backend (commands-before-paint).
+            if let Some(viewport) = glutin.viewports.get_mut(&viewport_id) {
+                super::viewport_event_lifecycle::consume_applied_input_events(&mut viewport.info);
+            }
         }
 
         let transition_paint = process_deferred_viewport_commands(&integration.egui_ctx, glutin);
@@ -796,7 +801,6 @@ impl GlowWinitRunning<'_> {
                 return Ok(EventResult::Wait);
             };
 
-            viewport.info.events.clear(); // they should have been processed
             let window = viewport.window.clone().unwrap();
             let gl_surface = viewport.gl_surface.as_ref().unwrap();
             let egui_winit = viewport.egui_winit.as_mut().unwrap();
@@ -943,9 +947,9 @@ impl GlowWinitRunning<'_> {
         } else if post_render_repaint_now {
             Ok(EventResult::RepaintNow(window_id))
         } else if viewport_id == ViewportId::ROOT
-            && let Some(aux_viewport_id) =
-                self.app
-                    .take_pending_auxiliary_viewport_repaint(&self.integration.egui_ctx)
+            && let Some(aux_viewport_id) = self
+                .app
+                .take_pending_auxiliary_viewport_repaint(&self.integration.egui_ctx)
         {
             let aux_window_id = self
                 .glutin
@@ -959,8 +963,7 @@ impl GlowWinitRunning<'_> {
             } else {
                 Ok(EventResult::Wait)
             }
-        } else if let Some(root_window_id) = root_window_id_for_repaint
-        {
+        } else if let Some(root_window_id) = root_window_id_for_repaint {
             Ok(EventResult::RepaintNow(root_window_id))
         } else {
             Ok(EventResult::Wait)
@@ -1855,7 +1858,10 @@ fn render_immediate_viewport(
             log::debug!(
                 "[Glow Immediate Sync Resize Executed] resizing viewport={:?} from={:?} to={:?}",
                 viewport_id,
-                glutin.viewports.get(&viewport_id).and_then(|vp| vp.current_physical_size),
+                glutin
+                    .viewports
+                    .get(&viewport_id)
+                    .and_then(|vp| vp.current_physical_size),
                 live_size
             );
             glutin.resize(viewport_id, live_size);
@@ -1876,11 +1882,7 @@ fn render_immediate_viewport(
 
         let mut raw_input = egui_winit.take_egui_input(&window);
         if let Some(physical_size) = viewport.current_physical_size {
-            let rect = screen_rect_from_physical_size(
-                egui_ctx,
-                &window,
-                physical_size,
-            );
+            let rect = screen_rect_from_physical_size(egui_ctx, &window, physical_size);
             log::debug!(
                 "[Glow Immediate ScreenRect Overwrite] viewport={:?} physical_size={:?} screen_rect={:?}",
                 viewport_id,

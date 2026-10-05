@@ -107,6 +107,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `Ctrl + →` / `Ctrl + ←` | Rotate 90° CW / CCW |
 | `Ctrl + ↑` / `Ctrl + ↓` | Increase / decrease HDR exposure by **0.5 EV** |
 | `Alt + Wheel Down / Up` | Rotate 90° CW / CCW |
+| `Ctrl + Q` | Quit (Linux / macOS) |
 | `Alt+F4` | Quit (Windows) |
 
 #### Directory tree (when the folder tree has focus)
@@ -120,6 +121,8 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `F5` | Refresh the current folder's subfolder list (selection unchanged) |
 
 Click a folder in the tree to give it keyboard focus. Click the image list to move focus there; click the main image area to return arrow keys / `F5` to the main window.
+
+On macOS, **Cmd+Q** is the Quit item in winit's default application menu, not the in-app binding above. **Ctrl+Q** is the shortcut the viewer handles itself.
 
 *Default shortcuts above can be remapped in **Settings > Hotkeys**.*
 

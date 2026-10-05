@@ -189,8 +189,10 @@ impl ImageViewerApp {
             }
             #[cfg(not(target_os = "windows"))]
             AppAction::Quit => {
-                self.explicit_quit = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                // Same exit as tray Quit. Do not send ViewportCommand::Close:
+                // the eframe fork applies viewport commands before paint, and
+                // clearing events in that same frame used to drop the synthetic Close.
+                self.quit_process_now();
             }
             AppAction::SelectPixelRegion => {
                 // Handled directly in rendering/mod.rs canvas layer

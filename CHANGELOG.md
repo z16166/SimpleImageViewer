@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.1.4] - 2026-10-05
+
+### Fixed
+- **Linux / macOS quit shortcut**: **Ctrl+Q** now exits immediately, the same way as the tray Exit command. The old path sent `ViewportCommand::Close`, and the eframe fork's commands-before-paint path cleared that synthetic close in the same frame on every desktop backend (X11, Wayland, and macOS; wgpu and glow). The shortcut works from the main window, the settings panel, modal dialogs, and the detached directory-tree window. It does not quit while the settings panel is capturing a hotkey. Closing the panel ends that capture, so the next key is a normal shortcut. On macOS, **Cmd+Q** is not this shortcut: winit's default application menu already binds it to `terminate:`, so AppKit does not deliver the key to the window.
+- **In-app window close**: A `ViewportCommand::Close` issued by the app is no longer cleared in the same frame as the commands-before-paint path. Native close (title bar, Alt+F4) was already unaffected.
+
 ## [3.1.3] - 2026-07-16
 
 ### Fixed
