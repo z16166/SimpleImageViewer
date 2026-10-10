@@ -282,9 +282,9 @@ for _pc in gdk-3.0 gtk+-3.0 pango gdk-pixbuf-2.0; do
 done
 
 # Monkey's Audio SDK (non-Windows path — was host step before)
-MONKEY_VERSION="${MONKEY_SDK_VERSION:-1293}"
+MONKEY_VERSION="${MONKEY_SDK_VERSION:-1327}"
 MONKEY_DIR="${MONKEY_SDK_DIR:-3rdparty/monkey-sdk}"
-if [[ ! -f "${MONKEY_DIR}/Shared/Common/MACLib.h" ]]; then
+if [[ ! -f "${MONKEY_DIR}/Source/MACLib/MACLib.h" ]]; then
   mkdir -p "${MONKEY_DIR}"
   curl -fsSL -o /tmp/monkey_sdk.zip "https://monkeysaudio.com/files/MAC_${MONKEY_VERSION}_SDK.zip"
   rm -rf /tmp/monkey_temp

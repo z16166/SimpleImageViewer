@@ -112,6 +112,8 @@ set(MAC_LIBRARY_SOURCE_FILES
         ${MONKEY_SDK_ROOT}/Source/MACLib/UnBitArray.cpp
         ${MONKEY_SDK_ROOT}/Source/MACLib/UnBitArrayBase.cpp
         ${MONKEY_SDK_ROOT}/Source/MACLib/WAVInputSource.cpp
+        ${MONKEY_SDK_ROOT}/Source/MACLib/Interim.cpp
+        ${MONKEY_SDK_ROOT}/Source/MACLib/Old/NewPredictorOld.cpp
         ${MONKEY_SDK_ROOT}/Source/MACLib/Old/AntiPredictorOld.cpp
         ${MONKEY_SDK_ROOT}/Source/MACLib/Old/AntiPredictorExtraHighOld.cpp
         ${MONKEY_SDK_ROOT}/Source/MACLib/Old/AntiPredictorFastOld.cpp

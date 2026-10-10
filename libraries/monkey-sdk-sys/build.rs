@@ -14,7 +14,34 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+fn ensure_archiver_temp_dir() {
+    // lib.exe writes lnk{guid}.tmp while appending to an existing archive.
+    // Executables launched from this volume cannot create files in the
+    // default user temp directory, so point TMP at OUT_DIR when that probe fails.
+    let probe = std::env::temp_dir().join(format!("monkey-sdk-tmp-probe-{}", std::process::id()));
+    if std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&probe)
+        .is_ok()
+    {
+        let _ = std::fs::remove_file(&probe);
+        return;
+    }
+
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let tmp = out_dir.join("lib-tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    unsafe {
+        std::env::set_var("TMP", &tmp);
+        std::env::set_var("TEMP", &tmp);
+    }
+}
+
 fn main() {
+    ensure_archiver_temp_dir();
+
     // Force static linking
     unsafe {
         std::env::set_var("VCPKG_ALL_STATIC", "1");
@@ -124,6 +151,7 @@ fn main() {
             maclib_src.join("UnBitArray.cpp"),
             maclib_src.join("UnBitArrayBase.cpp"),
             maclib_src.join("WAVInputSource.cpp"),
+            maclib_src.join("Interim.cpp"),
             maclib_src.join("Old").join("AntiPredictorOld.cpp"),
             maclib_src.join("Old").join("AntiPredictorExtraHighOld.cpp"),
             maclib_src.join("Old").join("AntiPredictorFastOld.cpp"),
