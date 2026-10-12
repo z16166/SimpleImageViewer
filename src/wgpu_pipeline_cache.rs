@@ -83,6 +83,9 @@ fn stable_hash_bytes(bytes: &[u8], seed: u64) -> u64 {
 
 pub fn load_for_adapter(adapter: &wgpu::Adapter) -> Option<Vec<u8>> {
     let path = cache_path(adapter);
+    // A previous process::exit can kill the writer after it truncates this temp file
+    // and before the rename. Drop that leftover before any new save starts.
+    discard_incomplete_temp(&path);
     // Defer stale-file cleanup to a background thread so startup isn't blocked by I/O.
     let cleanup_path = path.clone();
     std::thread::Builder::new()
@@ -96,6 +99,7 @@ pub fn load_for_adapter(adapter: &wgpu::Adapter) -> Option<Vec<u8>> {
                 path.display(),
                 data.len()
             );
+            remember_saved(&path, &data);
             Some(data)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -126,31 +130,62 @@ pub fn persist_async(info: &wgpu::AdapterInfo, cache: &wgpu::PipelineCache) {
     let Some(data) = cache.get_data() else {
         return;
     };
-    let mut in_flight = persist_in_flight().lock();
-    if in_flight.as_ref() == Some(&path) {
-        return;
-    }
-    *in_flight = Some(path.clone());
-    drop(in_flight);
+    spawn_persist(path, data);
+}
 
-    if let Err(err) = std::thread::Builder::new()
-        .name("siv-wgpu-pcache-persist".to_string())
-        .spawn(move || {
-            let result = save_to_path(&path, &data);
-            persist_in_flight().lock().take();
-            if let Err(error) = result {
-                log::warn!("[HDR] failed to save wgpu pipeline cache: {error}");
-            }
-        })
-    {
-        persist_in_flight().lock().take();
-        log::warn!("[HDR] failed to spawn wgpu pipeline cache persist thread: {err}");
+/// Finish any in-flight save, then write `cache` on this thread.
+///
+/// Windows shutdown calls [`std::process::exit`] immediately after this. That
+/// aborts background threads without flushing, so an async save leaves a 0-byte
+/// `.tmp` beside the real cache. Callers that are about to exit must use this.
+pub fn persist_blocking(info: &wgpu::AdapterInfo, cache: &wgpu::PipelineCache) {
+    finish_persist_thread();
+    let path = cache_path_for_adapter_info(info);
+    let Some(data) = cache.get_data() else {
+        return;
+    };
+    if let Err(error) = save_to_path(&path, &data) {
+        log::warn!("[HDR] failed to save wgpu pipeline cache: {error}");
     }
 }
 
-fn persist_in_flight() -> &'static Mutex<Option<PathBuf>> {
-    static GATE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
-    GATE.get_or_init(|| Mutex::new(None))
+fn persist_slot() -> &'static Mutex<Option<std::thread::JoinHandle<()>>> {
+    static SLOT: OnceLock<Mutex<Option<std::thread::JoinHandle<()>>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn spawn_persist(path: PathBuf, data: Vec<u8>) {
+    if last_saved_matches(&path, &data) {
+        return;
+    }
+    let mut slot = persist_slot().lock();
+    if slot.as_ref().is_some_and(|handle| !handle.is_finished()) {
+        return;
+    }
+    if let Some(handle) = slot.take() {
+        drop(slot);
+        let _ = handle.join();
+        slot = persist_slot().lock();
+    }
+    match std::thread::Builder::new()
+        .name("siv-wgpu-pcache-persist".to_string())
+        .spawn(move || {
+            if let Err(error) = save_to_path(&path, &data) {
+                log::warn!("[HDR] failed to save wgpu pipeline cache: {error}");
+            }
+        }) {
+        Ok(handle) => *slot = Some(handle),
+        Err(err) => log::warn!("[HDR] failed to spawn wgpu pipeline cache persist thread: {err}"),
+    }
+}
+
+fn finish_persist_thread() {
+    let handle = persist_slot().lock().take();
+    if let Some(handle) = handle
+        && handle.join().is_err()
+    {
+        log::warn!("[HDR] wgpu pipeline cache persist thread panicked");
+    }
 }
 
 fn remove_stale_pipeline_cache_files(current_path: &Path) {
@@ -166,6 +201,10 @@ fn remove_stale_pipeline_cache_files(current_path: &Path) {
     let Some(base_prefix) = current_name.split("_pcv").next() else {
         return;
     };
+    let current_temp_name = temp_path_for(current_path)
+        .file_name()
+        .map(|temp_name| temp_name.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let entries = match std::fs::read_dir(parent) {
         Ok(entries) => entries,
         Err(_) => return,
@@ -175,7 +214,13 @@ fn remove_stale_pipeline_cache_files(current_path: &Path) {
         if name == current_name {
             continue;
         }
-        if name.starts_with(base_prefix) && name.ends_with(".bin") && name.contains("_pcv") {
+        let is_other_cache_bin =
+            name.starts_with(base_prefix) && name.ends_with(".bin") && name.contains("_pcv");
+        let is_leftover_temp = name != current_temp_name
+            && name.starts_with(base_prefix)
+            && name.ends_with(".tmp")
+            && name.contains("_pcv");
+        if is_other_cache_bin || is_leftover_temp {
             if let Err(error) = std::fs::remove_file(entry.path()) {
                 log::debug!(
                     "[HDR] failed to remove stale wgpu pipeline cache {}: {error}",
@@ -197,13 +242,52 @@ pub fn save_atomic(adapter: &wgpu::Adapter, data: &[u8]) -> std::io::Result<()> 
     save_to_path(&cache_path(adapter), data)
 }
 
+fn last_saved() -> &'static Mutex<std::collections::HashMap<PathBuf, Vec<u8>>> {
+    static SAVED: OnceLock<Mutex<std::collections::HashMap<PathBuf, Vec<u8>>>> = OnceLock::new();
+    SAVED.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn last_saved_matches(path: &Path, data: &[u8]) -> bool {
+    last_saved()
+        .lock()
+        .get(path)
+        .is_some_and(|saved| saved == data)
+}
+
+fn remember_saved(path: &Path, data: &[u8]) {
+    let mut saved = last_saved().lock();
+    if saved.get(path).is_some_and(|existing| existing == data) {
+        return;
+    }
+    saved.insert(path.to_path_buf(), data.to_vec());
+}
+
+fn temp_path_for(path: &Path) -> PathBuf {
+    path.with_extension("tmp")
+}
+
+fn discard_incomplete_temp(path: &Path) {
+    let _ = std::fs::remove_file(temp_path_for(path));
+}
+
 fn save_to_path(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    if last_saved_matches(path, data) {
+        log::debug!(
+            "[HDR] wgpu pipeline cache unchanged, skip write {}",
+            path.display()
+        );
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let temp = path.with_extension("tmp");
+    let temp = temp_path_for(path);
     std::fs::write(&temp, data)?;
-    std::fs::rename(temp, path)?;
+    if let Err(error) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    remember_saved(path, data);
     log::info!(
         "[HDR] saved wgpu pipeline cache {} ({} bytes)",
         path.display(),
@@ -290,5 +374,81 @@ mod tests {
         let file_name = path.file_name().unwrap().to_string_lossy();
 
         assert!(file_name.contains(&format!("_pcv{PIPELINE_CACHE_SCHEMA_VERSION}_")));
+    }
+
+    fn test_dir(name: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "siv-pcache-{name}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn save_to_path_renames_temp_file_away() {
+        let dir = test_dir("save");
+        let path = dir.join("siv_wgpu_pipeline_cache_Dx12_4318_10464_pcv11_drv1.bin");
+        let temp = temp_path_for(&path);
+
+        save_to_path(&path, b"cache-bytes").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"cache-bytes");
+        assert!(!temp.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_to_path_skips_write_when_bytes_are_unchanged() {
+        let dir = test_dir("unchanged");
+        let path = dir.join("siv_wgpu_pipeline_cache_Dx12_4318_10464_pcv11_drv1.bin");
+
+        save_to_path(&path, b"cache-bytes").unwrap();
+        std::fs::write(&path, b"tampered").unwrap();
+        save_to_path(&path, b"cache-bytes").unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"tampered",
+            "identical bytes must not rewrite the file"
+        );
+
+        save_to_path(&path, b"cache-bytes-v2").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"cache-bytes-v2");
+        assert!(!temp_path_for(&path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blocking_persist_joins_in_flight_save_before_returning() {
+        static ORDER: Mutex<()> = Mutex::new(());
+        let _order = ORDER.lock();
+
+        let dir = test_dir("join");
+        let path = dir.join("siv_wgpu_pipeline_cache_Dx12_4318_10464_pcv11_drv1.bin");
+        spawn_persist(path.clone(), b"from-background".to_vec());
+        finish_persist_thread();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"from-background");
+        assert!(!temp_path_for(&path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_discards_zero_byte_temp_left_by_a_killed_writer() {
+        let dir = test_dir("discard");
+        let path = dir.join("siv_wgpu_pipeline_cache_Dx12_4318_10464_pcv11_drv1.bin");
+        let temp = temp_path_for(&path);
+        std::fs::write(&path, b"good-cache").unwrap();
+        std::fs::write(&temp, b"").unwrap();
+
+        discard_incomplete_temp(&path);
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"good-cache");
+        assert!(!temp.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
