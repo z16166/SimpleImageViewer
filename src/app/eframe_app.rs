@@ -121,7 +121,9 @@ impl eframe::App for ImageViewerApp {
             self.wgpu_adapter_info.as_ref(),
             self.wgpu_pipeline_cache.as_deref(),
         ) {
-            crate::wgpu_pipeline_cache::persist_async(info, cache);
+            // Must finish before process::exit. An async save is killed inside
+            // File::create and leaves a 0-byte `.tmp` next to the cache.
+            crate::wgpu_pipeline_cache::persist_blocking(info, cache);
         }
 
         // Force-terminate BEFORE eframe tries to tear down GPU resources.
