@@ -85,7 +85,7 @@ pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult
             // ── Fixed bottom bar: Copy + Close ────────────────────────────────
             egui::Panel::bottom("xmp_footer")
                 .resizable(false)
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if state.data.is_some() {

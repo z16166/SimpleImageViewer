@@ -4,8 +4,9 @@ use core::ops::Range;
 use crate::{
     AccelerationStructureBarrier, Api, Attachment, BufferBarrier, BufferBinding, BufferCopy,
     BufferTextureCopy, BuildAccelerationStructureDescriptor, ColorAttachment, CommandEncoder,
-    ComputePassDescriptor, DepthStencilAttachment, DeviceError, Label, MemoryRange,
-    PassTimestampWrites, Rect, RenderPassDescriptor, TextureBarrier, TextureCopy,
+    ComputePassDescriptor, DepthStencilAttachment, DeviceError, DynRayTracingPipeline, Label,
+    MemoryRange, PassTimestampWrites, RayTracingPassDescriptor, Rect, RenderPassDescriptor,
+    TextureBarrier, TextureCopy,
 };
 
 use super::{
@@ -183,8 +184,25 @@ pub trait DynCommandEncoder: DynResource + core::fmt::Debug {
 
     unsafe fn set_compute_pipeline(&mut self, pipeline: &dyn DynComputePipeline);
 
-    unsafe fn dispatch(&mut self, count: [u32; 3]);
-    unsafe fn dispatch_indirect(&mut self, buffer: &dyn DynBuffer, offset: wgt::BufferAddress);
+    unsafe fn dispatch_workgroups(&mut self, count: [u32; 3]);
+    unsafe fn dispatch_workgroups_indirect(
+        &mut self,
+        buffer: &dyn DynBuffer,
+        offset: wgt::BufferAddress,
+    );
+
+    unsafe fn begin_ray_tracing_pass(&mut self, desc: &RayTracingPassDescriptor);
+    unsafe fn end_ray_tracing_pass(&mut self);
+
+    unsafe fn trace_rays(
+        &mut self,
+        count: [u32; 3],
+        ray_generation_group_data: crate::PipelineGroupData<dyn DynBuffer>,
+        miss_group_data: crate::PipelineGroupData<dyn DynBuffer>,
+        intersection_group_data: crate::PipelineGroupData<dyn DynBuffer>,
+    );
+
+    unsafe fn set_ray_tracing_pipeline(&mut self, pipeline: &dyn DynRayTracingPipeline);
 
     unsafe fn build_acceleration_structures<'a>(
         &mut self,
@@ -606,13 +624,17 @@ impl<C: CommandEncoder + DynResource> DynCommandEncoder for C {
         unsafe { C::set_compute_pipeline(self, pipeline) };
     }
 
-    unsafe fn dispatch(&mut self, count: [u32; 3]) {
-        unsafe { C::dispatch(self, count) };
+    unsafe fn dispatch_workgroups(&mut self, count: [u32; 3]) {
+        unsafe { C::dispatch_workgroups(self, count) };
     }
 
-    unsafe fn dispatch_indirect(&mut self, buffer: &dyn DynBuffer, offset: wgt::BufferAddress) {
+    unsafe fn dispatch_workgroups_indirect(
+        &mut self,
+        buffer: &dyn DynBuffer,
+        offset: wgt::BufferAddress,
+    ) {
         let buffer = buffer.expect_downcast_ref();
-        unsafe { C::dispatch_indirect(self, buffer, offset) };
+        unsafe { C::dispatch_workgroups_indirect(self, buffer, offset) };
     }
 
     unsafe fn set_render_pipeline(&mut self, pipeline: &dyn DynRenderPipeline) {
@@ -636,6 +658,46 @@ impl<C: CommandEncoder + DynResource> DynCommandEncoder for C {
     ) {
         let binding = binding.expect_downcast();
         unsafe { self.set_vertex_buffer(index, binding) };
+    }
+
+    unsafe fn begin_ray_tracing_pass(&mut self, desc: &RayTracingPassDescriptor) {
+        let desc = RayTracingPassDescriptor { label: desc.label };
+        unsafe { C::begin_ray_tracing_pass(self, &desc) };
+    }
+
+    unsafe fn end_ray_tracing_pass(&mut self) {
+        unsafe { C::end_ray_tracing_pass(self) };
+    }
+
+    unsafe fn set_ray_tracing_pipeline(&mut self, pipeline: &dyn DynRayTracingPipeline) {
+        let pipeline = pipeline.expect_downcast_ref();
+        unsafe { C::set_ray_tracing_pipeline(self, pipeline) };
+    }
+
+    unsafe fn trace_rays<'a>(
+        &mut self,
+        count: [u32; 3],
+        ray_generation_group_data: crate::PipelineGroupData<'a, dyn DynBuffer>,
+        miss_group_data: crate::PipelineGroupData<'a, dyn DynBuffer>,
+        intersection_group_data: crate::PipelineGroupData<'a, dyn DynBuffer>,
+    ) {
+        let downcast_group_data =
+            |data: crate::PipelineGroupData<'a, dyn DynBuffer>| crate::PipelineGroupData {
+                buffer: data.buffer.expect_downcast_ref(),
+                offset: data.offset,
+                stride: data.stride,
+                count: data.count,
+            };
+
+        unsafe {
+            C::trace_rays(
+                self,
+                count,
+                downcast_group_data(ray_generation_group_data),
+                downcast_group_data(miss_group_data),
+                downcast_group_data(intersection_group_data),
+            );
+        }
     }
 
     unsafe fn build_acceleration_structures<'a>(

@@ -137,9 +137,7 @@ fn clang_print_file_commands() -> Vec<Vec<String>> {
 }
 
 fn split_command(cc: &str) -> Vec<String> {
-    cc.split_whitespace()
-        .map(|part| part.to_string())
-        .collect()
+    cc.split_whitespace().map(|part| part.to_string()).collect()
 }
 
 fn clang_print_file_name(command: &[String], file_name: &str) -> Result<PathBuf, String> {

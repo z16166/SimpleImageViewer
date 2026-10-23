@@ -59,7 +59,7 @@ impl MovableModal {
     ///
     /// `id` must be unique across all concurrently-open dialogs.
     /// `title` is shown in the window title bar.
-    pub fn new(id: impl std::hash::Hash, title: impl Into<String>) -> Self {
+    pub fn new(id: impl std::hash::Hash + std::fmt::Debug, title: impl Into<String>) -> Self {
         Self {
             id: egui::Id::new(id),
             title: title.into(),

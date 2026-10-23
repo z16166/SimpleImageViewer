@@ -13,33 +13,32 @@ path = "src/main.rs"
 
 [dependencies]
 rand = "0.8"
-eframe = { version = "0.34", default-features = false, features = [
+eframe = { version = "0.37", default-features = false, features = [
     "default_fonts",
     "wgpu",
     "wayland",
     "x11",
 ] }
-rust-i18n = "3"
+rust-i18n = "4"
 # AVIF decode/encode: use libavif (`avif-native`), not `image`'s `avif` (ravif — bloated, encode-only there).
 image = { version = "0.25", default-features = false, features = [
     "png", "gif", "bmp", "tga", "webp", "ico", "pnm", "hdr", "qoi",
 ] }
-parking_lot = "0.12"
+parking_lot = "0.13"
 arc-swap = "1"
-rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "wav", "vorbis", "symphonia-mp3", "symphonia-flac", "symphonia-wav", "symphonia-vorbis", "symphonia-aac"] }
+rodio = { version = "0.23", default-features = false, features = ["playback", "mp3", "flac", "wav", "vorbis", "symphonia-mp3", "symphonia-flac", "symphonia-wav", "symphonia-vorbis", "symphonia-aac"] }
 symphonia = { version = "0.5", features = ["all"] }
-lofty = "0.24"
+lofty = "0.25"
 encoding_rs = "0.8"
 rfd = "0.17"
 walkdir = "2"
-jwalk = "0.8"
+jwalk = "0.9"
 # tiff = "0.11" // Removed in favor of libtiff via libloading on Linux and WIC/ImageIO elsewhere
 crossbeam-channel = "0.5"
-rayon = "1.10"
+rayon = "1.12"
 log = "0.4"
-flexi_logger = { version = "0.29", features = ["async"] }
+flexi_logger = { version = "0.31", features = ["async"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 serde_yaml = "0.9"
 font-kit = "0.14"
 ttf-parser = "0.25"
@@ -48,11 +47,11 @@ clipboard-rs = "0.3"
 wallpaper = "3.2.0"
 interprocess = "2.4.0"
 trash = "5"
-tray-icon = { version = "0.19", default-features = false }
-sysinfo = { version = "0.35", default-features = false, features = ["system"] }
+tray-icon = { version = "0.26", default-features = false }
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 xmpkit = { version = "0.1", default-features = false, features = ["gif", "jpeg", "png", "psd", "tiff", "webp"] }
-quick-xml = "0.39"
-wgpu = { version = "29", default-features = false, features = [
+quick-xml = "0.42"
+wgpu = { version = "30", default-features = false, features = [
     "dx12",
     "vulkan",
     "metal",
@@ -61,10 +60,10 @@ wgpu = { version = "29", default-features = false, features = [
     "parking_lot",
 ] }
 # Optional: enables patched wgpu-hal feature flags on the same crate graph as `wgpu`.
-wgpu-hal = { version = "29", default-features = false, optional = true }
+wgpu-hal = { version = "30", default-features = false, optional = true }
 memmap2 = "0.9"
-mimalloc = { version = "=0.1.51", features = ["extended"], optional = true }
-# Pin libmimalloc-sys to match mimalloc 0.1.51 (bundled mimalloc C 3.3.2; fixes Windows ARM64 #1277).
+mimalloc = { version = "=0.1.52", features = ["extended"], optional = true }
+# Pin libmimalloc-sys to the 0.1.49 line (bundled mimalloc C 3.3.2; fixes Windows ARM64 #1277).
 libmimalloc-sys = { version = "=0.1.49", features = ["extended"], optional = true }
 moka = { version = "0.12.15", features = ["sync"] }
 pollster = "0.4.0"
@@ -77,8 +76,8 @@ libavif-sys = { path = "libraries/libavif-sys", optional = true }
 libheif-sys = { path = "libraries/libheif-sys", optional = true }
 libjxl-sys = { path = "libraries/libjxl-sys", optional = true }
 bytemuck = "1.25.0"
-half = { version = "2.6", default-features = false }
-miniz_oxide = "0.8.9"
+half = { version = "2.7", default-features = false }
+miniz_oxide = "0.9"
 memchr = "2.8"
 
 [features]
@@ -116,8 +115,8 @@ hdr-modern-formats = ["avif-native", "heif-native", "jpegxl"]
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi", "wingdi", "libloaderapi", "fileapi", "winbase"] }
-winreg = "0.11"
-windows = { version = "0.58", features = [
+winreg = "0.56"
+windows = { version = "0.62", features = [
     "Win32_Devices_Display",
     "Win32_Foundation",
     "Win32_Graphics_Dxgi",
@@ -144,19 +143,19 @@ windows = { version = "0.58", features = [
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-core-graphics = "0.24"
+core-graphics = "0.25"
 core-foundation = "0.10"
 foreign-types = "0.5"
-tiff = "0.9"
+tiff = "0.11"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-printpdf = { version = "0.9.1", features = ["images"] }
+printpdf = { version = "0.12", features = ["images"] }
 # Known folders on Unix and on the non-Windows stub. Windows Places uses the Shell API.
-dirs = "6"
+dirs = "7"
 
 # Build-time dependencies: only needed on Windows for PE resource embedding
 [target.'cfg(windows)'.build-dependencies]
@@ -204,4 +203,5 @@ inherits = "release"
 opt-level = 0
 
 [dev-dependencies]
-naga = { version = "29.0.1", default-features = false, features = ["wgsl-in"] }
+naga = { version = "30", default-features = false, features = ["wgsl-in"] }
+serde_json = "1"

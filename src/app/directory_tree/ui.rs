@@ -752,7 +752,7 @@ fn draw_directory_tree_top_panels(
         );
     });
 
-    let splitter_id = ui.id().with("directory_tree_splitter");
+    let splitter_id = ui.scope_id().with("directory_tree_splitter");
     let splitter_response = ui.interact(splitter_rect, splitter_id, egui::Sense::drag());
     let mut splitter_drag_delta_x = 0.0;
     if splitter_response.dragged() {
@@ -1038,7 +1038,7 @@ fn draw_folder_panel(
                 }
             }
         });
-    chrome.folder_scroll_offset_y = scroll_output.state.offset.y;
+    chrome.folder_scroll_offset_y = scroll_output.state.unclamped_offset().y;
 }
 
 fn draw_directory_node(
@@ -1307,7 +1307,7 @@ fn draw_image_file_list(
                 );
             }
         });
-        chrome.image_list_scroll_offset_y = scroll_output.state.offset.y;
+        chrome.image_list_scroll_offset_y = scroll_output.state.unclamped_offset().y;
     });
 
     if show_sync_warning {
@@ -1550,7 +1550,7 @@ fn draw_image_details_header(
             if sorting_enabled {
                 let response = ui.interact(
                     rect,
-                    ui.id().with(("image_list_sort", column)),
+                    ui.scope_id().with(("image_list_sort", column)),
                     egui::Sense::click(),
                 );
                 if response.clicked() {

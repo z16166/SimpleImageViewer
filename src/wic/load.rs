@@ -89,7 +89,7 @@ fn load_via_wic_inner(
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
 
-        let mut decoder_res: Result<IWICBitmapDecoder> = Err(windows::core::Error::from_win32());
+        let mut decoder_res: Result<IWICBitmapDecoder> = Err(windows::core::Error::from_thread());
         let mut stream_out: Option<IWICStream> = None;
         let mut mmap_out: Option<std::sync::Arc<memmap2::Mmap>> = None;
 

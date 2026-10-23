@@ -80,7 +80,7 @@ pub(crate) fn seed_embedded_side_panel_states(
     ctx.data_mut(|data| {
         data.insert_persisted(
             egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID),
-            egui::PanelState { rect },
+            egui::PanelState { outer_rect: rect },
         );
     });
 }

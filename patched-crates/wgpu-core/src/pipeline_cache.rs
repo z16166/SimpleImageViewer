@@ -341,7 +341,8 @@ mod tests {
         backend: wgt::Backend::Vulkan,
         subgroup_min_size: 32,
         subgroup_max_size: 32,
-        transient_saves_memory: true,
+        transient_saves_memory: Some(true),
+        limit_bucket: None,
     };
 
     // IMPORTANT: If these tests fail, then you MUST increment HEADER_VERSION

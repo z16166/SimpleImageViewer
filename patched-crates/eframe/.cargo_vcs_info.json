@@ -1,6 +1,6 @@
 {
   "git": {
-    "sha1": "ac5e932287430f8944519ab99fcaf1ae1400fcea"
+    "sha1": "3c6eb8261c3293ad9c7ea1ed58487e038860ebef"
   },
   "path_in_vcs": "crates/eframe"
 }

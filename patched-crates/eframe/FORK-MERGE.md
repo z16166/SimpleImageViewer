@@ -11,6 +11,9 @@ After bumping `eframe` / `egui` / `egui-wgpu` / `wgpu` / `wgpu-hal` in
 `Cargo.toml`, diff each file below against upstream at the new tag and re-apply
 the fork blocks if still needed.
 
+Current fork baseline: eframe/egui/egui-wgpu 0.37.0, wgpu/wgpu-hal/wgpu-core 30.0.1.
+`alsa-sys` stays on 0.4.0 (cpal/rodio still depend on that line) and `vcpkg` stays on 0.2.15.
+
 ## Platform scope
 
 | Area | Win10/11, macOS, Linux | Win7 x64 (`legacy_win7` only) |

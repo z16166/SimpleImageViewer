@@ -21,12 +21,13 @@ pub static VALIDATION_CANARY: ValidationCanary = ValidationCanary {
 };
 
 /// Flag for internal testing.
+#[derive(Debug)]
 pub struct ValidationCanary {
     inner: Mutex<Vec<String>>,
 }
 
 impl ValidationCanary {
-    #[allow(dead_code)] // in some configurations this function is dead
+    #[allow(dead_code, reason = "in some configurations this function is dead")]
     pub(crate) fn add(&self, msg: String) {
         self.inner.lock().push(msg);
     }

@@ -1353,7 +1353,10 @@ fn blend_layers_gpu_inner(
         });
     wait_for_readback(ctx, device, &rx, cancel)?;
 
-    let mapped = readback.slice(..).get_mapped_range();
+    let mapped = readback
+        .slice(..)
+        .get_mapped_range()
+        .map_err(|err| crate::loader::DecodeError::Message(err.to_string()))?;
     let mut pixels = Vec::with_capacity(initial_canvas.len());
     for row in mapped.chunks(padded_bpr as usize) {
         pixels.extend_from_slice(&row[..unpadded_bpr as usize]);

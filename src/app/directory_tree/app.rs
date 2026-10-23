@@ -187,7 +187,7 @@ fn embedded_side_panel_stable_rect_before_show(
 ) -> egui::Rect {
     let available = ui.available_rect_before_wrap();
     let width = embedded_side_panel_clamped_width(
-        egui::PanelState::load(ui.ctx(), panel_id).map(|state| state.rect.width()),
+        egui::PanelState::load(ui.ctx(), panel_id).map(|state| state.outer_rect.width()),
         default_width,
         available.width(),
     );
@@ -208,7 +208,14 @@ fn restore_embedded_side_panel_state_if_not_resizing(
     if !super::should_restore_embedded_side_panel_state(resize_active) {
         return;
     }
-    ctx.data_mut(|data| data.insert_persisted(panel_id, egui::PanelState { rect: stable_rect }));
+    ctx.data_mut(|data| {
+        data.insert_persisted(
+            panel_id,
+            egui::PanelState {
+                outer_rect: stable_rect,
+            },
+        )
+    });
 }
 
 impl ImageViewerApp {
@@ -2065,7 +2072,7 @@ impl ImageViewerApp {
             .frame(panel_frame)
             .default_size(default_width)
             .min_size(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 let allow_image_context_menu =
                     self.active_modal.is_none() && !self.image_files.is_empty();
                 if Self::paint_directory_tree_panel(
