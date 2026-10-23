@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Improved
+- **Cleaner upgrades**: GPU cache files left behind by older versions are removed automatically. The cache the current session is using stays in place on Windows, macOS, and Linux.
+
 ## [3.1.5] - 2026-10-23
 
 ### Fixed

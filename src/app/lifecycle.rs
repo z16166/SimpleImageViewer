@@ -248,6 +248,7 @@ impl ImageViewerApp {
             );
             (pipeline_cache.map(std::sync::Arc::new), Some(adapter_info))
         } else {
+            crate::wgpu_pipeline_cache::start_pipeline_cache_cleanup(None);
             crate::loader::GPU_DEMOSAIC_SUPPORTED
                 .store(false, std::sync::atomic::Ordering::Relaxed);
             (None, None)

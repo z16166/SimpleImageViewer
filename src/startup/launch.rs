@@ -566,6 +566,8 @@ pub fn run() -> eframe::Result {
 
     // If `run_native` returns `Err`, `on_exit` may not run; still join so yaml can finish.
     // Normal Windows close uses `process::exit` from `on_exit` after the first join (slot empty).
+    // Same for pipeline-cache cleanup: `_exit` / `process::exit` would abort it mid-delete.
+    crate::wgpu_pipeline_cache::join_pipeline_cache_cleanup();
     #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
     take_and_join_dx12_cache_validate_thread();
 
