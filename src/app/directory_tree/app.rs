@@ -180,7 +180,7 @@ use embedded_side_panel_layout_diag::maybe_log_embedded_side_panel_layout;
 #[inline]
 fn maybe_log_embedded_side_panel_layout(_sample: EmbeddedSidePanelLayoutSample) {}
 
-fn embedded_side_panel_stable_rect_before_show(
+pub(super) fn embedded_side_panel_stable_rect_before_show(
     ui: &egui::Ui,
     panel_id: egui::Id,
     default_width: f32,
@@ -197,15 +197,28 @@ fn embedded_side_panel_stable_rect_before_show(
     )
 }
 
-fn restore_embedded_side_panel_state_if_not_resizing(
+/// True when this frame's input released the resize handle.
+///
+/// Call this before `Panel::show`. That show writes the released width;
+/// the rect captured before it is still the pre-drag size.
+pub(super) fn embedded_side_panel_resize_commit_pending(
+    ctx: &egui::Context,
+    panel_id: egui::Id,
+) -> bool {
+    ctx.read_response(panel_id.with("__resize"))
+        .is_some_and(|response| response.drag_stopped())
+}
+
+pub(super) fn restore_embedded_side_panel_state_if_not_resizing(
     ctx: &egui::Context,
     panel_id: egui::Id,
     stable_rect: egui::Rect,
+    committing_released_size: bool,
 ) {
     let resize_active = ctx
         .read_response(panel_id.with("__resize"))
         .is_some_and(|response| response.dragged());
-    if !super::should_restore_embedded_side_panel_state(resize_active) {
+    if !super::should_restore_embedded_side_panel_state(resize_active, committing_released_size) {
         return;
     }
     ctx.data_mut(|data| {
@@ -2067,6 +2080,8 @@ impl ImageViewerApp {
         );
         let stable_panel_rect =
             embedded_side_panel_stable_rect_before_show(ui, panel_id, default_width);
+        let committing_released_size =
+            embedded_side_panel_resize_commit_pending(ui.ctx(), panel_id);
         let tree_embedded_width_before = self
             .directory_tree
             .tree
@@ -2103,7 +2118,12 @@ impl ImageViewerApp {
                 }
                 self.finish_directory_tree_image_list_context_menu(ui.ctx(), true);
             });
-        restore_embedded_side_panel_state_if_not_resizing(ui.ctx(), panel_id, stable_panel_rect);
+        restore_embedded_side_panel_state_if_not_resizing(
+            ui.ctx(),
+            panel_id,
+            stable_panel_rect,
+            committing_released_size,
+        );
         let panel_rect = panel_response.response.rect;
         let chrome_embedded_width_after = self
             .directory_tree

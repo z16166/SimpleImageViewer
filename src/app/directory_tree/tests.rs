@@ -565,8 +565,88 @@ fn embedded_side_panel_clamped_width_never_panics_on_narrow_viewport() {
 
 #[test]
 fn should_restore_embedded_side_panel_state_when_not_resizing() {
-    assert!(super::should_restore_embedded_side_panel_state(false));
-    assert!(!super::should_restore_embedded_side_panel_state(true));
+    assert!(super::should_restore_embedded_side_panel_state(
+        false, false
+    ));
+    assert!(!super::should_restore_embedded_side_panel_state(
+        true, false
+    ));
+    assert!(!super::should_restore_embedded_side_panel_state(
+        false, true
+    ));
+    assert!(!super::should_restore_embedded_side_panel_state(true, true));
+}
+
+#[test]
+fn embedded_side_panel_keeps_width_after_resize_release() {
+    use super::app::{
+        embedded_side_panel_resize_commit_pending, embedded_side_panel_stable_rect_before_show,
+        restore_embedded_side_panel_state_if_not_resizing,
+    };
+    use super::{DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID, embedded_directory_tree_panel_id};
+    use eframe::egui::{self, Event, Modifiers, PointerButton, Pos2, Rect};
+
+    let ctx = egui::Context::default();
+    let screen = Rect::from_min_max(Pos2::ZERO, Pos2::new(1280.0, 800.0));
+
+    let run_frame = |events: Vec<Event>| {
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(screen);
+        input.events = events;
+        ctx.run_ui(input, |ui| {
+            let panel_id = embedded_directory_tree_panel_id();
+            let committing_released_size =
+                embedded_side_panel_resize_commit_pending(ui.ctx(), panel_id);
+            let stable_rect = embedded_side_panel_stable_rect_before_show(ui, panel_id, 380.0);
+            egui::Panel::left(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID)
+                .resizable(true)
+                .default_size(380.0)
+                .min_size(320.0)
+                .show(ui, |ui| {
+                    // Fill the allocated rect so the resize handle stays on the persisted edge.
+                    ui.set_min_size(ui.available_size());
+                });
+            restore_embedded_side_panel_state_if_not_resizing(
+                ui.ctx(),
+                panel_id,
+                stable_rect,
+                committing_released_size,
+            );
+        })
+        .drop_without_applying_deltas();
+    };
+
+    run_frame(vec![]);
+    run_frame(vec![]);
+    let before = egui::PanelState::load(&ctx, embedded_directory_tree_panel_id())
+        .expect("panel state")
+        .outer_rect;
+    let from = Pos2::new(before.right(), before.center().y);
+    let to = Pos2::new(from.x + 140.0, from.y);
+    let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+
+    run_frame(vec![Event::PointerMoved(from)]);
+    run_frame(vec![button(from, true)]);
+    run_frame(vec![Event::PointerMoved(from.lerp(to, 0.5))]);
+    run_frame(vec![Event::PointerMoved(to)]);
+    run_frame(vec![button(to, false)]);
+    run_frame(vec![]);
+    run_frame(vec![]);
+
+    let after = egui::PanelState::load(&ctx, embedded_directory_tree_panel_id())
+        .expect("panel state")
+        .outer_rect
+        .width();
+    assert!(
+        after > before.width() + 80.0,
+        "released width {after} snapped back toward {}",
+        before.width()
+    );
 }
 
 #[test]
