@@ -318,7 +318,7 @@ impl ImageViewerApp {
             return;
         };
         let bottom_inset = self.hotkeys_issue_bottom_inset();
-        egui::Area::new(egui::Id::new("hotkeys_issue_overlay"))
+        egui::Area::new(egui::Id::unique("hotkeys_issue_overlay"))
             .anchor(
                 Align2::LEFT_BOTTOM,
                 Vec2::new(crate::constants::OSD_MARGIN, -bottom_inset),

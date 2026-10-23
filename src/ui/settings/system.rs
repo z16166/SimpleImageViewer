@@ -112,7 +112,7 @@ fn draw_windows_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             let (row_rect, _) =
                 ui.allocate_exact_size(egui::vec2(row_w, row_h), egui::Sense::hover());
 
-            let buttons_w_id = egui::Id::new("system_tab_button_group_width");
+            let buttons_w_id = egui::Id::unique("system_tab_button_group_width");
             let measured_w: f32 = ui.ctx().data(|d| d.get_temp(buttons_w_id).unwrap_or(0.0));
             let group_w = if measured_w > 0.0 {
                 measured_w.min(row_w)

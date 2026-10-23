@@ -71,6 +71,9 @@ default = [
     "x11",
 ]
 default_fonts = ["egui/default_fonts"]
+# egui 0.37 no longer bundles Noto Emoji / emoji-icon-font in default_fonts.
+# Menus and dialogs use those glyphs (folder, gear, warning, play).
+monochrome_emoji_fonts = ["default_fonts", "egui/monochrome_emoji_fonts"]
 experimental = ["egui/experimental"]
 glow = [
     "dep:egui_glow",

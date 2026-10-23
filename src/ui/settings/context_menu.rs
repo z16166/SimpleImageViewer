@@ -225,7 +225,7 @@ pub(super) fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui,
                                     };
                                     let row_resp = ui.interact(
                                         row_rect,
-                                        egui::Id::new(("context_menu_row", row_idx)),
+                                        egui::Id::unique(("context_menu_row", row_idx)),
                                         egui::Sense::click_and_drag(),
                                     );
                                     if selected && app.context_menu_scroll_to_selected {

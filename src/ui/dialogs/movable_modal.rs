@@ -61,7 +61,7 @@ impl MovableModal {
     /// `title` is shown in the window title bar.
     pub fn new(id: impl std::hash::Hash + std::fmt::Debug, title: impl Into<String>) -> Self {
         Self {
-            id: egui::Id::new(id),
+            id: egui::Id::unique(id),
             title: title.into(),
             resizable: true,
             default_size: egui::vec2(420.0, 300.0),
@@ -134,7 +134,7 @@ impl MovableModal {
         // Unique Id per modal opening so egui has no position memory from
         // previous openings → dialog always appears at the freshly-computed center.
         let modal_gen: u32 = ctx.data(|d| {
-            d.get_temp(egui::Id::new(super::modal_state::ID_MODAL_GENERATION))
+            d.get_temp(egui::Id::unique(super::modal_state::ID_MODAL_GENERATION))
                 .unwrap_or(0)
         });
         let unique_id = self.id.with(modal_gen);
@@ -184,7 +184,7 @@ impl MovableModal {
 
         ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
-            egui::Id::new("movable_modal_backdrop"),
+            egui::Id::unique("movable_modal_backdrop"),
         ))
         .rect_filled(screen, 0.0, color);
     }

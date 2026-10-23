@@ -52,7 +52,7 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
     let mut music_enabled_changed = false;
 
     egui::Window::new(t!("app.window_title"))
-        .id(egui::Id::new("settings_window"))
+        .id(egui::Id::unique("settings_window"))
         .default_pos({
             let screen = ctx.content_rect();
             let win_w = crate::constants::SETTINGS_WINDOW_DEFAULT_WIDTH;

@@ -225,7 +225,9 @@ impl ImageViewerApp {
         }
         let pointer = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
         let block_rect = ctx.data(|d| {
-            d.get_temp::<egui::Rect>(egui::Id::new(super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID))
+            d.get_temp::<egui::Rect>(egui::Id::unique(
+                super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID,
+            ))
         });
         super::ui::pointer_in_directory_tree_nav_block_rect(pointer, block_rect)
     }
@@ -2058,7 +2060,7 @@ impl ImageViewerApp {
         let panel_frame = super::ui::embedded_directory_tree_panel_frame(&self.cached_palette);
         let available_before = ui.available_width();
         let max_rect_width_before = ui.max_rect().width();
-        let panel_id = egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID);
+        let panel_id = egui::Id::unique(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID);
         let stable_panel_rect =
             embedded_side_panel_stable_rect_before_show(ui, panel_id, default_width);
         let tree_embedded_width_before = self

@@ -290,7 +290,7 @@ impl eframe::App for ImageViewerApp {
         // opening — egui has no position memory from previous openings, so the
         // dialog always appears at the calculated center position.
         {
-            let id = egui::Id::new(crate::ui::dialogs::modal_state::ID_PREV_HAD_MODAL);
+            let id = egui::Id::unique(crate::ui::dialogs::modal_state::ID_PREV_HAD_MODAL);
             let had_modal = ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
             let has_modal = self.active_modal.is_some();
             if has_modal && !had_modal {

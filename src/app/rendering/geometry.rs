@@ -29,7 +29,7 @@ fn clamp_non_empty_canvas_rect(rect: Rect, fallback: Rect) -> Rect {
 
 /// Last frame's [`egui::PanelState::outer_rect`] for the embedded navigation side panel, if any.
 pub(crate) fn embedded_directory_tree_panel_rect(ctx: &Context) -> Option<Rect> {
-    egui::PanelState::load(ctx, egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID))
+    egui::PanelState::load(ctx, egui::Id::unique(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID))
         .map(|state| state.outer_rect)
 }
 

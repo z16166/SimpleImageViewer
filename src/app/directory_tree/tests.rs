@@ -578,8 +578,11 @@ fn seed_embedded_side_panel_states_writes_persisted_layout() {
     let available = Rect::from_min_max(Pos2::new(8.0, 0.0), Pos2::new(1008.0, 800.0));
     seed_embedded_side_panel_states(&ctx, available, 420.0);
 
-    let state = egui::PanelState::load(&ctx, egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID))
-        .expect("panel state");
+    let state = egui::PanelState::load(
+        &ctx,
+        egui::Id::unique(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID),
+    )
+    .expect("panel state");
     assert_eq!(state.outer_rect.min, available.min);
     assert!((state.outer_rect.width() - 420.0).abs() < f32::EPSILON);
 }

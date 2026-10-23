@@ -632,7 +632,7 @@ pub(super) fn draw_directory_tree_window(
 pub(super) fn publish_directory_tree_nav_wheel_block_rect(ui: &egui::Ui) {
     ui.ctx().data_mut(|d| {
         d.insert_temp(
-            egui::Id::new(super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID),
+            egui::Id::unique(super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID),
             ui.max_rect(),
         );
     });
@@ -1005,7 +1005,7 @@ fn draw_folder_panel(
                 }
             }
             if chrome.scroll_folder_tree_to_selected {
-                let miss_id = egui::Id::new("directory_tree_folders")
+                let miss_id = egui::Id::unique("directory_tree_folders")
                     .with("scroll_to_selected_miss");
                 if let Some(rect) = chrome.folder_selected_row_rect {
                     ui.ctx().data_mut(|d| d.remove_temp::<u32>(miss_id));
