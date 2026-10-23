@@ -1,8 +1,7 @@
 diff --git a/source/CMakeLists.txt b/source/CMakeLists.txt
 --- a/source/CMakeLists.txt
 +++ b/source/CMakeLists.txt
-@@ -722,7 +722,12 @@ else()
-     else()
+@@ -570,6 +570,11 @@ if((MSVC_IDE OR XCODE OR GCC) AND ENABLE_ASSEMBLY)
          set(SUFFIX o)
      endif()
  

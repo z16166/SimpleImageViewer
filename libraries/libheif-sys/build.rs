@@ -52,9 +52,15 @@ fn main() {
             });
             if !(has_openjp2 && has_dav1d && has_brotli) {
                 println_libheif_optional_codec_libs_static(&installed_dir, &vcpkg_triplet);
-            } else if !has_brotli_enc {
-                // UNCI compressor uses encoder API (BrotliEncoder*); manifest-mode libs often omit brotlienc.
-                rustc_link_lib_static("brotlienc");
+            } else {
+                if !has_brotli_enc {
+                    // UNCI compressor uses encoder API (BrotliEncoder*); manifest-mode libs often omit brotlienc.
+                    rustc_link_lib_static("brotlienc");
+                }
+                let has_openh264 = names.iter().any(|n| n.eq_ignore_ascii_case("openh264"));
+                if !has_openh264 {
+                    rustc_link_lib_static("openh264");
+                }
             }
         }
         Err(err) => {
@@ -98,10 +104,7 @@ fn println_libheif_core_static_libs() {
 /// Static libs for `vcpkg.json` libheif features: `openjpeg`, `jpeg`, `dav1d`,
 /// UNCI zlib + brotli (`iso23001-17` installs both; port enables `VCPKG_LOCK_FIND_PACKAGE_Brotli`).
 /// `dav1d` enables AV1 items without libaom.
-///
-/// OpenH264 (`h264-decoder`) is intentionally omitted: the pinned vcpkg port's
-/// `vcpkg_check_features` key does not match the feature name (`openh264` vs `h264-decoder`);
-/// add `openh264` here if you enable a fixed port or use a global vcpkg tree that links it.
+/// `h264-decoder` compiles `decoder_openh264.cc` into libheif, which calls `Wels*`.
 fn println_libheif_optional_codec_libs_static(
     installed_dir: &std::path::Path,
     vcpkg_triplet: &str,
@@ -109,6 +112,7 @@ fn println_libheif_optional_codec_libs_static(
     rustc_link_lib_static("openjp2");
     rustc_link_lib_static("jpeg");
     rustc_link_lib_static("dav1d");
+    rustc_link_lib_static("openh264");
     rustc_link_lib_static("brotlienc");
     rustc_link_lib_static("brotlidec");
     rustc_link_lib_static("brotlicommon");

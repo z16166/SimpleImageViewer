@@ -70,4 +70,35 @@ fn main() {
             }
         }
     }
+
+    // libjpeg-turbo 3.2 builds PNG I/O with system libspng (`WITH_SYSTEM_SPNG`).
+    // vcpkg metadata follows `Libs` but not `Requires: spng` on libturbojpeg.pc.
+    link_system_spng(&installed_dir, &vcpkg_triplet);
+}
+
+/// Static libspng is `spng_static.lib` / `libspng_static.a`. Shared builds use `spng`.
+fn link_system_spng(installed_dir: &std::path::Path, vcpkg_triplet: &str) {
+    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
+    let mut dirs = Vec::new();
+    if profile != "release" {
+        dirs.push(installed_dir.join(vcpkg_triplet).join("debug").join("lib"));
+    }
+    dirs.push(installed_dir.join(vcpkg_triplet).join("lib"));
+
+    for dir in dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        println!("cargo:rerun-if-changed={}", dir.display());
+        if dir.join("spng_static.lib").exists() || dir.join("libspng_static.a").exists() {
+            println!("cargo:rustc-link-search=native={}", dir.display());
+            println!("cargo:rustc-link-lib=static=spng_static");
+            return;
+        }
+        if dir.join("spng.lib").exists() || dir.join("libspng.a").exists() {
+            println!("cargo:rustc-link-search=native={}", dir.display());
+            println!("cargo:rustc-link-lib=static=spng");
+            return;
+        }
+    }
 }
