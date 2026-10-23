@@ -488,6 +488,7 @@ impl ProbeState {
                 origin: self.probe_origin,
                 max_luminance_nits: selection.max_luminance_nits,
                 max_full_frame_luminance_nits: selection.max_full_frame_luminance_nits,
+                reference_luminance_nits: None,
             })));
         } else {
             self.probe_outcome = Some(WaylandProbeOutcome::Monitor(Ok(selection)));

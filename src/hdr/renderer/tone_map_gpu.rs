@@ -81,7 +81,7 @@ struct ToneMapSettings {
     ripple_radius: f32,
     ripple_enabled: u32,
     pixels_per_point: f32,
-    _pad0: u32,
+    scrgb_output_scale: f32,
     _pad1: u32,
     _pad2: u32,
 };

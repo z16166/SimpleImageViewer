@@ -1,5 +1,7 @@
 # Simple Image Viewer (SimpleImageViewer)
 
+[中文](README_CN.md)
+
 A high-performance, cross-platform image viewer built with Rust. Designed for fast browsing of large photo libraries with a clean, customizable UI (Dark/Light/System themes), background music playback, and persistent settings.
  
 ![Screenshot](assets/screenshot.jpg)

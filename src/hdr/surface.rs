@@ -130,6 +130,8 @@ pub enum HdrEnvironmentProbe {
         origin: &'static str,
         max_luminance_nits: Option<f32>,
         max_full_frame_luminance_nits: Option<f32>,
+        /// Windows SDR content brightness in nits. Unused on other platforms.
+        reference_luminance_nits: Option<f32>,
     },
     /// The monitor where the window is expected to spawn is SDR (HDR disabled in
     /// Windows Settings, or physically SDR panel) — force
@@ -172,6 +174,7 @@ pub fn initial_monitor_selection_from_environment_probe(
             label,
             max_luminance_nits,
             max_full_frame_luminance_nits,
+            reference_luminance_nits,
             ..
         } => Some(crate::hdr::monitor::HdrMonitorSelection {
             hdr_supported: true,
@@ -183,7 +186,7 @@ pub fn initial_monitor_selection_from_environment_probe(
             #[cfg(target_os = "macos")]
             current_edr_headroom: None,
             native_surface_encoding: Some(spawn_monitor_native_surface_encoding()),
-            reference_luminance_nits: None,
+            reference_luminance_nits: *reference_luminance_nits,
             linux_wp_transfer: None,
             linux_wp_primaries: None,
             linux_explicit_hdr_state: None,
@@ -238,6 +241,7 @@ pub fn preferred_native_hdr_target_format_for_environment(
                 origin: probe.origin,
                 max_luminance_nits: probe.max_luminance_nits,
                 max_full_frame_luminance_nits: probe.max_full_frame_luminance_nits,
+                reference_luminance_nits: probe.reference_luminance_nits,
             },
         ),
         Ok(probe) => (
@@ -422,12 +426,14 @@ mod tests {
             origin: "saved_window_position",
             max_luminance_nits: Some(420.0),
             max_full_frame_luminance_nits: Some(200.0),
+            reference_luminance_nits: Some(240.0),
         };
         let sel = initial_monitor_selection_from_environment_probe(&probe).expect("seed");
         assert!(sel.hdr_supported);
         assert_eq!(sel.label, r"\\.\DISPLAY1");
         assert_eq!(sel.max_luminance_nits, Some(420.0));
         assert_eq!(sel.max_full_frame_luminance_nits, Some(200.0));
+        assert_eq!(sel.reference_luminance_nits, Some(240.0));
         assert_eq!(sel.hdr_capacity_source, Some("spawn monitor probe"));
     }
 

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.1.5] - 2026-10-23
+
+### Fixed
+- **Ordinary photos on a Windows HDR monitor**: Photos without HDR data, and the viewer window around them, now stay as bright as other windows on that display, including when Windows "SDR content brightness" is turned up. Dragging the window from an SDR monitor onto an HDR monitor no longer makes the photo look dark.
+
 ## [3.1.4] - 2026-10-05
 
 ### Fixed

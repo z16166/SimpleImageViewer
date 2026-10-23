@@ -11,6 +11,10 @@ target/
 # Settings file (user-specific, not for version control)
 siv_settings.yaml
 
+# cl.exe /Z7 debug-record files. See .cargo/config.toml.
+build/msvc-tmp/*
+!build/msvc-tmp/.gitkeep
+
 # IDE / editor
 .vscode/
 .idea/

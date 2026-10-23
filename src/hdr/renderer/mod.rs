@@ -30,6 +30,8 @@ mod shader_source;
 use shader_source::HDR_IMAGE_PLANE_SHADER;
 
 mod tone_map_uniform;
+#[cfg(test)]
+use self::tone_map_uniform::scrgb_output_scale_for_output;
 use self::tone_map_uniform::{
     AppleToneMapCompose, HdrTileToneMapUniformParams, ImageToneMapUniformParams,
     RippleToneMapParams, ToneMapCommonParams, ToneMapInputMetadata, ToneMapUniform,

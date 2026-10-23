@@ -1,5 +1,7 @@
 # Simple Image Viewer (SimpleImageViewer)
 
+[English](README.md)
+
 基于 Rust 构建的高性能跨平台图片查看器。专为快速浏览大型图片库而设计，支持多主题界面切换（深色/浅色/跟随系统）、后台音乐播放功能，以及持久化设置。
  
 ![界面截图](assets/screenshot.jpg)

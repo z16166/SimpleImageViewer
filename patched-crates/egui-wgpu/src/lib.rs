@@ -16,6 +16,11 @@
 #![doc = document_features::document_features!()]
 //!
 
+// `Buffer::map_async` callbacks must be `Send`. Proving that for wgpu's
+// buffer type walks the same hub/registry chain as wgpu-core and overflows
+// the default recursion limit (rust-lang/rust#159228).
+#![recursion_limit = "256"]
+
 pub use wgpu;
 
 /// Low-level painting of [`egui`](https://github.com/emilk/egui) on [`wgpu`].
@@ -394,6 +399,50 @@ impl std::fmt::Debug for Gamma22DisplayScale {
         f.debug_struct("Gamma22DisplayScale")
             .field("scale", &self.get())
             .finish()
+    }
+}
+
+/// Live Windows scRGB boost (`SDR white nits / 80`). 1.0 keeps the 80-nit reference.
+///
+/// The painter and the HDR image-plane shader both read this. The app writes it
+/// each frame from the active monitor's SDR white level. Default is 1.0 so SDR
+/// swap chains and platforms without a queried white level stay unchanged.
+static SCRGB_OUTPUT_SCALE_BITS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0x3f80_0000); // 1.0f32
+
+const SCRGB_OUTPUT_SCALE_MIN: f32 = 1.0;
+const SCRGB_OUTPUT_SCALE_MAX: f32 = 8.0;
+
+pub(crate) fn sanitized_scrgb_output_scale(scale: f32) -> f32 {
+    if scale.is_finite() {
+        scale.clamp(SCRGB_OUTPUT_SCALE_MIN, SCRGB_OUTPUT_SCALE_MAX)
+    } else {
+        SCRGB_OUTPUT_SCALE_MIN
+    }
+}
+
+/// Float scRGB swap chains. `*UnormSrgb` is linear in the shader but 1.0 there
+/// is already SDR white in 8 bits, so it must not take this boost.
+pub fn scrgb_float_framebuffer(format: wgpu::TextureFormat) -> bool {
+    matches!(
+        format,
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+    )
+}
+
+pub fn set_scrgb_output_scale(scale: f32) {
+    SCRGB_OUTPUT_SCALE_BITS.store(
+        sanitized_scrgb_output_scale(scale).to_bits(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn scrgb_output_scale() -> f32 {
+    let scale = f32::from_bits(SCRGB_OUTPUT_SCALE_BITS.load(std::sync::atomic::Ordering::Relaxed));
+    if scale.is_finite() && scale >= 1.0 {
+        scale
+    } else {
+        1.0
     }
 }
 

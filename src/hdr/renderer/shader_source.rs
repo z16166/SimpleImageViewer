@@ -74,7 +74,8 @@ struct ToneMapSettings {
     ripple_radius: f32,
     ripple_enabled: u32,
     pixels_per_point: f32,
-    _pad0: u32,
+    /// Windows scRGB boost (`SDR white nits / 80`). 1.0 keeps the 80-nit reference.
+    scrgb_output_scale: f32,
     _pad1: u32,
     _pad2: u32,
 };
@@ -277,8 +278,15 @@ fn scene_linear_to_display_referred(scrgb: vec3<f32>) -> vec3<f32> {
     return reinhard_tone_map(scrgb);
 }
 
+fn scrgb_sdr_white_scale(settings: ToneMapSettings) -> f32 {
+    // 0 (zeroed uniform) and 1 both mean "80-nit reference, no extra boost".
+    return max(settings.scrgb_output_scale, 1.0);
+}
+
 fn encode_native_hdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
-    // scRGB / EDR: linear (1.0 = SDR white). Compositor tone-maps to panel (Windows / macOS).
+    // Scene-linear, PQ, and HLG: 1.0 is this pipeline's paper white, not the
+    // Windows SDR slider. Multiplying by the slider would move absolute
+    // highlights. Display-referred SDR content applies the slider separately.
     return exposed_linear_rgb(rgb, settings);
 }
 
@@ -394,7 +402,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     } else if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
         if (display_referred_srgb) {
-            rgb = source_rgb_exposed * tone_map.native_display_scale;
+            rgb = source_rgb_exposed * tone_map.native_display_scale * scrgb_sdr_white_scale(tone_map);
         } else {
             rgb = encode_native_hdr(source_rgb, tone_map);
         }

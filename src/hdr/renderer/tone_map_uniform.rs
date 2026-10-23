@@ -48,7 +48,8 @@ pub(super) struct ToneMapUniform {
     pub(super) ripple_radius: f32,
     pub(super) ripple_enabled: u32,
     pub(super) pixels_per_point: f32,
-    pub(super) _pad0: u32,
+    /// Windows scRGB boost. 1.0 on every other output mode.
+    pub(super) scrgb_output_scale: f32,
     pub(super) _pad1: u32,
     pub(super) _pad2: u32,
 }
@@ -99,6 +100,27 @@ pub(super) struct ToneMapUniformParams<'a> {
     pub(super) input: ToneMapInputMetadata,
     pub(super) apple: Option<AppleToneMapCompose<'a>>,
     pub(super) ripple: Option<RippleToneMapParams>,
+}
+
+/// Slider boost for display-referred SDR drawn into a float scRGB target.
+/// Scene-linear `encode_native_hdr` does not read this. Other output modes and
+/// 8-bit / sRGB targets stay at 1.0.
+pub(super) fn scrgb_output_scale_for_output(
+    output_mode: HdrRenderOutputMode,
+    framebuffer_format: wgpu::TextureFormat,
+    live_scale: f32,
+) -> f32 {
+    if output_mode == HdrRenderOutputMode::NativeHdr
+        && matches!(
+            framebuffer_format,
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+        )
+        && live_scale.is_finite()
+    {
+        live_scale.max(1.0)
+    } else {
+        1.0
+    }
 }
 
 impl ToneMapUniform {
@@ -182,7 +204,11 @@ impl ToneMapUniform {
             ripple_radius,
             ripple_enabled,
             pixels_per_point,
-            _pad0: 0,
+            scrgb_output_scale: scrgb_output_scale_for_output(
+                output_mode,
+                framebuffer_format,
+                eframe::egui_wgpu::scrgb_output_scale(),
+            ),
             _pad1: 0,
             _pad2: 0,
         }

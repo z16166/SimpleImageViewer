@@ -167,6 +167,20 @@ fn display_linear_nits_to_pq(nits: f32) -> f32 {
     (num / den).powf(M2)
 }
 
+/// Boost applied to a linearized clear. Only float scRGB targets use it;
+/// `*UnormSrgb` already treats 1.0 as SDR white.
+#[inline]
+pub(crate) fn scrgb_clear_rgb_scale(
+    output_color_format: wgpu::TextureFormat,
+    live_scale: f32,
+) -> f32 {
+    if crate::scrgb_float_framebuffer(output_color_format) {
+        crate::sanitized_scrgb_output_scale(live_scale)
+    } else {
+        1.0
+    }
+}
+
 /// Transforms the `clear_color` that `eframe` supplies (sRGB gamma RGB +
 /// straight alpha) into the color space expected by the current swap-chain
 /// format, matching the conversion the egui fragment shader performs for
@@ -174,7 +188,6 @@ fn display_linear_nits_to_pq(nits: f32) -> f32 {
 /// (scRGB) swap chain would write gamma-encoded values as if they were
 /// linear, making the panel background ~8× too bright on Windows HDR
 /// displays.
-#[inline]
 pub fn clear_color_for_framebuffer_format(
     clear_color: [f32; 4],
     output_color_format: wgpu::TextureFormat,
@@ -204,10 +217,13 @@ pub fn clear_color_for_framebuffer_format(
         ];
     }
     if egui_framebuffer_expects_linear_writes(output_color_format) {
+        // Float scRGB only. `*UnormSrgb` already encodes 1.0 as SDR white in 8 bits;
+        // boosting those clears would blow out the SDR swap chain.
+        let scale = scrgb_clear_rgb_scale(output_color_format, crate::scrgb_output_scale());
         [
-            srgb_gamma_channel_to_linear(clear_color[0]),
-            srgb_gamma_channel_to_linear(clear_color[1]),
-            srgb_gamma_channel_to_linear(clear_color[2]),
+            srgb_gamma_channel_to_linear(clear_color[0]) * scale,
+            srgb_gamma_channel_to_linear(clear_color[1]) * scale,
+            srgb_gamma_channel_to_linear(clear_color[2]) * scale,
             clear_color[3],
         ]
     } else {
@@ -355,8 +371,8 @@ struct UniformBuffer {
     dithering: u32,
     predictable_texture_filtering: u32,
     gamma22_display_scale: f32,
-    /// Matches `_pad0` in `egui.wgsl`; keeps WGSL `Locals` at 24 bytes without ANGLE padding.
-    _pad0: u32,
+    /// Matches `scrgb_output_scale` in `egui.wgsl`. 1.0 = 80-nit scRGB reference.
+    scrgb_output_scale: f32,
     /// Matches `_ubo_align_pad` in `egui.wgsl`; 32-byte UBO for ANGLE/D3D11 alignment rules.
     _ubo_align_pad: [u32; 2],
 }
@@ -503,7 +519,7 @@ impl Renderer {
                 dithering: u32::from(options.dithering),
                 predictable_texture_filtering: u32::from(options.predictable_texture_filtering),
                 gamma22_display_scale: 1.0,
-                _pad0: 0,
+                scrgb_output_scale: 1.0,
                 _ubo_align_pad: [0, 0],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -1118,7 +1134,11 @@ impl Renderer {
             dithering: u32::from(self.options.dithering),
             predictable_texture_filtering: u32::from(self.options.predictable_texture_filtering),
             gamma22_display_scale: self.gamma22_display_scale,
-            _pad0: 0,
+            scrgb_output_scale: if crate::scrgb_float_framebuffer(self.output_color_format) {
+                crate::scrgb_output_scale()
+            } else {
+                1.0
+            },
             _ubo_align_pad: [0, 0],
         };
         if uniform_buffer_content != self.previous_uniform_buffer_content {
@@ -1494,7 +1514,8 @@ mod clear_color_tests {
     fn linear_target_receives_linearized_clear_color() {
         // Default eframe panel background: sRGB (12, 12, 12, 180).
         let gamma = [12.0 / 255.0, 12.0 / 255.0, 12.0 / 255.0, 180.0 / 255.0];
-        let linear = clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Rgba16Float, false, 1.0);
+        let linear =
+            clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Rgba16Float, false, 1.0);
 
         // 12/255 ≈ 0.0471 sRGB-gamma; canonical sRGB EOTF ((x+0.055)/1.055)^2.4
         // ≈ 0.003676 linear. That is ~13× dimmer than the 0.0471 raw value
@@ -1515,8 +1536,12 @@ mod clear_color_tests {
     #[test]
     fn srgb_target_receives_linearized_clear_color() {
         let gamma = [0.5, 0.5, 0.5, 1.0];
-        let linear =
-            clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Bgra8UnormSrgb, false, 1.0);
+        let linear = clear_color_for_framebuffer_format(
+            gamma,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            false,
+            1.0,
+        );
         // sRGB 0.5 ≈ linear 0.214
         assert!(approx_eq(linear[0], 0.214_041_13));
         assert!(approx_eq(linear[1], 0.214_041_13));
@@ -1527,7 +1552,8 @@ mod clear_color_tests {
     #[test]
     fn pq_target_receives_pq_encoded_clear_color() {
         let gamma = [12.0 / 255.0, 12.0 / 255.0, 12.0 / 255.0, 180.0 / 255.0];
-        let pq = clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Rgb10a2Unorm, true, 1.0);
+        let pq =
+            clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Rgb10a2Unorm, true, 1.0);
         let linear = [
             srgb_gamma_channel_to_linear(gamma[0]) * EGUI_PQ_SDR_WHITE_NITS,
             srgb_gamma_channel_to_linear(gamma[1]) * EGUI_PQ_SDR_WHITE_NITS,
@@ -1546,13 +1572,39 @@ mod clear_color_tests {
             (code - 0.580_688_88).abs() < 1e-4,
             "203 nit SDR white should map to ~0.5807 PQ code, got {code}"
         );
-        assert!(code < 1.0, "SDR white must stay inside PQ code range, got {code}");
+        assert!(
+            code < 1.0,
+            "SDR white must stay inside PQ code range, got {code}"
+        );
+    }
+
+    #[test]
+    fn scrgb_clear_scale_follows_the_slider_only_on_float_targets() {
+        assert_eq!(
+            scrgb_clear_rgb_scale(wgpu::TextureFormat::Rgba16Float, 2.5),
+            2.5
+        );
+        assert_eq!(
+            scrgb_clear_rgb_scale(wgpu::TextureFormat::Bgra8UnormSrgb, 2.5),
+            1.0
+        );
+        assert_eq!(
+            scrgb_clear_rgb_scale(wgpu::TextureFormat::Bgra8Unorm, 2.5),
+            1.0
+        );
+        assert_eq!(
+            scrgb_clear_rgb_scale(wgpu::TextureFormat::Rgba16Float, f32::NAN),
+            1.0
+        );
+        assert_eq!(crate::sanitized_scrgb_output_scale(0.25), 1.0);
+        assert_eq!(crate::sanitized_scrgb_output_scale(100.0), 8.0);
     }
 
     #[test]
     fn gamma_target_preserves_clear_color() {
         let gamma = [12.0 / 255.0, 12.0 / 255.0, 12.0 / 255.0, 180.0 / 255.0];
-        let out = clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Bgra8Unorm, false, 1.0);
+        let out =
+            clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Bgra8Unorm, false, 1.0);
         assert_eq!(out, gamma);
     }
 

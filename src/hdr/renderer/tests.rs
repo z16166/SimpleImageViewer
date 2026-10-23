@@ -724,6 +724,50 @@ fn render_mode_uses_native_hdr_for_float_and_pq_targets() {
 }
 
 #[test]
+fn scrgb_slider_scale_is_limited_to_float_native_hdr() {
+    assert_eq!(
+        scrgb_output_scale_for_output(
+            HdrRenderOutputMode::NativeHdr,
+            wgpu::TextureFormat::Rgba16Float,
+            2.5,
+        ),
+        2.5
+    );
+    assert_eq!(
+        scrgb_output_scale_for_output(
+            HdrRenderOutputMode::NativeHdr,
+            wgpu::TextureFormat::Bgra8Unorm,
+            2.5,
+        ),
+        1.0
+    );
+    assert_eq!(
+        scrgb_output_scale_for_output(
+            HdrRenderOutputMode::NativeHdrPq,
+            wgpu::TextureFormat::Rgba16Float,
+            2.5,
+        ),
+        1.0
+    );
+    assert_eq!(
+        scrgb_output_scale_for_output(
+            HdrRenderOutputMode::SdrToneMapped,
+            wgpu::TextureFormat::Rgba16Float,
+            2.5,
+        ),
+        1.0
+    );
+    assert_eq!(
+        scrgb_output_scale_for_output(
+            HdrRenderOutputMode::NativeHdr,
+            wgpu::TextureFormat::Rgba16Float,
+            f32::NAN,
+        ),
+        1.0
+    );
+}
+
+#[test]
 fn tone_map_uniform_carries_output_mode() {
     let uniform = ToneMapUniform::from_settings(ToneMapUniformParams {
         common: ToneMapCommonParams {
@@ -746,6 +790,7 @@ fn tone_map_uniform_carries_output_mode() {
     });
 
     assert_eq!(uniform.output_mode, HdrRenderOutputMode::NativeHdr as u32);
+    assert_eq!(uniform.scrgb_output_scale, 1.0);
     assert_eq!(uniform.sdr_manual_srgb_encode, 0);
     assert_eq!(
         uniform.input_color_space,
@@ -847,7 +892,13 @@ fn native_hdr_pq_shader_encodes_pq_for_rgb10a2_target() {
 #[test]
 fn native_hdr_encoders_share_exposed_linear_rgb() {
     assert!(HDR_IMAGE_PLANE_SHADER.contains("fn exposed_linear_rgb"));
-    assert!(HDR_IMAGE_PLANE_SHADER.contains("return exposed_linear_rgb(rgb, settings);"));
+    assert!(
+        HDR_IMAGE_PLANE_SHADER.contains("return exposed_linear_rgb(rgb, settings);"),
+        "scene-linear scRGB must stay in pipeline nits, not the OS SDR slider"
+    );
+    assert!(HDR_IMAGE_PLANE_SHADER.contains(
+        "rgb = source_rgb_exposed * tone_map.native_display_scale * scrgb_sdr_white_scale(tone_map);"
+    ));
     assert!(HDR_IMAGE_PLANE_SHADER.contains("display_linear_to_pq(exposed_linear_rgb"));
     assert!(
         HDR_IMAGE_PLANE_SHADER.contains("exposed_linear_rgb(rgb, settings) * display_scale")

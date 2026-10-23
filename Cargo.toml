@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "3.1.4"
+version = "3.1.5"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
@@ -120,6 +120,7 @@ hdr-modern-formats = ["avif-native", "heif-native", "jpegxl"]
 winapi = { version = "0.3", features = ["winuser", "shellapi", "wingdi", "libloaderapi", "fileapi", "winbase"] }
 winreg = "0.11"
 windows = { version = "0.58", features = [
+    "Win32_Devices_Display",
     "Win32_Foundation",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",

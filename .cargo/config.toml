@@ -43,6 +43,13 @@ rustflags = ["-C", "target-feature=+crt-static"]
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
 
+# cl.exe writes /Z7 debug records under TMP. If that directory rejects the
+# build (ERROR_ACCESS_DENIED), debug `cargo check` fails with D8050. Keep the
+# compiler temp directory inside the workspace, which the build can write.
+[env]
+TMP = { value = "build/msvc-tmp", relative = true, force = true }
+TEMP = { value = "build/msvc-tmp", relative = true, force = true }
+
 # Linux aarch64: avoid SVE/SME and optional extensions that SIGILL older ARMv8.0 hardware (e.g. UOS VMs).
 # Triplet `arm64-linux-v8a` adds matching -march/-mcpu for vcpkg C/C++ builds.
 [target.aarch64-unknown-linux-gnu]

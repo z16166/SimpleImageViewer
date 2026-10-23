@@ -306,6 +306,117 @@ fn linux_wayland_eligibility_gates_probe_error_message() {
     }
 }
 
+#[test]
+fn sdr_white_level_raw_converts_thousandths_of_the_80_nit_reference() {
+    assert_eq!(sdr_white_level_raw_to_nits(0), None);
+    assert_eq!(sdr_white_level_raw_to_nits(1000), Some(80.0));
+    assert_eq!(sdr_white_level_raw_to_nits(2000), Some(160.0));
+    assert_eq!(sdr_white_level_raw_to_nits(4000), Some(320.0));
+    assert_eq!(sdr_white_level_raw_to_nits(50_000), Some(4_000.0));
+}
+
+#[test]
+fn scrgb_presentation_scale_keeps_previous_white_while_float_chain_lags() {
+    let mut hdr = HdrMonitorSelection::new("HDR", true);
+    hdr.reference_luminance_nits = Some(240.0);
+    let sdr = HdrMonitorSelection::new("SDR", false);
+
+    assert_eq!(
+        scrgb_output_scale_for_presentation(
+            Some(&hdr),
+            Some(&sdr),
+            Some(wgpu::TextureFormat::Bgra8Unorm),
+        ),
+        3.0
+    );
+    assert_eq!(
+        scrgb_output_scale_for_presentation(
+            Some(&sdr),
+            Some(&hdr),
+            Some(wgpu::TextureFormat::Rgba16Float),
+        ),
+        3.0
+    );
+    assert_eq!(
+        scrgb_output_scale_for_presentation(
+            Some(&sdr),
+            Some(&hdr),
+            Some(wgpu::TextureFormat::Bgra8Unorm),
+        ),
+        1.0
+    );
+    assert_eq!(
+        scrgb_output_scale_for_presentation(
+            Some(&sdr),
+            None,
+            Some(wgpu::TextureFormat::Rgba16Float),
+        ),
+        1.0
+    );
+
+    let hdr_without_nits = HdrMonitorSelection::new("HDR-unknown-white", true);
+    assert_eq!(
+        scrgb_output_scale_for_presentation(
+            Some(&hdr_without_nits),
+            Some(&hdr),
+            Some(wgpu::TextureFormat::Rgba16Float),
+        ),
+        3.0
+    );
+    assert_eq!(
+        scrgb_output_scale_for_presentation(
+            Some(&hdr_without_nits),
+            Some(&hdr),
+            Some(wgpu::TextureFormat::Bgra8Unorm),
+        ),
+        1.0
+    );
+}
+
+#[test]
+fn failed_sdr_white_read_keeps_last_nits_for_the_same_hdr_monitor() {
+    let mut known = HdrMonitorSelection::new(r"\\.\DISPLAY1", true);
+    known.reference_luminance_nits = Some(240.0);
+
+    let mut first_failure = HdrMonitorSelection::new(r"\\.\DISPLAY1", true);
+    retain_windows_sdr_white_across_failed_read(Some(&known), &mut first_failure);
+    assert_eq!(first_failure.reference_luminance_nits, Some(240.0));
+
+    let mut second_failure = HdrMonitorSelection::new(r"\\.\DISPLAY1", true);
+    retain_windows_sdr_white_across_failed_read(Some(&first_failure), &mut second_failure);
+    assert_eq!(second_failure.reference_luminance_nits, Some(240.0));
+    assert_eq!(
+        scrgb_output_scale_for_presentation(
+            Some(&second_failure),
+            Some(&first_failure),
+            Some(wgpu::TextureFormat::Rgba16Float),
+        ),
+        3.0
+    );
+
+    let mut other_monitor = HdrMonitorSelection::new(r"\\.\DISPLAY2", true);
+    retain_windows_sdr_white_across_failed_read(Some(&second_failure), &mut other_monitor);
+    assert_eq!(other_monitor.reference_luminance_nits, None);
+
+    let mut measured = HdrMonitorSelection::new(r"\\.\DISPLAY1", true);
+    measured.reference_luminance_nits = Some(160.0);
+    retain_windows_sdr_white_across_failed_read(Some(&second_failure), &mut measured);
+    assert_eq!(measured.reference_luminance_nits, Some(160.0));
+
+    let mut sdr = HdrMonitorSelection::new(r"\\.\DISPLAY1", false);
+    retain_windows_sdr_white_across_failed_read(Some(&measured), &mut sdr);
+    assert_eq!(sdr.reference_luminance_nits, None);
+}
+
+#[test]
+fn scrgb_output_scale_matches_windows_sdr_slider_against_80_nits() {
+    assert_eq!(scrgb_output_scale_from_reference_nits(None), 1.0);
+    assert_eq!(scrgb_output_scale_from_reference_nits(Some(80.0)), 1.0);
+    assert_eq!(scrgb_output_scale_from_reference_nits(Some(40.0)), 1.0);
+    assert_eq!(scrgb_output_scale_from_reference_nits(Some(240.0)), 3.0);
+    assert_eq!(scrgb_output_scale_from_reference_nits(Some(10_000.0)), 8.0);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_non_edr_selected_monitor_forces_sdr_tone_mapping() {

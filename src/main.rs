@@ -15,6 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
+// `PREVIEW_GPU_CACHE` stores `wgpu::ComputePipeline`. Proving that static is
+// `Sync` walks wgpu-core's hub/registry types past the default recursion limit
+// (rust-lang/rust#159228). The types are `Send`/`Sync`; the proof is just deep.
+#![recursion_limit = "256"]
 
 // Default: mimalloc (`mimalloc-allocator` in Cargo.toml default features; matches CI/release).
 // For Page Heap on Rust allocations locally, build with `system-allocator` instead
