@@ -571,20 +571,50 @@ fn should_restore_embedded_side_panel_state_when_not_resizing() {
 
 #[test]
 fn seed_embedded_side_panel_states_writes_persisted_layout() {
-    use super::{DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID, seed_embedded_side_panel_states};
+    use super::{embedded_directory_tree_panel_id, seed_embedded_side_panel_states};
     use eframe::egui::{self, Pos2, Rect};
 
     let ctx = egui::Context::default();
     let available = Rect::from_min_max(Pos2::new(8.0, 0.0), Pos2::new(1008.0, 800.0));
     seed_embedded_side_panel_states(&ctx, available, 420.0);
 
-    let state = egui::PanelState::load(
-        &ctx,
-        egui::Id::unique(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID),
-    )
-    .expect("panel state");
+    let panel_id = embedded_directory_tree_panel_id();
+    let salted = egui::ViewportId::ROOT
+        .root_ui_id()
+        .with_salt(egui::IdSalt::new(
+            super::DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID,
+        ));
+    assert_eq!(panel_id, salted);
+    let state = egui::PanelState::load(&ctx, panel_id).expect("panel state");
     assert_eq!(state.outer_rect.min, available.min);
     assert!((state.outer_rect.width() - 420.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn embedded_side_panel_id_matches_real_panel_state() {
+    use super::{DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID, embedded_directory_tree_panel_id};
+    use eframe::egui::{self, Pos2, Rect};
+
+    let ctx = egui::Context::default();
+    let mut input = egui::RawInput::default();
+    input.screen_rect = Some(Rect::from_min_max(Pos2::ZERO, Pos2::new(1280.0, 800.0)));
+    ctx.run_ui(input, |ui| {
+        egui::Panel::left(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID).show(ui, |_| {});
+    })
+    .drop_without_applying_deltas();
+
+    assert!(
+        egui::PanelState::load(&ctx, embedded_directory_tree_panel_id()).is_some(),
+        "panel state must use the same id as Panel::left"
+    );
+    assert!(
+        egui::PanelState::load(
+            &ctx,
+            egui::Id::unique(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID)
+        )
+        .is_none(),
+        "a global Id::unique is not the panel key"
+    );
 }
 
 #[test]

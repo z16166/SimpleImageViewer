@@ -65,3 +65,5 @@ AGENTS.md
 .reasonix/
 reasonix.toml
 rust_out.pdb
+*.pdb
+.crate-upgrade-work/

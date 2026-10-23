@@ -217,7 +217,7 @@ impl eframe::App for ImageViewerApp {
         self.handle_tray_close_in_raw_input(ctx, root_close_requested);
     }
 
-    /// Draw the UI. In eframe 0.34 this is the required method; `ui` is called
+    /// Draw the UI. In eframe 0.37 this is the required method; `ui` is called
     /// with the root `Ui` for the window's central area.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();

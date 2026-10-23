@@ -51,6 +51,7 @@ const AUTO_TIERS: [GlBackendTier; 4] = [
     GlBackendTier::AngleWarp,
 ];
 
+#[expect(missing_debug_implementations)]
 pub enum AdapterContext {
     Egl(super::egl::AdapterContext),
     Wgl(super::wgl::AdapterContext),
@@ -92,6 +93,7 @@ impl AdapterContext {
     }
 }
 
+#[expect(missing_debug_implementations)]
 pub enum AdapterContextLock<'a> {
     Egl(super::egl::AdapterContextLock<'a>),
     Wgl(super::wgl::AdapterContextLock<'a>),
@@ -108,6 +110,7 @@ impl Deref for AdapterContextLock<'_> {
     }
 }
 
+#[expect(missing_debug_implementations)]
 pub enum Instance {
     Egl(super::egl::Instance),
     Wgl(super::wgl::Instance),
@@ -210,6 +213,7 @@ impl crate::Instance for Instance {
     }
 }
 
+#[expect(missing_debug_implementations)]
 pub enum Surface {
     Egl(super::egl::Surface),
     Wgl(super::wgl::Surface),

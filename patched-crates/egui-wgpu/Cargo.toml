@@ -148,7 +148,7 @@ features = ["vulkan"]
 # Must match the `windows` major version that `wgpu-hal` uses internally, so
 # that the `IDXGISwapChain3` COM pointer returned by `hal_surface.swap_chain()`
 # speaks the same type system as the `DXGI_COLOR_SPACE_TYPE` we pass to it.
-# `wgpu-hal 29.0.1` depends on `windows = "0.62"`.
+# `wgpu-hal 30.0.1` depends on `windows = "0.62"`.
 version = "0.62"
 features = [
     "Win32_Foundation",

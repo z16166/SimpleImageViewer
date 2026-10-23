@@ -16,7 +16,7 @@
 
 use crate::app::ImageViewerApp;
 use crate::app::ScaleMode;
-use crate::app::directory_tree::DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID;
+use crate::app::directory_tree::embedded_directory_tree_panel_id;
 use eframe::egui::{self, Context, Pos2, Rect, Vec2};
 
 fn clamp_non_empty_canvas_rect(rect: Rect, fallback: Rect) -> Rect {
@@ -29,13 +29,12 @@ fn clamp_non_empty_canvas_rect(rect: Rect, fallback: Rect) -> Rect {
 
 /// Last frame's [`egui::PanelState::outer_rect`] for the embedded navigation side panel, if any.
 pub(crate) fn embedded_directory_tree_panel_rect(ctx: &Context) -> Option<Rect> {
-    egui::PanelState::load(ctx, egui::Id::unique(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID))
-        .map(|state| state.outer_rect)
+    egui::PanelState::load(ctx, embedded_directory_tree_panel_id()).map(|state| state.outer_rect)
 }
 
 /// Paint vs pointer rects for the main image canvas when an embedded nav panel is present.
 ///
-/// ROOT `Ui` uses top-down layout, so `Panel::left().show_inside` advances the cursor but does
+/// ROOT `Ui` uses top-down layout, so `Panel::left().show` advances the cursor but does
 /// not shrink `available_rect_before_wrap` horizontally. Without this inset the canvas
 /// `allocate_rect(click_and_drag)` covers the whole nav panel and blocks splitters/resizers.
 pub(crate) fn main_window_canvas_rects(

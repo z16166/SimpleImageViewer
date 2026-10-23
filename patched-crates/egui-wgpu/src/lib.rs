@@ -338,7 +338,7 @@ pub enum SurfaceErrorAction {
 /// Shared mailbox used by the application to request that the egui-wgpu
 /// `Painter` change its surface (swap-chain) target format **at runtime**.
 ///
-/// This is a downstream patch on top of upstream egui 0.34: vanilla egui-wgpu
+/// This is a downstream patch on top of upstream egui 0.37: vanilla egui-wgpu
 /// only honours [`WgpuConfiguration::preferred_target_format`] at startup and
 /// locks the swap-chain into that format for the lifetime of the
 /// `RenderState`. We need the format to follow the active monitor's HDR

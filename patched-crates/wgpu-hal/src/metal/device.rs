@@ -1,6 +1,7 @@
 use alloc::{borrow::ToOwned as _, sync::Arc, vec::Vec};
-use core::{mem::align_of, ptr::NonNull};
+use core::{mem::align_of, ptr::NonNull, sync::atomic};
 
+use bytemuck::TransparentWrapper;
 use objc2::{
     available,
     rc::{autoreleasepool, Retained},
@@ -9,11 +10,10 @@ use objc2::{
 use objc2_foundation::{ns_string, NSError, NSRange, NSString, NSUInteger};
 use objc2_metal::{
     MTLAccelerationStructure, MTLAccelerationStructureInstanceOptions, MTLBuffer,
-    MTLCaptureManager, MTLCaptureScope, MTLCommandBuffer, MTLCommandBufferStatus,
-    MTLCompileOptions, MTLComputePipelineDescriptor, MTLComputePipelineState,
-    MTLCounterSampleBufferDescriptor, MTLCounterSet, MTLDepthClipMode, MTLDepthStencilDescriptor,
+    MTLCaptureManager, MTLCaptureScope, MTLCompileOptions, MTLComputePipelineDescriptor,
+    MTLComputePipelineState, MTLCounterSampleBufferDescriptor, MTLCounterSet, MTLDepthClipMode,
     MTLDevice, MTLFunction, MTLIndirectAccelerationStructureInstanceDescriptor, MTLLanguageVersion,
-    MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLMutability, MTLPackedFloat3, MTLPackedFloat4x3,
+    MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLPackedFloat3, MTLPackedFloat4x3,
     MTLPipelineBufferDescriptorArray, MTLPipelineOption, MTLPixelFormat, MTLPrimitiveTopologyClass,
     MTLRenderPipelineColorAttachmentDescriptorArray, MTLRenderPipelineDescriptor, MTLResource,
     MTLResourceID, MTLResourceOptions, MTLSamplerAddressMode, MTLSamplerDescriptor,
@@ -1375,7 +1375,7 @@ impl crate::Device for super::Device {
                             attributes.push(naga::back::msl::AttributeMapping {
                                 shader_location: attribute.shader_location,
                                 offset: attribute.offset as u32,
-                                format: conv::convert_vertex_format_to_naga(attribute.format),
+                                format: convert_vertex_format_to_naga(attribute.format),
                             });
                         }
 
@@ -1907,7 +1907,7 @@ impl crate::Device for super::Device {
         let archive = if self.shared.private_caps.supports_binary_archives {
             if let Some(data) = desc.data {
                 match unsafe { super::pipeline_cache::load_binary_archive(&self.shared.device, data) } {
-                    Ok(archive) => Some(parking_lot::Mutex::new(archive)),
+                    Ok(archive) => Some(Mutex::new(archive)),
                     Err(e) => {
                         log::warn!("Failed to load binary archive from descriptor data: {:?}", e);
                         None
@@ -1923,7 +1923,7 @@ impl crate::Device for super::Device {
         // If not loaded from data, create empty archive if supported
         let archive = if archive.is_none() && self.shared.private_caps.supports_binary_archives {
             unsafe { super::pipeline_cache::create_empty_binary_archive(&self.shared.device) }
-                .map(parking_lot::Mutex::new)
+                .map(Mutex::new)
         } else {
             archive
         };

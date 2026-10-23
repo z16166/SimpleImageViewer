@@ -1565,10 +1565,6 @@ impl super::CapabilitiesQuery {
             timestamp_query_support: self.timestamp_query_support,
             supports_memoryless_storage: self.supports_memoryless_storage,
             mesh_shaders: self.mesh_shaders,
-            max_buffers_per_stage: self.max_buffers_per_stage,
-            max_vertex_buffers: self.max_vertex_buffers,
-            max_textures_per_stage: self.max_textures_per_stage,
-            max_samplers_per_stage: self.max_samplers_per_stage,
             supports_binary_archives: self.supports_binary_archives,
         }
     }

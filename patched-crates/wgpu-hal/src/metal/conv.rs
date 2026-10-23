@@ -11,11 +11,9 @@ use objc2_metal::{
     MTLRenderStages, MTLResourceUsage, MTLSamplerAddressMode, MTLSamplerBorderColor,
     MTLSamplerMinMagFilter, MTLSize, MTLStencilDescriptor, MTLStencilOperation, MTLStoreAction,
     MTLTextureType, MTLTextureUsage, MTLVertexFormat, MTLVertexStepFunction, MTLWinding,
-    MTLMutability, MTLPipelineBufferDescriptorArray, MTLIndirectAccelerationStructureInstanceDescriptor,
-    MTLPackedFloat4x3, MTLPackedFloat3, MTLAccelerationStructureInstanceOptions, MTLResourceID,
+    MTLMutability, MTLPipelineBufferDescriptorArray,
 };
 use alloc::vec::Vec;
-use bytemuck::TransparentWrapper;
 
 pub fn map_texture_usage(format: wgt::TextureFormat, usage: wgt::TextureUses) -> MTLTextureUsage {
     use wgt::TextureUses as Tu;
@@ -530,56 +528,6 @@ pub fn create_depth_stencil_desc(
     desc
 }
 
-pub const fn convert_vertex_format_to_naga(format: wgt::VertexFormat) -> naga::back::msl::VertexFormat {
-    match format {
-        wgt::VertexFormat::Uint8 => naga::back::msl::VertexFormat::Uint8,
-        wgt::VertexFormat::Uint8x2 => naga::back::msl::VertexFormat::Uint8x2,
-        wgt::VertexFormat::Uint8x4 => naga::back::msl::VertexFormat::Uint8x4,
-        wgt::VertexFormat::Sint8 => naga::back::msl::VertexFormat::Sint8,
-        wgt::VertexFormat::Sint8x2 => naga::back::msl::VertexFormat::Sint8x2,
-        wgt::VertexFormat::Sint8x4 => naga::back::msl::VertexFormat::Sint8x4,
-        wgt::VertexFormat::Unorm8 => naga::back::msl::VertexFormat::Unorm8,
-        wgt::VertexFormat::Unorm8x2 => naga::back::msl::VertexFormat::Unorm8x2,
-        wgt::VertexFormat::Unorm8x4 => naga::back::msl::VertexFormat::Unorm8x4,
-        wgt::VertexFormat::Snorm8 => naga::back::msl::VertexFormat::Snorm8,
-        wgt::VertexFormat::Snorm8x2 => naga::back::msl::VertexFormat::Snorm8x2,
-        wgt::VertexFormat::Snorm8x4 => naga::back::msl::VertexFormat::Snorm8x4,
-        wgt::VertexFormat::Uint16 => naga::back::msl::VertexFormat::Uint16,
-        wgt::VertexFormat::Uint16x2 => naga::back::msl::VertexFormat::Uint16x2,
-        wgt::VertexFormat::Uint16x4 => naga::back::msl::VertexFormat::Uint16x4,
-        wgt::VertexFormat::Sint16 => naga::back::msl::VertexFormat::Sint16,
-        wgt::VertexFormat::Sint16x2 => naga::back::msl::VertexFormat::Sint16x2,
-        wgt::VertexFormat::Sint16x4 => naga::back::msl::VertexFormat::Sint16x4,
-        wgt::VertexFormat::Unorm16 => naga::back::msl::VertexFormat::Unorm16,
-        wgt::VertexFormat::Unorm16x2 => naga::back::msl::VertexFormat::Unorm16x2,
-        wgt::VertexFormat::Unorm16x4 => naga::back::msl::VertexFormat::Unorm16x4,
-        wgt::VertexFormat::Snorm16 => naga::back::msl::VertexFormat::Snorm16,
-        wgt::VertexFormat::Snorm16x2 => naga::back::msl::VertexFormat::Snorm16x2,
-        wgt::VertexFormat::Snorm16x4 => naga::back::msl::VertexFormat::Snorm16x4,
-        wgt::VertexFormat::Float16 => naga::back::msl::VertexFormat::Float16,
-        wgt::VertexFormat::Float16x2 => naga::back::msl::VertexFormat::Float16x2,
-        wgt::VertexFormat::Float16x4 => naga::back::msl::VertexFormat::Float16x4,
-        wgt::VertexFormat::Float32 => naga::back::msl::VertexFormat::Float32,
-        wgt::VertexFormat::Float32x2 => naga::back::msl::VertexFormat::Float32x2,
-        wgt::VertexFormat::Float32x3 => naga::back::msl::VertexFormat::Float32x3,
-        wgt::VertexFormat::Float32x4 => naga::back::msl::VertexFormat::Float32x4,
-        wgt::VertexFormat::Uint32 => naga::back::msl::VertexFormat::Uint32,
-        wgt::VertexFormat::Uint32x2 => naga::back::msl::VertexFormat::Uint32x2,
-        wgt::VertexFormat::Uint32x3 => naga::back::msl::VertexFormat::Uint32x3,
-        wgt::VertexFormat::Uint32x4 => naga::back::msl::VertexFormat::Uint32x4,
-        wgt::VertexFormat::Sint32 => naga::back::msl::VertexFormat::Sint32,
-        wgt::VertexFormat::Sint32x2 => naga::back::msl::VertexFormat::Sint32x2,
-        wgt::VertexFormat::Sint32x3 => naga::back::msl::VertexFormat::Sint32x3,
-        wgt::VertexFormat::Sint32x4 => naga::back::msl::VertexFormat::Sint32x4,
-        wgt::VertexFormat::Unorm10_10_10_2 => naga::back::msl::VertexFormat::Unorm10_10_10_2,
-        wgt::VertexFormat::Unorm8x4Bgra => naga::back::msl::VertexFormat::Unorm8x4Bgra,
-        wgt::VertexFormat::Float64
-        | wgt::VertexFormat::Float64x2
-        | wgt::VertexFormat::Float64x3
-        | wgt::VertexFormat::Float64x4 => unreachable!(),
-    }
-}
-
 pub fn set_buffers_mutability(
     buffers: &MTLPipelineBufferDescriptorArray,
     mut immutable_mask: usize,
@@ -591,43 +539,4 @@ pub fn set_buffers_mutability(
             .setMutability(MTLMutability::Immutable);
     }
 }
-
-pub fn tlas_instance_to_bytes(instance: crate::TlasInstance) -> Vec<u8> {
-    let temp = MTLIndirectAccelerationStructureInstanceDescriptor {
-        transformationMatrix: MTLPackedFloat4x3 {
-            columns: [
-                MTLPackedFloat3 {
-                    x: instance.transform[0],
-                    y: instance.transform[4],
-                    z: instance.transform[8],
-                },
-                MTLPackedFloat3 {
-                    x: instance.transform[1],
-                    y: instance.transform[5],
-                    z: instance.transform[9],
-                },
-                MTLPackedFloat3 {
-                    x: instance.transform[2],
-                    y: instance.transform[6],
-                    z: instance.transform[10],
-                },
-                MTLPackedFloat3 {
-                    x: instance.transform[3],
-                    y: instance.transform[7],
-                    z: instance.transform[11],
-                },
-            ],
-        },
-        options: MTLAccelerationStructureInstanceOptions::None,
-        mask: instance.mask as u32,
-        intersectionFunctionTableOffset: 0,
-        userID: instance.custom_data,
-        accelerationStructureID: unsafe { MTLResourceID::from_raw(instance.blas_address) },
-    };
-
-    wgt::bytemuck_wrapper!(unsafe struct Desc(MTLIndirectAccelerationStructureInstanceDescriptor));
-
-    bytemuck::bytes_of(&Desc::wrap(temp)).to_vec()
-}
-
 

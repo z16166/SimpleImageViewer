@@ -1038,6 +1038,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
                 power_preference: wgpu::PowerPreference::LowPower,
                 force_fallback_adapter: true,
                 compatible_surface: None,
+                apply_limit_buckets: false,
             })
             .await
             .ok()?;
@@ -1235,6 +1236,7 @@ fn gpu_preview_tone_map_matches_cpu_for_linear_srgb() {
                 power_preference: wgpu::PowerPreference::LowPower,
                 force_fallback_adapter: true,
                 compatible_surface: None,
+                apply_limit_buckets: false,
             })
             .await
             .ok()?;

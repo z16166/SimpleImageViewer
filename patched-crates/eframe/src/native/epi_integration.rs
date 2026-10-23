@@ -511,6 +511,11 @@ impl EpiIntegration {
             if self.first_frame_show_maximized {
                 // Maximized restore: hidden until first paint, then one-shot SW_SHOWMAXIMIZED.
                 show_window_maximized(window);
+                // X11 drops maximize/fullscreen requested while the window is hidden.
+                #[cfg(not(target_os = "windows"))]
+                if let Some(window_settings) = &self.restored_window_settings {
+                    window_settings.after_first_show(window);
+                }
             } else {
                 if let Some(window_settings) = &self.restored_window_settings {
                     window_settings.before_first_show(window);

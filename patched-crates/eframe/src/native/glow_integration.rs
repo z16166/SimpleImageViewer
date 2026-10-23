@@ -871,6 +871,29 @@ impl GlowWinitRunning<'_> {
 
         glutin.remove_viewports_not_in(&viewport_output);
 
+        if let Some(viewport) = glutin.viewports.get_mut(&viewport_id) {
+            // Drop events `update` already applied, before deferred commands.
+            // Clearing after ViewportCommand::Close discards the synthetic Close.
+            super::viewport_event_lifecycle::consume_applied_input_events(&mut viewport.info);
+        } else {
+            return Ok(EventResult::Wait);
+        }
+
+        // Apply viewport commands before paint so the GL surface matches the window.
+        let transition_paint = transition_paint_kind(&viewport_output);
+        glutin.handle_viewport_output(event_loop, &integration.egui_ctx, &viewport_output);
+        if matches!(transition_paint, TransitionPaint::Content) {
+            for (id, viewport) in glutin.viewports.iter() {
+                if let Some(window) = viewport.window.as_ref()
+                    && window.fullscreen().is_some()
+                    && window.is_visible() == Some(false)
+                {
+                    window.set_visible(true);
+                    integration.egui_ctx.request_repaint_of(*id);
+                }
+            }
+        }
+
         let GlutinWindowContext {
             viewports,
             current_gl_context,
@@ -883,16 +906,28 @@ impl GlowWinitRunning<'_> {
             return Ok(EventResult::Wait);
         };
 
-        super::viewport_event_lifecycle::consume_applied_input_events(&mut viewport.info);
-        let window = viewport.window.clone().unwrap();
-        let gl_surface = viewport.gl_surface.as_ref().unwrap();
-        let egui_winit = viewport.egui_winit.as_mut().unwrap();
+        // `handle_viewport_output` may drop the window while recreating it.
+        // A failed recreate leaves these empty; skip the frame instead of panicking.
+        let Some(window) = viewport.window.clone() else {
+            return Ok(EventResult::Wait);
+        };
+        let Some(gl_surface) = viewport.gl_surface.as_ref() else {
+            return Ok(EventResult::Wait);
+        };
+        let Some(egui_winit) = viewport.egui_winit.as_mut() else {
+            return Ok(EventResult::Wait);
+        };
 
         egui_winit.handle_platform_output_with_event_loop(&window, event_loop, platform_output);
 
         let mut post_render_repaint_now = false;
         if is_visible {
-            let clipped_primitives = integration.egui_ctx.tessellate(shapes, pixels_per_point);
+            let clipped_primitives = match transition_paint {
+                TransitionPaint::Blank => Vec::new(),
+                TransitionPaint::Content | TransitionPaint::None => {
+                    integration.egui_ctx.tessellate(shapes, pixels_per_point)
+                }
+            };
 
             {
                 // We may need to switch contexts again, because of immediate viewports:
@@ -1000,8 +1035,6 @@ impl GlowWinitRunning<'_> {
                 save_screenshot_and_exit(&path, &painter, screen_size_in_pixels);
             }
         }
-
-        glutin.handle_viewport_output(event_loop, &integration.egui_ctx, &viewport_output);
 
         integration.report_frame_time(frame_timer.total_time_sec()); // don't count auto-save time as part of regular frame time
 
@@ -1655,13 +1688,16 @@ impl GlutinWindowContext {
 
             viewport.process_commands(egui_ctx, commands);
 
-            // For Wayland : https://github.com/emilk/egui/issues/4196
-            if cfg!(target_os = "linux")
-                && let Some(window) = &viewport.window
+            // Wayland needs an explicit resize; Windows needs it when leaving fullscreen
+            // so the next present targets the restored framebuffer.
+            if let Some(window) = &viewport.window
                 && let Some(old_inner_size) = old_inner_size
             {
                 let new_inner_size = window.inner_size();
-                if new_inner_size != old_inner_size {
+                if new_inner_size != old_inner_size
+                    && NonZeroU32::new(new_inner_size.width).is_some()
+                    && NonZeroU32::new(new_inner_size.height).is_some()
+                {
                     self.resize(viewport_id, new_inner_size);
                 }
             }
@@ -1671,6 +1707,47 @@ impl GlutinWindowContext {
         self.initialize_all_windows(event_loop);
 
         self.remove_viewports_not_in(viewport_output);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransitionPaint {
+    None,
+    Blank,
+    Content,
+}
+
+/// Blank the frame when a size/maximize/minimize command lands this frame so we
+/// do not blit a stale full-size image into the new framebuffer. Entering
+/// fullscreen paints real content and reveals a window that winit left hidden.
+fn transition_paint_kind(
+    viewport_output: &OrderedViewportIdMap<ViewportOutput>,
+) -> TransitionPaint {
+    let mut has_transition = false;
+    let mut fullscreen_true = false;
+    for output in viewport_output.values() {
+        for command in &output.commands {
+            match command {
+                egui::ViewportCommand::Fullscreen(true) => {
+                    fullscreen_true = true;
+                    has_transition = true;
+                }
+                egui::ViewportCommand::Fullscreen(_)
+                | egui::ViewportCommand::Maximized(_)
+                | egui::ViewportCommand::Minimized(_)
+                | egui::ViewportCommand::InnerSize(_) => {
+                    has_transition = true;
+                }
+                _ => {}
+            }
+        }
+    }
+    if fullscreen_true {
+        TransitionPaint::Content
+    } else if has_transition {
+        TransitionPaint::Blank
+    } else {
+        TransitionPaint::None
     }
 }
 

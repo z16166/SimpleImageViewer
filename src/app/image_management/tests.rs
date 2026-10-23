@@ -3444,6 +3444,7 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
                 power_preference: wgpu::PowerPreference::LowPower,
                 force_fallback_adapter: true,
                 compatible_surface: None,
+                apply_limit_buckets: false,
             })
             .await
             .ok()?;
@@ -3555,6 +3556,7 @@ fn sync_loader_wgpu_context_bumps_epoch_on_device_replacement() {
                 power_preference: wgpu::PowerPreference::LowPower,
                 force_fallback_adapter: true,
                 compatible_surface: None,
+                apply_limit_buckets: false,
             })
             .await
             .ok()?;
@@ -3574,6 +3576,7 @@ fn sync_loader_wgpu_context_bumps_epoch_on_device_replacement() {
                 power_preference: wgpu::PowerPreference::LowPower,
                 force_fallback_adapter: true,
                 compatible_surface: None,
+                apply_limit_buckets: false,
             })
             .await
             .ok()?;

@@ -204,39 +204,25 @@ impl Surface for NativeSurface {
             .map(|osc| osc.as_any().downcast_ref::<NativeSwapchain>().unwrap().raw)
             .unwrap_or(vk::SwapchainKHR::null());
 
-        // `cfg!` does not gate name resolution; `linux_swapchain` exists only on Linux builds.
+        // wgpu-core resolves `Auto` before this call. Linux RGB10A2 is the exception:
+        // KWin gamma 2.2 and PQ share one texture format, and `SurfaceColorSpace::Auto`
+        // does not select PQ. egui-wgpu sets the preference before configure.
+        #[cfg(target_os = "linux")]
         let color_space = {
-            #[cfg(target_os = "linux")]
-            {
-                if config.format == wgt::TextureFormat::Rgb10a2Unorm {
-                    use crate::linux_swapchain::{
-                        preferred_linux_rgb10a2_vk_color_space, LinuxRgb10a2VkColorSpace,
-                    };
-                    match preferred_linux_rgb10a2_vk_color_space() {
-                        LinuxRgb10a2VkColorSpace::Hdr10St2084 => {
-                            vk::ColorSpaceKHR::HDR10_ST2084_EXT
-                        }
-                        LinuxRgb10a2VkColorSpace::SrgbNonLinear => {
-                            vk::ColorSpaceKHR::SRGB_NONLINEAR
-                        }
-                    }
-                } else if config.format == wgt::TextureFormat::Rgba16Float {
-                    // Enable wide color gamut mode
-                    // Vulkan swapchain for Android only supports DISPLAY_P3_NONLINEAR_EXT and EXTENDED_SRGB_LINEAR_EXT
-                    vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT
-                } else {
-                    vk::ColorSpaceKHR::SRGB_NONLINEAR
+            use crate::linux_swapchain::{
+                preferred_linux_rgb10a2_vk_color_space, LinuxRgb10a2VkColorSpace,
+            };
+            if config.format == wgt::TextureFormat::Rgb10a2Unorm {
+                match preferred_linux_rgb10a2_vk_color_space() {
+                    LinuxRgb10a2VkColorSpace::Hdr10St2084 => vk::ColorSpaceKHR::HDR10_ST2084_EXT,
+                    LinuxRgb10a2VkColorSpace::SrgbNonLinear => vk::ColorSpaceKHR::SRGB_NONLINEAR,
                 }
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                if config.format == wgt::TextureFormat::Rgba16Float {
-                    vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT
-                } else {
-                    vk::ColorSpaceKHR::SRGB_NONLINEAR
-                }
+            } else {
+                conv::map_surface_color_space(config.color_space)
             }
         };
+        #[cfg(not(target_os = "linux"))]
+        let color_space = conv::map_surface_color_space(config.color_space);
 
         let original_format = device.shared.private_caps.map_texture_format(config.format);
         let mut raw_flags = vk::SwapchainCreateFlagsKHR::empty();

@@ -344,10 +344,6 @@ struct PrivateCapabilities {
     timestamp_query_support: TimestampQuerySupport,
     supports_memoryless_storage: bool,
     mesh_shaders: bool,
-    max_buffers_per_stage: ResourceIndex,
-    max_vertex_buffers: ResourceIndex,
-    max_textures_per_stage: ResourceIndex,
-    max_samplers_per_stage: ResourceIndex,
     supports_binary_archives: bool,
 }
 
