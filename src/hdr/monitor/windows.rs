@@ -388,9 +388,12 @@ mod viewport_probe_tests {
 }
 
 /// How many times to retry `QueryDisplayConfig` after `ERROR_INSUFFICIENT_BUFFER`.
+#[cfg(target_os = "windows")]
 const DISPLAYCONFIG_QUERY_ATTEMPTS: usize = 4;
 /// Reject absurd buffer sizes from a broken display-config query.
+#[cfg(target_os = "windows")]
 const DISPLAYCONFIG_MAX_PATHS: u32 = 64;
+#[cfg(target_os = "windows")]
 const DISPLAYCONFIG_MAX_MODES: u32 = 128;
 
 /// Windows HDR desktop: `SDRWhiteLevel` is the "SDR content brightness" slider.

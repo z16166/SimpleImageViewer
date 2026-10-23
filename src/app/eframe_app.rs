@@ -117,6 +117,12 @@ impl eframe::App for ImageViewerApp {
             log::error!("[on_exit] Failed to save context menu: {}", e);
         }
 
+        // Finish stale-cache deletion before the final cache write and before
+        // process::exit / _exit. Those calls abort background threads, so an
+        // unjoined cleanup would leave old files on Windows, macOS, and Linux.
+        // The live cache path is excluded from deletion.
+        crate::wgpu_pipeline_cache::join_pipeline_cache_cleanup();
+
         if let (Some(info), Some(cache)) = (
             self.wgpu_adapter_info.as_ref(),
             self.wgpu_pipeline_cache.as_deref(),

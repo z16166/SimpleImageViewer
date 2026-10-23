@@ -15,14 +15,29 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 //! On-disk persistence for [`wgpu::PipelineCache`] (DX12/Metal/Vulkan pipeline caches via patched wgpu-hal).
+//!
+//! Startup starts one background thread that deletes pipeline-cache files from older
+//! builds. The file this process reads and writes is excluded. Shutdown joins that
+//! thread before `process::exit` / `_exit`, which would otherwise abort the delete.
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 
 /// Bump when wgpu render pipelines or WGSL change in ways that invalidate on-disk cache bytes.
 const PIPELINE_CACHE_SCHEMA_VERSION: u32 = 12;
+
+const PIPELINE_CACHE_CLEANUP_THREAD_NAME: &str = "wgpu-cache-cleanup";
+const PIPELINE_CACHE_CLEANUP_JOIN_LABEL: &str = "wgpu pipeline cache cleanup";
+/// Fallback stem written by [`cache_path_for_adapter_info`] for non-Vulkan adapters.
+const PIPELINE_CACHE_FILE_PREFIX: &str = "siv_wgpu_pipeline_cache_";
+/// Vulkan stem from `wgpu::util::pipeline_cache_key`, before our schema suffix.
+const WGPU_PIPELINE_CACHE_FILE_PREFIX: &str = "wgpu_pipeline_cache_";
+const PIPELINE_CACHE_VERSION_MARK: &str = "_pcv";
+const PIPELINE_CACHE_DRIVER_MARK: &str = "_drv";
 
 pub fn adapter_supports_pipeline_cache(adapter: &wgpu::Adapter) -> bool {
     adapter.features().contains(wgpu::Features::PIPELINE_CACHE)
@@ -39,17 +54,39 @@ pub fn required_device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
 }
 
 pub fn cache_path_for_adapter_info(info: &wgpu::AdapterInfo) -> PathBuf {
-    let stem = wgpu::util::pipeline_cache_key(info).unwrap_or_else(|| {
-        format!(
-            "siv_wgpu_pipeline_cache_{:?}_{}_{}",
+    let stem = match wgpu::util::pipeline_cache_key(info) {
+        Some(key) => {
+            // `pipeline_cache_key` lives in wgpu. Cleanup matches `WGPU_PIPELINE_CACHE_FILE_PREFIX`.
+            // A release build must log this; `debug_assert` would hide the drift from users.
+            warn_if_pipeline_cache_key_prefix_drifted(&key);
+            key
+        }
+        None => format!(
+            "{PIPELINE_CACHE_FILE_PREFIX}{:?}_{}_{}",
             info.backend, info.vendor, info.device
-        )
-    });
+        ),
+    };
     let stem = format!(
-        "{stem}_pcv{PIPELINE_CACHE_SCHEMA_VERSION}_drv{:016x}",
+        "{stem}{PIPELINE_CACHE_VERSION_MARK}{PIPELINE_CACHE_SCHEMA_VERSION}{PIPELINE_CACHE_DRIVER_MARK}{:016x}",
         driver_cache_hash(info)
     );
     cache_dir().join(format!("{stem}.bin"))
+}
+
+fn warn_if_pipeline_cache_key_prefix_drifted(key: &str) {
+    if key.starts_with(WGPU_PIPELINE_CACHE_FILE_PREFIX)
+        || key.starts_with(PIPELINE_CACHE_FILE_PREFIX)
+    {
+        return;
+    }
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    log::error!(
+        "[HDR] pipeline cache key \"{key}\" does not start with {WGPU_PIPELINE_CACHE_FILE_PREFIX} \
+         or {PIPELINE_CACHE_FILE_PREFIX}; old cache files for that key will not be removed"
+    );
 }
 
 pub fn cache_path(adapter: &wgpu::Adapter) -> PathBuf {
@@ -86,12 +123,6 @@ pub fn load_for_adapter(adapter: &wgpu::Adapter) -> Option<Vec<u8>> {
     // A previous process::exit can kill the writer after it truncates this temp file
     // and before the rename. Drop that leftover before any new save starts.
     discard_incomplete_temp(&path);
-    // Defer stale-file cleanup to a background thread so startup isn't blocked by I/O.
-    let cleanup_path = path.clone();
-    std::thread::Builder::new()
-        .name("wgpu-cache-cleanup".into())
-        .spawn(move || remove_stale_pipeline_cache_files(&cleanup_path))
-        .ok();
     match std::fs::read(&path) {
         Ok(data) => {
             log::info!(
@@ -188,48 +219,233 @@ fn finish_persist_thread() {
     }
 }
 
-fn remove_stale_pipeline_cache_files(current_path: &Path) {
-    let Some(parent) = current_path.parent() else {
+fn cleanup_join_slot() -> &'static Mutex<Option<std::thread::JoinHandle<()>>> {
+    static SLOT: OnceLock<Mutex<Option<std::thread::JoinHandle<()>>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn cleanup_started_flag() -> &'static AtomicBool {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    &STARTED
+}
+
+/// Join any in-flight cleanup and allow [`start_pipeline_cache_cleanup`] to run again.
+///
+/// The production flag is process-global. Tests that call start must reset it, or a
+/// test that runs later in the same process sees the flag already set and returns
+/// without deleting.
+#[cfg(test)]
+fn reset_pipeline_cache_cleanup_for_test() {
+    if let Some(handle) = cleanup_join_slot().lock().take() {
+        let _ = handle.join();
+    }
+    cleanup_started_flag().store(false, Ordering::Release);
+}
+
+/// Delete older on-disk pipeline caches on a background thread.
+///
+/// `protected_path` is the cache this process will read and write. That file and its
+/// `.tmp` sibling are never deleted. Pass `None` when this session has no live cache
+/// (no wgpu device, or the adapter cannot use `PipelineCache`): only files from older
+/// schema versions are removed, so a later launch can still reuse a current-schema file.
+///
+/// The scan runs once per process. Call [`join_pipeline_cache_cleanup`] before
+/// `process::exit` / `_exit`, which abort the thread without finishing the deletes.
+pub(crate) fn start_pipeline_cache_cleanup(protected_path: Option<PathBuf>) {
+    let started = cleanup_started_flag();
+    if started.swap(true, Ordering::AcqRel) {
         return;
-    };
-    let current_name = current_path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned());
-    let Some(current_name) = current_name else {
-        return;
-    };
-    let Some(base_prefix) = current_name.split("_pcv").next() else {
-        return;
-    };
-    let current_temp_name = temp_path_for(current_path)
-        .file_name()
-        .map(|temp_name| temp_name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let entries = match std::fs::read_dir(parent) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name == current_name {
-            continue;
+    }
+    let dir = protected_path
+        .as_ref()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(cache_dir);
+    match std::thread::Builder::new()
+        .name(PIPELINE_CACHE_CLEANUP_THREAD_NAME.to_string())
+        .spawn(move || remove_old_pipeline_cache_files(&dir, protected_path.as_deref()))
+    {
+        Ok(handle) => *cleanup_join_slot().lock() = Some(handle),
+        Err(error) => {
+            cleanup_started_flag().store(false, Ordering::Release);
+            log::warn!("[HDR] failed to spawn pipeline cache cleanup thread: {error}");
         }
-        let is_other_cache_bin =
-            name.starts_with(base_prefix) && name.ends_with(".bin") && name.contains("_pcv");
-        let is_leftover_temp = name != current_temp_name
-            && name.starts_with(base_prefix)
-            && name.ends_with(".tmp")
-            && name.contains("_pcv");
-        if is_other_cache_bin || is_leftover_temp {
-            if let Err(error) = std::fs::remove_file(entry.path()) {
+    }
+}
+
+/// Join the cleanup thread started by [`start_pipeline_cache_cleanup`].
+///
+/// Safe to call more than once. A stuck delete (for example a disconnected network
+/// volume) must not block process exit forever, so the wait uses the shared background
+/// join budget and then detaches.
+pub(crate) fn join_pipeline_cache_cleanup() {
+    // Joining the current thread deadlocks. The panic hook can run on this worker.
+    if std::thread::current().name() == Some(PIPELINE_CACHE_CLEANUP_THREAD_NAME) {
+        log::warn!("[HDR] not joining {PIPELINE_CACHE_CLEANUP_THREAD_NAME} from its own thread");
+        return;
+    }
+    let Some(handle) = cleanup_join_slot().lock().take() else {
+        return;
+    };
+    crate::app::background_threads::join_handle_with_timeout(
+        handle,
+        crate::app::background_threads::BACKGROUND_THREAD_JOIN_TIMEOUT,
+        PIPELINE_CACHE_CLEANUP_JOIN_LABEL,
+    );
+}
+
+fn protected_file_names(path: &Path) -> Vec<OsString> {
+    let mut names = Vec::new();
+    if let Some(name) = path.file_name() {
+        names.push(name.to_os_string());
+    }
+    if let Some(temp_name) = temp_path_for(path).file_name() {
+        names.push(temp_name.to_os_string());
+    }
+    names
+}
+
+fn is_protected_file_name(file_name: &OsStr, protected_names: &[OsString]) -> bool {
+    // Case-folding only skips a delete. Removal matching stays byte-exact
+    // (`strip_prefix` / `starts_with`): on Linux a name that differs only by case is a
+    // different file, and folding that compare could delete it. A wider protect set can
+    // leave an odd-cased twin behind. It cannot delete the live file when the directory
+    // entry's case differs (Windows, or case-insensitive APFS).
+    protected_names.iter().any(|protected| {
+        protected == file_name
+            || protected
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&file_name.to_string_lossy())
+    })
+}
+
+fn pipeline_cache_artifact_stem(name: &str) -> Option<&str> {
+    name.strip_suffix(".bin")
+        .or_else(|| name.strip_suffix(".tmp"))
+}
+
+fn is_pipeline_cache_artifact(name: &str) -> bool {
+    let Some(stem) = pipeline_cache_artifact_stem(name) else {
+        return false;
+    };
+    stem.starts_with(PIPELINE_CACHE_FILE_PREFIX)
+        || stem.starts_with(WGPU_PIPELINE_CACHE_FILE_PREFIX)
+}
+
+fn embedded_schema_version(name: &str) -> Option<u32> {
+    let stem = pipeline_cache_artifact_stem(name).unwrap_or(name);
+    let idx = stem.rfind(PIPELINE_CACHE_VERSION_MARK)?;
+    let rest = &stem[idx + PIPELINE_CACHE_VERSION_MARK.len()..];
+    let end = rest.find(|ch: char| !ch.is_ascii_digit())?;
+    if end == 0 || !rest[end..].starts_with(PIPELINE_CACHE_DRIVER_MARK) {
+        return None;
+    }
+    rest[..end].parse().ok()
+}
+
+fn adapter_cache_prefix(file_name: &str) -> Option<&str> {
+    let stem = pipeline_cache_artifact_stem(file_name).unwrap_or(file_name);
+    let idx = stem.rfind(PIPELINE_CACHE_VERSION_MARK)?;
+    let prefix = &stem[..idx];
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix)
+    }
+}
+
+/// `base_prefix` is the live file name before [`PIPELINE_CACHE_VERSION_MARK`].
+/// The next characters must be that marker, so device id `10464` does not also match `104640`.
+fn is_same_adapter_artifact(name: &str, base_prefix: &str) -> bool {
+    name.strip_prefix(base_prefix)
+        .is_some_and(|rest| rest.starts_with(PIPELINE_CACHE_VERSION_MARK))
+}
+
+fn should_remove_pipeline_cache_file(
+    file_name: &OsStr,
+    protected_names: &[OsString],
+    live_prefix: Option<&str>,
+) -> bool {
+    if is_protected_file_name(file_name, protected_names) {
+        return false;
+    }
+    let Some(name) = file_name.to_str() else {
+        return false;
+    };
+    if !is_pipeline_cache_artifact(name) {
+        return false;
+    }
+    match embedded_schema_version(name) {
+        // Older builds. Invalid after a schema bump on every backend and GPU.
+        Some(version) if version < PIPELINE_CACHE_SCHEMA_VERSION => true,
+        // Same adapter, previous driver hash. The live file is already excluded above.
+        Some(version) if version == PIPELINE_CACHE_SCHEMA_VERSION => {
+            live_prefix.is_some_and(|prefix| is_same_adapter_artifact(name, prefix))
+        }
+        // Newer than this binary (downgrade). Leave it for the newer build.
+        Some(_) => false,
+        // Pre-schema layout (`siv_wgpu_pipeline_cache_*.bin` with no `_pcv`).
+        None => true,
+    }
+}
+
+fn remove_old_pipeline_cache_files(dir: &Path, protected_path: Option<&Path>) {
+    let protected_names = protected_path.map(protected_file_names).unwrap_or_default();
+    let live_name = protected_path.and_then(|path| path.file_name().and_then(|name| name.to_str()));
+    let live_prefix_owned = live_name.and_then(adapter_cache_prefix).map(str::to_owned);
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            log::warn!(
+                "[HDR] skipped pipeline cache cleanup in {}: {error}",
+                dir.display()
+            );
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
                 log::debug!(
-                    "[HDR] failed to remove stale wgpu pipeline cache {}: {error}",
+                    "[HDR] skipped pipeline cache directory entry in {}: {error}",
+                    dir.display()
+                );
+                continue;
+            }
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                log::debug!(
+                    "[HDR] skipped pipeline cache file type for {}: {error}",
                     entry.path().display()
                 );
-            } else {
-                log::info!(
-                    "[HDR] removed stale wgpu pipeline cache {}",
-                    entry.path().display()
+                continue;
+            }
+        };
+        // Do not follow symlinks or walk subdirectories. Cache files sit next to the exe.
+        if !file_type.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        if !should_remove_pipeline_cache_file(
+            &file_name,
+            &protected_names,
+            live_prefix_owned.as_deref(),
+        ) {
+            continue;
+        }
+        let path = entry.path();
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                log::info!("[HDR] removed stale wgpu pipeline cache {}", path.display());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                log::warn!(
+                    "[HDR] failed to remove stale wgpu pipeline cache {}: {error}",
+                    path.display()
                 );
             }
         }
@@ -301,6 +517,8 @@ pub fn create_pipeline_cache(
     adapter: &wgpu::Adapter,
 ) -> Option<wgpu::PipelineCache> {
     if !adapter_supports_pipeline_cache(adapter) {
+        // No live cache this session. Still drop files from older schema versions.
+        start_pipeline_cache_cleanup(None);
         log::info!(
             "[startup] wgpu PipelineCache unsupported on adapter \"{}\" ({:?}); \
              continuing without on-disk pipeline cache",
@@ -310,17 +528,20 @@ pub fn create_pipeline_cache(
         return None;
     }
     if !device.features().contains(wgpu::Features::PIPELINE_CACHE) {
+        start_pipeline_cache_cleanup(None);
         log::warn!(
             "[startup] adapter advertised PipelineCache but device lacks the feature; \
              continuing without on-disk pipeline cache"
         );
         return None;
     }
-    let cache_data = load_for_adapter(adapter);
     let path = cache_path(adapter);
+    start_pipeline_cache_cleanup(Some(path.clone()));
+    let cache_data = load_for_adapter(adapter);
     debug_assert!(
-        path.to_string_lossy()
-            .contains(&format!("_pcv{PIPELINE_CACHE_SCHEMA_VERSION}_")),
+        path.to_string_lossy().contains(&format!(
+            "{PIPELINE_CACHE_VERSION_MARK}{PIPELINE_CACHE_SCHEMA_VERSION}{PIPELINE_CACHE_DRIVER_MARK}"
+        )),
         "pipeline cache path must embed schema version"
     );
     // SAFETY: `cache_data` comes from our own prior `PipelineCache::get_data` writes.
@@ -373,7 +594,32 @@ mod tests {
         let path = cache_path_for_adapter_info(&adapter_info("32.0.16.1052"));
         let file_name = path.file_name().unwrap().to_string_lossy();
 
-        assert!(file_name.contains(&format!("_pcv{PIPELINE_CACHE_SCHEMA_VERSION}_")));
+        assert!(
+            file_name.starts_with(PIPELINE_CACHE_FILE_PREFIX),
+            "{file_name}"
+        );
+        assert!(file_name.contains(&format!(
+            "{PIPELINE_CACHE_VERSION_MARK}{PIPELINE_CACHE_SCHEMA_VERSION}{PIPELINE_CACHE_DRIVER_MARK}"
+        )));
+    }
+
+    #[test]
+    fn vulkan_cache_path_uses_cleanup_prefix() {
+        let mut info = adapter_info("1.0.0");
+        info.backend = wgpu::Backend::Vulkan;
+        let file_name = cache_path_for_adapter_info(&info)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        assert!(
+            file_name.starts_with(WGPU_PIPELINE_CACHE_FILE_PREFIX),
+            "{file_name}"
+        );
+        assert!(file_name.contains(&format!(
+            "{PIPELINE_CACHE_VERSION_MARK}{PIPELINE_CACHE_SCHEMA_VERSION}{PIPELINE_CACHE_DRIVER_MARK}"
+        )));
     }
 
     fn test_dir(name: &str) -> PathBuf {
@@ -449,6 +695,203 @@ mod tests {
 
         assert_eq!(std::fs::read(&path).unwrap(), b"good-cache");
         assert!(!temp.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn versioned(prefix: &str, version: u32, driver: &str, ext: &str) -> String {
+        format!(
+            "{prefix}{PIPELINE_CACHE_VERSION_MARK}{version}{PIPELINE_CACHE_DRIVER_MARK}{driver}.{ext}"
+        )
+    }
+
+    fn touch(dir: &Path, name: &str) {
+        std::fs::write(dir.join(name), b"x").unwrap();
+    }
+
+    #[test]
+    fn cleanup_keeps_live_cache_and_removes_old_versions() {
+        let dir = test_dir("cleanup");
+        // Device id 10464 is a string prefix of 104640. The longer id must survive.
+        let live_prefix = "wgpu_pipeline_cache_vulkan_4318_10464";
+        let live = versioned(
+            live_prefix,
+            PIPELINE_CACHE_SCHEMA_VERSION,
+            "aaaaaaaaaaaaaaaa",
+            "bin",
+        );
+        let live_tmp = versioned(
+            live_prefix,
+            PIPELINE_CACHE_SCHEMA_VERSION,
+            "aaaaaaaaaaaaaaaa",
+            "tmp",
+        );
+        let old_bin = versioned(
+            live_prefix,
+            PIPELINE_CACHE_SCHEMA_VERSION - 1,
+            "aaaaaaaaaaaaaaaa",
+            "bin",
+        );
+        let old_tmp = versioned(
+            live_prefix,
+            PIPELINE_CACHE_SCHEMA_VERSION - 1,
+            "bbbbbbbbbbbbbbbb",
+            "tmp",
+        );
+        let other_driver = versioned(
+            live_prefix,
+            PIPELINE_CACHE_SCHEMA_VERSION,
+            "bbbbbbbbbbbbbbbb",
+            "bin",
+        );
+        let newer = versioned(
+            live_prefix,
+            PIPELINE_CACHE_SCHEMA_VERSION + 1,
+            "cccccccccccccccc",
+            "bin",
+        );
+        let other_gpu = versioned(
+            "wgpu_pipeline_cache_vulkan_4318_104640",
+            PIPELINE_CACHE_SCHEMA_VERSION,
+            "dddddddddddddddd",
+            "bin",
+        );
+        let other_backend_current = versioned(
+            "siv_wgpu_pipeline_cache_Dx12_4318_10464",
+            PIPELINE_CACHE_SCHEMA_VERSION,
+            "ffffffffeeeeeeee",
+            "bin",
+        );
+        let other_gpu_old = versioned(
+            "wgpu_pipeline_cache_vulkan_99_100",
+            PIPELINE_CACHE_SCHEMA_VERSION - 1,
+            "eeeeeeeeeeeeeeee",
+            "bin",
+        );
+        let unversioned = "siv_wgpu_pipeline_cache_Dx12_1_2.bin";
+        let kept = [
+            live.as_str(),
+            live_tmp.as_str(),
+            newer.as_str(),
+            other_gpu.as_str(),
+            other_backend_current.as_str(),
+            "siv_settings.yaml",
+            "siv_wgpu_preprobe_cache.yaml",
+            "notes.bin",
+            "图片.png",
+        ];
+        let removed = [
+            old_bin.as_str(),
+            old_tmp.as_str(),
+            other_driver.as_str(),
+            other_gpu_old.as_str(),
+            unversioned,
+        ];
+        for name in kept.iter().chain(removed.iter()) {
+            touch(&dir, name);
+        }
+        let decoy_dir = dir.join(versioned(
+            "siv_wgpu_pipeline_cache_not_a_file",
+            PIPELINE_CACHE_SCHEMA_VERSION - 1,
+            "1",
+            "bin",
+        ));
+        std::fs::create_dir(&decoy_dir).unwrap();
+
+        let live_path = dir.join(&live);
+        remove_old_pipeline_cache_files(&dir, Some(&live_path));
+
+        for name in kept {
+            assert!(dir.join(name).is_file(), "kept {name}");
+        }
+        for name in removed {
+            assert!(!dir.join(name).exists(), "removed {name}");
+        }
+        assert!(decoy_dir.is_dir(), "directory entries are not deleted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_without_live_cache_keeps_current_schema_files() {
+        let dir = test_dir("cleanup-none");
+        let current = versioned(
+            "siv_wgpu_pipeline_cache_Metal_1_2",
+            PIPELINE_CACHE_SCHEMA_VERSION,
+            "1",
+            "bin",
+        );
+        let old = versioned(
+            "siv_wgpu_pipeline_cache_Metal_1_2",
+            PIPELINE_CACHE_SCHEMA_VERSION - 1,
+            "1",
+            "bin",
+        );
+        touch(&dir, &current);
+        touch(&dir, &old);
+
+        remove_old_pipeline_cache_files(&dir, None);
+
+        assert!(dir.join(&current).is_file());
+        assert!(!dir.join(&old).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn protected_name_match_ignores_ascii_case() {
+        let live = versioned(
+            "siv_wgpu_pipeline_cache_Dx12_1_2",
+            PIPELINE_CACHE_SCHEMA_VERSION,
+            "1",
+            "bin",
+        );
+        let protected = protected_file_names(Path::new(&live));
+        let prefix = adapter_cache_prefix(&live);
+        let upper = OsString::from(live.to_ascii_uppercase());
+        assert!(!should_remove_pipeline_cache_file(
+            &upper, &protected, prefix
+        ));
+    }
+
+    struct ResetPipelineCacheCleanupOnDrop;
+    impl Drop for ResetPipelineCacheCleanupOnDrop {
+        fn drop(&mut self) {
+            reset_pipeline_cache_cleanup_for_test();
+        }
+    }
+
+    #[test]
+    fn cleanup_thread_deletes_old_cache_and_joins() {
+        static ORDER: Mutex<()> = Mutex::new(());
+        let _order = ORDER.lock();
+        reset_pipeline_cache_cleanup_for_test();
+        let _reset_on_drop = ResetPipelineCacheCleanupOnDrop;
+
+        // After reset the slot is empty: join must return without waiting.
+        join_pipeline_cache_cleanup();
+
+        let dir = test_dir("cleanup-join");
+        let live = dir.join(versioned(
+            "siv_wgpu_pipeline_cache_Dx12_7_8",
+            PIPELINE_CACHE_SCHEMA_VERSION,
+            "1",
+            "bin",
+        ));
+        let old = dir.join(versioned(
+            "siv_wgpu_pipeline_cache_Dx12_7_8",
+            PIPELINE_CACHE_SCHEMA_VERSION - 1,
+            "1",
+            "bin",
+        ));
+        std::fs::write(&live, b"live").unwrap();
+        std::fs::write(&old, b"old").unwrap();
+
+        start_pipeline_cache_cleanup(Some(live.clone()));
+        // A second start must not spawn another thread (the first scan is the only one).
+        start_pipeline_cache_cleanup(None);
+        join_pipeline_cache_cleanup();
+        join_pipeline_cache_cleanup();
+
+        assert_eq!(std::fs::read(&live).unwrap(), b"live");
+        assert!(!old.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

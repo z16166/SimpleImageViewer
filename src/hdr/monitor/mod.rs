@@ -71,12 +71,14 @@ pub(crate) const SCRGB_REFERENCE_WHITE_NITS: f32 = 80.0;
 const SCRGB_OUTPUT_SCALE_MAX: f32 = 8.0;
 
 /// `SDRWhiteLevel` counts thousandths of the 80-nit reference (`1000` = 80 nits).
+#[cfg(target_os = "windows")]
 const SDR_WHITE_LEVEL_MILLI: f32 = 1000.0;
 
 /// `DISPLAYCONFIG_SDR_WHITE_LEVEL::SDRWhiteLevel` is a multiplier of 80 nits, times 1000.
 /// `1000` -> 80 nits, `2000` -> 160 nits. Values above the scale cap stay as nits;
 /// [`scrgb_output_scale_from_reference_nits`] clamps them. Dropping them would
 /// fall back to an unboosted 80-nit picture.
+#[cfg(target_os = "windows")]
 pub(crate) fn sdr_white_level_raw_to_nits(raw: u32) -> Option<f32> {
     if raw == 0 {
         return None;
@@ -102,6 +104,7 @@ pub(crate) fn scrgb_output_scale_from_reference_nits(reference_luminance_nits: O
 /// otherwise store `hdr_supported` with `None`. The one-frame copy used by
 /// [`scrgb_output_scale_for_presentation`] then goes stale on the second
 /// failure and the float picture drops back to 80 nits.
+#[cfg(target_os = "windows")]
 pub(crate) fn retain_windows_sdr_white_across_failed_read(
     previous: Option<&HdrMonitorSelection>,
     fresh: &mut HdrMonitorSelection,

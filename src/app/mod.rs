@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // ── Submodules ──────────────────────────────────────────────────────────────
-mod background_threads;
+pub(crate) mod background_threads;
 mod background_yaml_saver;
 mod directory_tree;
 mod directory_tree_strip_cache;

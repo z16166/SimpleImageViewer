@@ -144,6 +144,12 @@ pub fn setup_panic_hook() {
 
         show_crash_dialog(&title, &msg);
 
+        // The dialog has already returned. Join before process::exit, which would abort
+        // the cleanup thread mid-delete. The wait is the shared 5s budget; a stuck
+        // delete must not hang a crashed process longer than that. If this hook is
+        // running on the cleanup thread, join skips itself instead of deadlocking.
+        crate::wgpu_pipeline_cache::join_pipeline_cache_cleanup();
+
         // Critical: After showing the crash dialog, the application must terminate.
         // Otherwise, the window may hang or enter an unstable state.
         shutdown_logger();
