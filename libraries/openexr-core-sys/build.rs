@@ -56,6 +56,77 @@ fn windows_openjph_link_name(lib_dir: &Path) -> String {
     }
 }
 
+/// OpenEXR and Imath embed the soname in the static library (`OpenEXRCore-3_5.lib`, `libIex-3_5.a`).
+fn versioned_static_link_name(lib_dir: &Path, name: &str) -> String {
+    println!("cargo:rerun-if-changed={}", lib_dir.display());
+    let dash_prefix = format!("{name}-");
+    let mut names: Vec<String> = std::fs::read_dir(lib_dir)
+        .unwrap_or_else(|e| {
+            panic!(
+                "openexr: read lib dir {}: {e}",
+                lib_dir.display()
+            )
+        })
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let ext = path.extension()?.to_str()?;
+            let stem = path.file_stem()?.to_string_lossy();
+            let link_name = match ext {
+                "lib" => stem.into_owned(),
+                "a" => stem.strip_prefix("lib")?.to_string(),
+                _ => return None,
+            };
+            if link_name == name || link_name.starts_with(&dash_prefix) {
+                Some(link_name)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    names.sort();
+    names.dedup();
+    match names.len() {
+        1 => names.pop().unwrap(),
+        0 => panic!(
+            "openexr: no {name} static library in {}",
+            lib_dir.display()
+        ),
+        _ => panic!(
+            "openexr: multiple {name} static libraries in {}: {names:?}",
+            lib_dir.display()
+        ),
+    }
+}
+
+fn emit_openexr_static_libs(lib_dir: &Path, target_os: &str) {
+    for name in ["OpenEXRCore", "OpenEXR", "Iex", "IlmThread", "Imath"] {
+        let link_name = versioned_static_link_name(lib_dir, name);
+        println!("cargo:rustc-link-lib=static={link_name}");
+    }
+    if target_os == "windows" {
+        println!(
+            "cargo:rustc-link-lib=static={}",
+            windows_openjph_link_name(lib_dir)
+        );
+        println!("cargo:rustc-link-lib=static=deflatestatic");
+        println!("cargo:rustc-link-lib=static=zstd");
+        println!("cargo:rustc-link-lib=static=zlibstatic");
+    } else {
+        println!("cargo:rustc-link-lib=static=openjph");
+        println!("cargo:rustc-link-lib=static=deflate");
+        println!("cargo:rustc-link-lib=static=zstd");
+        println!("cargo:rustc-link-lib=static=z");
+        if target_os == "macos" {
+            println!("cargo:rustc-link-lib=dylib=c++");
+        } else if target_os == "linux" {
+            println!("cargo:rustc-link-lib=dylib=m");
+            link_linux_libstdcxx_static();
+        }
+    }
+}
+
 /// `rustc-link-lib=static=stdc++` only resolves if `libstdc++.a` is on a `-L` path; it lives under
 /// the toolchain (not vcpkg). Query the same C++ driver as `.cargo/config.toml` (`linker = "g++"`).
 fn link_linux_libstdcxx_static() {
@@ -156,17 +227,9 @@ fn main() {
                     );
                 }
                 println!("cargo:rustc-link-search=native={}", lib_dir.display());
-                println!("cargo:rustc-link-lib=static=OpenEXRCore-3_4");
-                println!("cargo:rustc-link-lib=static=OpenEXR-3_4");
-                println!("cargo:rustc-link-lib=static=Iex-3_4");
-                println!("cargo:rustc-link-lib=static=IlmThread-3_4");
-                println!("cargo:rustc-link-lib=static=Imath-3_2");
-                println!("cargo:rustc-link-lib=static=openjph");
-                println!("cargo:rustc-link-lib=static=deflate");
-                println!("cargo:rustc-link-lib=static=z");
-                println!("cargo:rustc-link-lib=dylib=m");
-                // `cpp_link_stdlib(None)` silences cc's dynamic stdc++; need `libstdc++.a` dir for `static=stdc++`.
-                link_linux_libstdcxx_static();
+                // `cpp_link_stdlib(None)` silences cc's dynamic stdc++; `emit_openexr_static_libs`
+                // adds the toolchain dir for `static=stdc++`.
+                emit_openexr_static_libs(&lib_dir, &target_os);
             }
             lib.include_paths.clone()
         }
@@ -179,35 +242,7 @@ fn main() {
 
             println!("cargo:rustc-link-search=native={}", lib_dir.display());
             println!("cargo:include={}", include_dir.display());
-
-            if target_os == "windows" {
-                println!("cargo:rustc-link-lib=static=OpenEXRCore-3_4");
-                println!("cargo:rustc-link-lib=static=OpenEXR-3_4");
-                println!("cargo:rustc-link-lib=static=Iex-3_4");
-                println!("cargo:rustc-link-lib=static=IlmThread-3_4");
-                println!("cargo:rustc-link-lib=static=Imath-3_2");
-                println!(
-                    "cargo:rustc-link-lib=static={}",
-                    windows_openjph_link_name(&lib_dir)
-                );
-                println!("cargo:rustc-link-lib=static=deflatestatic");
-                println!("cargo:rustc-link-lib=static=zlibstatic");
-            } else {
-                println!("cargo:rustc-link-lib=static=OpenEXRCore-3_4");
-                println!("cargo:rustc-link-lib=static=OpenEXR-3_4");
-                println!("cargo:rustc-link-lib=static=Iex-3_4");
-                println!("cargo:rustc-link-lib=static=IlmThread-3_4");
-                println!("cargo:rustc-link-lib=static=Imath-3_2");
-                println!("cargo:rustc-link-lib=static=openjph");
-                println!("cargo:rustc-link-lib=static=deflate");
-                println!("cargo:rustc-link-lib=static=z");
-                if target_os == "macos" {
-                    println!("cargo:rustc-link-lib=dylib=c++");
-                } else if target_os == "linux" {
-                    println!("cargo:rustc-link-lib=dylib=m");
-                    link_linux_libstdcxx_static();
-                }
-            }
+            emit_openexr_static_libs(&lib_dir, &target_os);
             vec![include_dir]
         }
     };

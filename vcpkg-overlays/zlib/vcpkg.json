@@ -1,7 +1,9 @@
 {
   "name": "zlib",
-  "version": "2.1.6",
+  "version": "2.3.3",
   "description": "zlib-ng compiled in compat mode to override standard zlib",
+  "homepage": "https://github.com/zlib-ng/zlib-ng",
+  "license": "Zlib",
   "dependencies": [
     {
       "name": "vcpkg-cmake",

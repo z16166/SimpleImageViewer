@@ -20,7 +20,6 @@ eframe = { version = "0.34", default-features = false, features = [
     "x11",
 ] }
 rust-i18n = "3"
-egui_extras = "0.34"
 # AVIF decode/encode: use libavif (`avif-native`), not `image`'s `avif` (ravif — bloated, encode-only there).
 image = { version = "0.25", default-features = false, features = [
     "png", "gif", "bmp", "tga", "webp", "ico", "pnm", "hdr", "qoi",
@@ -36,7 +35,6 @@ walkdir = "2"
 jwalk = "0.8"
 # tiff = "0.11" // Removed in favor of libtiff via libloading on Linux and WIC/ImageIO elsewhere
 crossbeam-channel = "0.5"
-dirs = "6"
 rayon = "1.10"
 log = "0.4"
 flexi_logger = { version = "0.29", features = ["async"] }
@@ -157,6 +155,8 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 printpdf = { version = "0.9.1", features = ["images"] }
+# Known folders on Unix and on the non-Windows stub. Windows Places uses the Shell API.
+dirs = "6"
 
 # Build-time dependencies: only needed on Windows for PE resource embedding
 [target.'cfg(windows)'.build-dependencies]

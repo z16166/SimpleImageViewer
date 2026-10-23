@@ -1,7 +1,7 @@
 {
   "name": "simple-image-viewer",
   "version-string": "3.0.0",
-  "builtin-baseline": "1600ce2ba1b6b621bfc5a31a785c4963b817a1c7",
+  "builtin-baseline": "40a678a192636131f04b3af79ba118d869effade",
   "dependencies": [
     {
       "name": "tiff",
@@ -39,8 +39,7 @@
         "jpeg",
         "openjpeg",
         "dav1d",
-        "h264-decoder",
-        "experimental-mini"
+        "h264-decoder"
       ]
     },
     "libde265",

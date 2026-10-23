@@ -41,9 +41,10 @@ pub(crate) fn append_heif_unci_build_hint(msg: String) -> String {
     msg
 }
 
-/// Low-overhead / `mini` ISOBMFF (libheif overlay `experimental-mini`). Upstream corpora such as
-/// `tests/data/simple_osm_tile_meta.avif` are **valid** reference tiles; without `mini` support,
-/// `read_from_memory` may report `iloc`/extent past EOF even when the blob is intact.
+/// Low-overhead / `mini` ISOBMFF. libheif 1.23 and later always parse mini boxes.
+/// Upstream corpora such as `tests/data/simple_osm_tile_meta.avif` are **valid** reference tiles.
+/// `read_from_memory` may report `iloc`/extent past EOF when the blob is truncated or the
+/// linked libheif predates mini support.
 #[cfg(feature = "heif-native")]
 pub(crate) fn append_mini_format_read_hint(action: &str, msg: String) -> String {
     let lower = msg.to_ascii_lowercase();
@@ -55,12 +56,12 @@ pub(crate) fn append_mini_format_read_hint(action: &str, msg: String) -> String 
         || lower.contains("outside of file bounds")
     {
         return format!(
-            "{msg} Compact mini/low-overhead containers (libheif overlay `experimental-mini`, e.g. `simple_osm_tile_*.avif` in upstream `tests/data`) need libheif built with that overlay; without it, `iloc`/extent errors may appear on intact reference blobs. Rule out truncation too (size/checksum vs repo), then `cargo clean -p libheif-sys` after rebuilding libheif."
+            "{msg} Compact mini/low-overhead containers (libheif 1.23+ includes mini, e.g. `simple_osm_tile_*.avif` in upstream `tests/data`) can report `iloc`/extent errors when the blob is truncated or libheif is older. Check size/checksum, then `cargo clean -p libheif-sys` after rebuilding libheif."
         );
     }
     if lower.contains("insufficient") {
         return format!(
-            "{msg} Experimental mini / low-overhead HEIF/AVIF needs overlay `experimental-mini`; rebuild libheif, then `cargo clean -p libheif-sys`."
+            "{msg} Low-overhead HEIF/AVIF needs libheif 1.23 or later (mini boxes are built in). Rebuild libheif, then `cargo clean -p libheif-sys`."
         );
     }
     msg
