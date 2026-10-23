@@ -7,6 +7,11 @@
 //!
 
 #![no_std]
+// The next trait solver tracks recursion depth while proving `Send`/`Sync`.
+// wgpu's hub/registry types exceed the default limit of 128 (rust-lang/rust#159228).
+// That is a future-incompatibility warning today and a hard error later.
+// Upstream wgpu-core carries the same attribute.
+#![recursion_limit = "256"]
 // When we have no backends, we end up with a lot of dead or otherwise unreachable code.
 #![cfg_attr(
     all(

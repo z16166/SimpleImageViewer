@@ -16,6 +16,11 @@
 #![doc = document_features::document_features!()]
 //!
 
+// `Buffer::map_async` callbacks must be `Send`. Proving that for wgpu's
+// buffer type walks the same hub/registry chain as wgpu-core and overflows
+// the default recursion limit (rust-lang/rust#159228).
+#![recursion_limit = "256"]
+
 pub use wgpu;
 
 /// Low-level painting of [`egui`](https://github.com/emilk/egui) on [`wgpu`].
