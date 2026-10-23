@@ -45,6 +45,16 @@ pub(super) const DIRECTORY_TREE_SYNC_MAX_DEFER_FRAMES: u32 = 120;
 
 pub(super) const DIRECTORY_TREE_VIEWPORT_ID: &str = "siv_directory_tree_viewport";
 pub(super) const DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID: &str = "siv_directory_tree_embedded";
+
+/// Persisted id of the embedded nav panel.
+///
+/// egui 0.37 stores `PanelState` at `parent.scope_id().with(id_salt)`.
+/// This panel is shown on the root `Ui` of the root viewport.
+pub(crate) fn embedded_directory_tree_panel_id() -> egui::Id {
+    egui::ViewportId::ROOT
+        .root_ui_id()
+        .with(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID)
+}
 pub(super) const DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID: &str =
     "siv_directory_tree_nav_wheel_block_rect";
 pub(super) const DIRECTORY_TREE_EMBEDDED_DEFAULT_WIDTH: f32 = 380.0;
@@ -79,8 +89,8 @@ pub(crate) fn seed_embedded_side_panel_states(
     );
     ctx.data_mut(|data| {
         data.insert_persisted(
-            egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID),
-            egui::PanelState { rect },
+            embedded_directory_tree_panel_id(),
+            egui::PanelState { outer_rect: rect },
         );
     });
 }

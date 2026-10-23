@@ -865,8 +865,10 @@ impl OsdRenderer {
 
                     if resp.drag_stopped() {
                         ui.memory_mut(|mem| {
-                            mem.data
-                                .insert_temp(egui::Id::new(crate::constants::ID_PENDING_SEEK), pos)
+                            mem.data.insert_temp(
+                                egui::Id::unique(crate::constants::ID_PENDING_SEEK),
+                                pos,
+                            )
                         });
                     }
                 });

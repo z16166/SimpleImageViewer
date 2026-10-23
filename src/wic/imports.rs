@@ -38,6 +38,6 @@ pub(crate) fn get_wic_factory() -> windows::core::Result<IWICImagingFactory> {
         factory
             .as_ref()
             .cloned()
-            .ok_or_else(windows::core::Error::from_win32)
+            .ok_or_else(windows::core::Error::from_thread)
     })
 }

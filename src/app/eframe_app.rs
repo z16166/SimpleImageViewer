@@ -217,7 +217,7 @@ impl eframe::App for ImageViewerApp {
         self.handle_tray_close_in_raw_input(ctx, root_close_requested);
     }
 
-    /// Draw the UI. In eframe 0.34 this is the required method; `ui` is called
+    /// Draw the UI. In eframe 0.37 this is the required method; `ui` is called
     /// with the root `Ui` for the window's central area.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -290,7 +290,7 @@ impl eframe::App for ImageViewerApp {
         // opening — egui has no position memory from previous openings, so the
         // dialog always appears at the calculated center position.
         {
-            let id = egui::Id::new(crate::ui::dialogs::modal_state::ID_PREV_HAD_MODAL);
+            let id = egui::Id::unique(crate::ui::dialogs::modal_state::ID_PREV_HAD_MODAL);
             let had_modal = ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
             let has_modal = self.active_modal.is_some();
             if has_modal && !had_modal {

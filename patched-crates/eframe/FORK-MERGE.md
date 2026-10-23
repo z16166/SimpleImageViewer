@@ -11,6 +11,9 @@ After bumping `eframe` / `egui` / `egui-wgpu` / `wgpu` / `wgpu-hal` in
 `Cargo.toml`, diff each file below against upstream at the new tag and re-apply
 the fork blocks if still needed.
 
+Current fork baseline: eframe/egui/egui-wgpu 0.37.0, wgpu/wgpu-hal/wgpu-core 30.0.1.
+`alsa-sys` stays on 0.4.0 (cpal/rodio still depend on that line) and `vcpkg` stays on 0.2.15.
+
 ## Platform scope
 
 | Area | Win10/11, macOS, Linux | Win7 x64 (`legacy_win7` only) |
@@ -57,11 +60,13 @@ Redistributables for the Win7 CI zip (not patched crates):
 | `src/native/run.rs` | `sync_repaint_in_progress` reentrancy guard | Prevents nested `RepaintNow` → `run_ui_and_paint` during one event dispatch. |
 | `src/native/wgpu_integration.rs` | `App::logic` before every viewport paint | Upstream still calls `logic` only from ROOT `update`. |
 | `src/native/wgpu_integration.rs` | Consume already-applied viewport events before deferred commands | Fork still applies commands before paint. Do not clear `viewport.info.events` after `ViewportCommand::Close`. |
-| `src/native/glow_integration.rs` | Same Close-event ordering as wgpu | Same as above. |
+| `src/native/glow_integration.rs` | Same Close-event ordering, command-before-paint, and `TransitionPaint` as wgpu | Same as above. Glow is not in the app binary. |
 | `src/native/viewport_event_lifecycle.rs` | `consume_applied_input_events` only | Keep while commands run before paint. |
 | `src/native/wgpu_integration.rs` | Autosave on child viewport paint (ROOT window) | Upstream still gates `maybe_autosave` on ROOT paint only. |
 | `src/native/glow_integration.rs` | Same `logic` + autosave patches as wgpu | Same as above for glow backend. |
 | `src/native/epi_integration.rs` | ROOT `update` skips duplicate `logic` | Must stay paired with wgpu/glow `logic` call sites. |
+| `src/native/epi_integration.rs` | Non-Windows maximized first show calls `after_first_show` | X11 drops maximize/fullscreen requested on a hidden window. Keep Windows `SW_SHOWMAXIMIZED`. |
+| `Cargo.toml` | `monochrome_emoji_fonts` feature | Fork-only. Not in `Cargo.toml.orig`. egui 0.37 default fonts omit menu glyphs. |
 | `src/epi.rs` | `LogicPass`, `Frame::painting_viewport_id`, `App::logic` docs | Fork contract: `Frame` = ROOT integration; pass names painting viewport. Re-apply when upstream changes `App` trait or `Frame`. |
 | `src/web/app_runner.rs` | `LogicPass::root()` on web `logic()` | Web has no multi-viewport paint fork; pass must stay API-compatible. |
 

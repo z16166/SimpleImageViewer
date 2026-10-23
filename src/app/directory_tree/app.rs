@@ -187,7 +187,7 @@ fn embedded_side_panel_stable_rect_before_show(
 ) -> egui::Rect {
     let available = ui.available_rect_before_wrap();
     let width = embedded_side_panel_clamped_width(
-        egui::PanelState::load(ui.ctx(), panel_id).map(|state| state.rect.width()),
+        egui::PanelState::load(ui.ctx(), panel_id).map(|state| state.outer_rect.width()),
         default_width,
         available.width(),
     );
@@ -208,7 +208,14 @@ fn restore_embedded_side_panel_state_if_not_resizing(
     if !super::should_restore_embedded_side_panel_state(resize_active) {
         return;
     }
-    ctx.data_mut(|data| data.insert_persisted(panel_id, egui::PanelState { rect: stable_rect }));
+    ctx.data_mut(|data| {
+        data.insert_persisted(
+            panel_id,
+            egui::PanelState {
+                outer_rect: stable_rect,
+            },
+        )
+    });
 }
 
 impl ImageViewerApp {
@@ -218,7 +225,9 @@ impl ImageViewerApp {
         }
         let pointer = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
         let block_rect = ctx.data(|d| {
-            d.get_temp::<egui::Rect>(egui::Id::new(super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID))
+            d.get_temp::<egui::Rect>(egui::Id::unique(
+                super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID,
+            ))
         });
         super::ui::pointer_in_directory_tree_nav_block_rect(pointer, block_rect)
     }
@@ -2051,7 +2060,11 @@ impl ImageViewerApp {
         let panel_frame = super::ui::embedded_directory_tree_panel_frame(&self.cached_palette);
         let available_before = ui.available_width();
         let max_rect_width_before = ui.max_rect().width();
-        let panel_id = egui::Id::new(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID);
+        let panel_id = super::embedded_directory_tree_panel_id();
+        debug_assert_eq!(
+            panel_id,
+            ui.scope_id().with(DIRECTORY_TREE_EMBEDDED_SIDE_PANEL_ID)
+        );
         let stable_panel_rect =
             embedded_side_panel_stable_rect_before_show(ui, panel_id, default_width);
         let tree_embedded_width_before = self
@@ -2065,7 +2078,7 @@ impl ImageViewerApp {
             .frame(panel_frame)
             .default_size(default_width)
             .min_size(DIRECTORY_TREE_EMBEDDED_MIN_WIDTH)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 let allow_image_context_menu =
                     self.active_modal.is_none() && !self.image_files.is_empty();
                 if Self::paint_directory_tree_panel(

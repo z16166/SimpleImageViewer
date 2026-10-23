@@ -100,9 +100,8 @@ impl ImageViewerApp {
             }
         }
 
-        if let Some(dropped_file) = ctx.input(|i| i.raw.dropped_files.first().cloned())
-            && let Some(path) = dropped_file.path
-        {
+        if let Some(dropped_file) = ctx.input(|i| i.raw.dropped_files.first().cloned()) {
+            let path = dropped_file.path();
             // Guard: don't re-trigger if we're already scanning from a previous drop
             if !self.scanning {
                 if path.is_dir() {
@@ -113,7 +112,7 @@ impl ImageViewerApp {
                     self.settings.tree_nav_selected_dir = None;
                     self.settings.tree_nav_selected_namespace_path = None;
                     self.settings.recursive = false;
-                    self.load_directory(path);
+                    self.load_directory(path.to_path_buf());
                     self.queue_save();
                 } else if path.is_file() {
                     // Dropped a single file — check if it's a supported format
@@ -125,7 +124,7 @@ impl ImageViewerApp {
                     if is_supported {
                         log::debug!("Drop: opening file {}", path.display());
                         if let Some(parent) = path.parent() {
-                            self.initial_image = Some(path.clone());
+                            self.initial_image = Some(path.to_path_buf());
                             self.settings.browse_mode = crate::settings::BrowseMode::Linear;
                             self.settings.show_directory_tree_nav = false;
                             self.settings.tree_nav_selected_dir = None;

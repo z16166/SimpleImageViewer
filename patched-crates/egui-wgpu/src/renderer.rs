@@ -1,4 +1,5 @@
-use std::{borrow::Cow, num::NonZeroU64, ops::Range};
+use core::{num::NonZeroU64, ops::Range};
+use std::borrow::Cow;
 
 use ahash::HashMap;
 use bytemuck::Zeroable as _;
@@ -485,6 +486,11 @@ pub struct Renderer {
     uniform_bind_group_layout: wgpu::BindGroupLayout,
     texture_bind_group_layout: wgpu::BindGroupLayout,
 
+    /// Uniform buffers each holding a single `u32` of texture flags
+    /// (see [`texture_flags`]), indexed by that flag value.
+    /// Read by the shader when `predictable_texture_filtering` is on.
+    texture_flag_buffers: [wgpu::Buffer; NUM_TEXTURE_FLAGS],
+
     /// Map of egui texture IDs to textures and their associated bindgroups (texture view +
     /// sampler). The texture may be None if the `TextureId` is just a handle to a user-provided
     /// sampler.
@@ -534,7 +540,9 @@ impl Renderer {
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(std::mem::size_of::<UniformBuffer>() as _),
+                        min_binding_size: NonZeroU64::new(
+                            core::mem::size_of::<UniformBuffer>() as _
+                        ),
                         ty: wgpu::BufferBindingType::Uniform,
                     },
                     count: None,
@@ -579,9 +587,30 @@ impl Renderer {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(
+                                (core::mem::size_of::<u32>() * 4) as _,
+                            ),
+                            ty: wgpu::BufferBindingType::Uniform,
+                        },
+                        count: None,
+                    },
                 ],
             })
         };
+
+        let texture_flag_buffers = core::array::from_fn::<_, NUM_TEXTURE_FLAGS, _>(|flag| {
+            let flag = flag as u32;
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("egui_texture_flags_{flag}")),
+                contents: bytemuck::bytes_of(&[flag, 0, 0, 0]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        });
 
         let pipeline = create_egui_pipeline(
             device,
@@ -593,9 +622,9 @@ impl Renderer {
         );
 
         const VERTEX_BUFFER_START_CAPACITY: wgpu::BufferAddress =
-            (std::mem::size_of::<Vertex>() * 1024) as _;
+            (core::mem::size_of::<Vertex>() * 1024) as _;
         const INDEX_BUFFER_START_CAPACITY: wgpu::BufferAddress =
-            (std::mem::size_of::<u32>() * 1024 * 3) as _;
+            (core::mem::size_of::<u32>() * 1024 * 3) as _;
 
         Self {
             pipeline,
@@ -618,6 +647,7 @@ impl Renderer {
             uniform_bind_group,
             uniform_bind_group_layout,
             texture_bind_group_layout,
+            texture_flag_buffers,
             textures: HashMap::default(),
             next_user_texture_id: 0,
             samplers: HashMap::default(),
@@ -924,6 +954,9 @@ impl Renderer {
         };
 
         let bind_group = bind_group.unwrap_or_else(|| {
+            let nearest =
+                image_delta.options.magnification == epaint::textures::TextureFilter::Nearest;
+            let wrap_mode = wrap_mode_flag(image_delta.options.wrap_mode);
             let sampler = self
                 .samplers
                 .entry(image_delta.options)
@@ -942,11 +975,26 @@ impl Renderer {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(sampler),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.texture_flag_buffers[texture_flags(nearest, wrap_mode)]
+                            .as_entire_binding(),
+                    },
                 ],
             })
         });
 
         queue_write_data_to_texture(&texture, origin);
+
+        // A full update must (re)create the texture at exactly the delta's size,
+        // or glyph UVs (normalized by the CPU atlas size) will sample the wrong rows.
+        debug_assert!(
+            image_delta.pos.is_some() || [texture.width(), texture.height()] == [width, height],
+            "egui texture {id:?}: GPU texture is {}x{} but full delta is {width}x{height}",
+            texture.width(),
+            texture.height(),
+        );
+
         self.textures.insert(
             id,
             Texture {
@@ -1034,6 +1082,8 @@ impl Renderer {
     ) -> epaint::TextureId {
         profiling::function_scope!();
 
+        let nearest = sampler_descriptor.mag_filter == wgpu::FilterMode::Nearest;
+        let wrap_mode = address_mode_wrap_flag(sampler_descriptor.address_mode_u);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             compare: None,
             ..sampler_descriptor
@@ -1050,6 +1100,11 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.texture_flag_buffers[texture_flags(nearest, wrap_mode)]
+                        .as_entire_binding(),
                 },
             ],
         });
@@ -1090,6 +1145,8 @@ impl Renderer {
             .get_mut(&id)
             .expect("Tried to update a texture that has not been allocated yet.");
 
+        let nearest = sampler_descriptor.mag_filter == wgpu::FilterMode::Nearest;
+        let wrap_mode = address_mode_wrap_flag(sampler_descriptor.address_mode_u);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             compare: None,
             ..sampler_descriptor
@@ -1106,6 +1163,11 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.texture_flag_buffers[texture_flags(nearest, wrap_mode)]
+                        .as_entire_binding(),
                 },
             ],
         });
@@ -1177,7 +1239,7 @@ impl Renderer {
 
             self.index_buffer.slices.clear();
 
-            let required_index_buffer_size = (std::mem::size_of::<u32>() * index_count) as u64;
+            let required_index_buffer_size = (core::mem::size_of::<u32>() * index_count) as u64;
             if self.index_buffer.capacity < required_index_buffer_size {
                 // Resize index buffer if needed.
                 self.index_buffer.capacity =
@@ -1214,7 +1276,8 @@ impl Renderer {
 
             self.vertex_buffer.slices.clear();
 
-            let required_vertex_buffer_size = (std::mem::size_of::<Vertex>() * vertex_count) as u64;
+            let required_vertex_buffer_size =
+                (core::mem::size_of::<Vertex>() * vertex_count) as u64;
             if self.vertex_buffer.capacity < required_vertex_buffer_size {
                 // Resize vertex buffer if needed.
                 self.vertex_buffer.capacity =
@@ -1275,6 +1338,49 @@ impl Renderer {
 
         user_cmd_bufs
     }
+}
+
+/// Set in bit 0 of the texture flags if the sampler uses nearest filtering.
+///
+/// Must match `TEX_FLAG_NEAREST` in `egui.wgsl`.
+const TEX_FLAG_NEAREST: u32 = 1;
+
+/// Wrap modes, stored in bits 1+ of the texture flags.
+///
+/// Must match the `WRAP_MODE_*` constants in `egui.wgsl`.
+const WRAP_MODE_CLAMP_TO_EDGE: u32 = 0;
+const WRAP_MODE_REPEAT: u32 = 1;
+const WRAP_MODE_MIRRORED_REPEAT: u32 = 2;
+
+/// Number of distinct values [`texture_flags`] can return.
+const NUM_TEXTURE_FLAGS: usize = 6;
+
+fn wrap_mode_flag(wrap_mode: epaint::textures::TextureWrapMode) -> u32 {
+    match wrap_mode {
+        epaint::textures::TextureWrapMode::ClampToEdge => WRAP_MODE_CLAMP_TO_EDGE,
+        epaint::textures::TextureWrapMode::Repeat => WRAP_MODE_REPEAT,
+        epaint::textures::TextureWrapMode::MirroredRepeat => WRAP_MODE_MIRRORED_REPEAT,
+    }
+}
+
+fn address_mode_wrap_flag(address_mode: wgpu::AddressMode) -> u32 {
+    match address_mode {
+        wgpu::AddressMode::Repeat => WRAP_MODE_REPEAT,
+        wgpu::AddressMode::MirrorRepeat => WRAP_MODE_MIRRORED_REPEAT,
+        wgpu::AddressMode::ClampToEdge | wgpu::AddressMode::ClampToBorder => {
+            WRAP_MODE_CLAMP_TO_EDGE
+        }
+    }
+}
+
+/// Index into [`Renderer::texture_flag_buffers`]: the texture flags
+/// read by the shader when `predictable_texture_filtering` is on.
+///
+/// Bit 0: [`TEX_FLAG_NEAREST`].
+/// Bits 1+: one of the `WRAP_MODE_*` constants.
+fn texture_flags(nearest: bool, wrap_mode: u32) -> usize {
+    let nearest = if nearest { TEX_FLAG_NEAREST } else { 0 };
+    (nearest | (wrap_mode << 1)) as usize
 }
 
 fn create_sampler(
@@ -1376,14 +1482,14 @@ fn create_egui_pipeline(
         vertex: wgpu::VertexState {
             entry_point: Some("vs_main"),
             module: &module,
-            buffers: &[wgpu::VertexBufferLayout {
+            buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: 5 * 4,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 // 0: vec2 position
                 // 1: vec2 texture coordinates
                 // 2: uint color
                 attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Uint32],
-            }],
+            })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         primitive: wgpu::PrimitiveState {
@@ -1467,16 +1573,21 @@ impl ScissorRect {
     }
 }
 
-// Look at the feature flag for an explanation.
-#[cfg(not(all(
-    target_arch = "wasm32",
-    not(feature = "fragile-send-sync-non-atomic-wasm"),
-)))]
-#[test]
-fn renderer_impl_send_sync() {
-    fn assert_send_sync<T: Send + Sync>() {}
+// Compile-time check that `Renderer` is `Send + Sync`.
+// Deliberately not a `#[test]`: tests never run on wasm, but `cargo check` does.
+// On wasm this only holds with `fragile-send-sync-non-atomic-wasm` and without threads;
+// look at the feature flag for an explanation.
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    all(
+        feature = "fragile-send-sync-non-atomic-wasm",
+        not(target_feature = "atomics")
+    ),
+))]
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Renderer>();
-}
+};
 
 #[test]
 fn hdr_float_target_uses_linear_framebuffer_shader_for_sdr_ui() {

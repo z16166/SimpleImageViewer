@@ -34,7 +34,7 @@ impl ImageViewerApp {
         let modal_gen = self.modal_generation;
         ctx.data_mut(|d| {
             d.insert_temp(
-                egui::Id::new(crate::ui::dialogs::modal_state::ID_MODAL_GENERATION),
+                egui::Id::unique(crate::ui::dialogs::modal_state::ID_MODAL_GENERATION),
                 modal_gen,
             )
         });
@@ -362,7 +362,7 @@ impl ImageViewerApp {
         }
 
         let pos = self.context_menu_pos.unwrap_or_default();
-        let menu_id = egui::Id::new("custom_image_ctx_menu").with(&self.settings.language);
+        let menu_id = egui::Id::unique("custom_image_ctx_menu").with(&self.settings.language);
         let area_resp = egui::Area::new(menu_id)
             .kind(egui::UiKind::Menu)
             .order(egui::Order::Foreground)

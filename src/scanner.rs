@@ -236,7 +236,7 @@ pub fn scan_directory(
                 .process_read_dir(|_depth, path, _state, children| {
                     if is_non_browsable_system_directory(path) {
                         for entry in children.iter_mut().flatten() {
-                            entry.read_children_path = None;
+                            entry.read_children = None;
                         }
                         return;
                     }
@@ -246,7 +246,7 @@ pub fn scan_directory(
                         }
                         let child_path = entry.path();
                         if is_non_browsable_system_directory(&child_path) {
-                            entry.read_children_path = None;
+                            entry.read_children = None;
                             continue;
                         }
                         let skip = if entry.file_type.is_symlink() {
@@ -257,7 +257,7 @@ pub fn scan_directory(
                             })
                         };
                         if skip {
-                            entry.read_children_path = None;
+                            entry.read_children = None;
                         }
                     }
                 })

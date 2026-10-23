@@ -16,6 +16,10 @@ const EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT: i32 = 0x30BF;
 const EGL_PLATFORM_WAYLAND_KHR: u32 = 0x31D8;
 #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 const EGL_PLATFORM_X11_KHR: u32 = 0x31D5;
+#[cfg(not(all(windows, feature = "legacy-win7-gles")))]
+const EGL_PLATFORM_XCB_EXT: u32 = 0x31DC;
+#[cfg(not(all(windows, feature = "legacy-win7-gles")))]
+const EGL_PLATFORM_XCB_SCREEN_EXT: u32 = 0x31DE;
 const EGL_PLATFORM_ANGLE_ANGLE: u32 = 0x3202;
 #[cfg(feature = "windows-angle")]
 const EGL_PLATFORM_ANGLE_TYPE_ANGLE: u32 = 0x3203;
@@ -272,6 +276,7 @@ impl EglContext {
 
 /// A wrapper around a [`glow::Context`] and the required EGL context that uses locking to guarantee
 /// exclusive access when shared with multiple threads.
+#[derive(Debug)]
 pub struct AdapterContext {
     glow: Mutex<ManuallyDrop<glow::Context>>,
     egl: Option<EglContext>,
@@ -345,6 +350,7 @@ struct EglContextLock<'a> {
 }
 
 /// A guard containing a lock to an [`AdapterContext`], while the GL context is kept current.
+#[expect(missing_debug_implementations)]
 pub struct AdapterContextLock<'a> {
     glow: MutexGuard<'a, ManuallyDrop<glow::Context>>,
     egl: Option<EglContextLock<'a>>,
@@ -422,6 +428,11 @@ struct Inner {
     /// Method by which the framebuffer should support srgb
     srgb_kind: SrgbFrameBufferKind,
 }
+
+#[cfg(send_sync)]
+unsafe impl Send for Inner {}
+#[cfg(send_sync)]
+unsafe impl Sync for Inner {}
 
 // Different calls to `eglGetPlatformDisplay` may return the same `Display`, making it a global
 // state of all our `EglContext`s. This forces us to track the number of such context to prevent
@@ -1088,6 +1099,7 @@ struct WindowSystemInterface {
     kind: WindowKind,
 }
 
+#[derive(Debug)]
 pub struct Instance {
     wsi: WindowSystemInterface,
     flags: wgt::InstanceFlags,
@@ -1120,8 +1132,8 @@ impl Instance {
     }
 }
 
-unsafe impl Send for Instance {}
-unsafe impl Sync for Instance {}
+#[cfg(send_sync)]
+static_assertions::assert_impl_all!(Instance: Send, Sync);
 
 #[cfg(not(all(windows, feature = "legacy-win7-gles")))]
 impl crate::Instance for Instance {
@@ -1233,13 +1245,35 @@ impl crate::Instance for Instance {
                 .map_err(instance_err("failed to get Angle display"))?;
                 (display, WindowKind::AngleX11)
             }
-            (Some(Rdh::Xcb(_xcb_display_handle)), Some(_egl)) => todo!("xcb"),
+            (Some(Rdh::Xcb(xcb_display_handle)), Some(egl))
+                if client_ext_str.contains("EGL_EXT_platform_xcb") =>
+            {
+                log::debug!("Using XCB platform");
+                let display_attributes = [
+                    EGL_PLATFORM_XCB_SCREEN_EXT as khronos_egl::Attrib,
+                    xcb_display_handle.screen as khronos_egl::Attrib,
+                    khronos_egl::ATTRIB_NONE,
+                ];
+                let display = unsafe {
+                    egl.get_platform_display(
+                        EGL_PLATFORM_XCB_EXT,
+                        xcb_display_handle
+                            .connection
+                            .map_or(khronos_egl::DEFAULT_DISPLAY, ptr::NonNull::as_ptr),
+                        &display_attributes,
+                    )
+                }
+                .map_err(instance_err("failed to get XCB display"))?;
+                (display, WindowKind::X11)
+            }
             x if client_ext_str.contains("EGL_MESA_platform_surfaceless") => {
                 log::debug!(
                     "No (or unknown) windowing system ({x:?}) present. Using surfaceless platform"
                 );
-                #[allow(clippy::unnecessary_literal_unwrap)]
-                // This is only a literal on Emscripten
+                #[allow(
+                    clippy::unnecessary_literal_unwrap,
+                    reason = "this is only a literal on Emscripten"
+                )]
                 // TODO: This extension is also supported on EGL 1.4 with EGL_EXT_platform_base: https://registry.khronos.org/EGL/extensions/MESA/EGL_MESA_platform_surfaceless.txt
                 let egl = egl1_5.expect("Failed to get EGL 1.5 for surfaceless");
                 let display = unsafe {

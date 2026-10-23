@@ -632,7 +632,7 @@ pub(super) fn draw_directory_tree_window(
 pub(super) fn publish_directory_tree_nav_wheel_block_rect(ui: &egui::Ui) {
     ui.ctx().data_mut(|d| {
         d.insert_temp(
-            egui::Id::new(super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID),
+            egui::Id::unique(super::DIRECTORY_TREE_NAV_WHEEL_BLOCK_RECT_ID),
             ui.max_rect(),
         );
     });
@@ -752,7 +752,7 @@ fn draw_directory_tree_top_panels(
         );
     });
 
-    let splitter_id = ui.id().with("directory_tree_splitter");
+    let splitter_id = ui.scope_id().with("directory_tree_splitter");
     let splitter_response = ui.interact(splitter_rect, splitter_id, egui::Sense::drag());
     let mut splitter_drag_delta_x = 0.0;
     if splitter_response.dragged() {
@@ -1005,7 +1005,7 @@ fn draw_folder_panel(
                 }
             }
             if chrome.scroll_folder_tree_to_selected {
-                let miss_id = egui::Id::new("directory_tree_folders")
+                let miss_id = egui::Id::unique("directory_tree_folders")
                     .with("scroll_to_selected_miss");
                 if let Some(rect) = chrome.folder_selected_row_rect {
                     ui.ctx().data_mut(|d| d.remove_temp::<u32>(miss_id));
@@ -1038,7 +1038,7 @@ fn draw_folder_panel(
                 }
             }
         });
-    chrome.folder_scroll_offset_y = scroll_output.state.offset.y;
+    chrome.folder_scroll_offset_y = scroll_output.state.unclamped_offset().y;
 }
 
 fn draw_directory_node(
@@ -1307,7 +1307,7 @@ fn draw_image_file_list(
                 );
             }
         });
-        chrome.image_list_scroll_offset_y = scroll_output.state.offset.y;
+        chrome.image_list_scroll_offset_y = scroll_output.state.unclamped_offset().y;
     });
 
     if show_sync_warning {
@@ -1550,7 +1550,7 @@ fn draw_image_details_header(
             if sorting_enabled {
                 let response = ui.interact(
                     rect,
-                    ui.id().with(("image_list_sort", column)),
+                    ui.scope_id().with(("image_list_sort", column)),
                     egui::Sense::click(),
                 );
                 if response.clicked() {

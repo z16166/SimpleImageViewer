@@ -88,7 +88,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
             // ── Fixed bottom bar: OK ──────────────────────────────────────────
             egui::Panel::bottom("pixel_region_footer")
                 .resizable(false)
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if crate::ui::utils::styled_button(ui, t!("btn.ok"), palette).clicked() {

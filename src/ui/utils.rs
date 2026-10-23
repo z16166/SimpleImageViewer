@@ -589,7 +589,7 @@ pub fn center_in_settings_panel<R>(
     let pane_h = ui.max_rect().height();
     let card_w = content_width.min(pane_w);
 
-    let cache_id = egui::Id::new("center_in_settings_panel_card_h");
+    let cache_id = egui::Id::unique("center_in_settings_panel_card_h");
     let card_h: f32 = ui.ctx().data(|d| d.get_temp(cache_id).unwrap_or(0.0));
     let top_pad = ((pane_h - card_h) / 2.0).max(0.0);
 

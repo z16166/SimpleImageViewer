@@ -156,7 +156,7 @@ fn view_form_grid(app: &ImageViewerApp, ui: &mut egui::Ui) -> Vec<AppearanceMsg>
 
 fn view_font_size_slider(app: &ImageViewerApp, ui: &mut egui::Ui) -> Vec<AppearanceMsg> {
     let mut out = Vec::new();
-    let draft_id = egui::Id::new(FONT_SIZE_SLIDER_DRAFT_ID);
+    let draft_id = egui::Id::unique(FONT_SIZE_SLIDER_DRAFT_ID);
     let mut current = ui
         .ctx()
         .data(|data| data.get_temp::<f32>(draft_id))

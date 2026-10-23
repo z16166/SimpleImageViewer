@@ -74,7 +74,7 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let name = e.name().as_ref().to_string();
 
                 // Skip structural RDF tags to keep paths clean
                 let is_structural = name.starts_with("rdf:") || name == "x:xmpmeta";
@@ -84,11 +84,14 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
 
                 // Process attributes (e.g., x:xmptk or compact RDF properties)
                 for attr in e.attributes().flatten() {
-                    let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                    let key = attr.key.as_ref().to_string();
                     if key.starts_with("xmlns:") || key == "rdf:about" {
                         continue;
                     }
-                    let val = attr.unescape_value().unwrap_or_default().to_string();
+                    let val = attr
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .unwrap_or_default()
+                        .to_string();
                     if !val.is_empty() {
                         let path = if stack.is_empty() {
                             key
@@ -101,15 +104,18 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
             }
             Ok(Event::Empty(e)) => {
                 // Self-closing tag: process attributes but don't stay on stack
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let name = e.name().as_ref().to_string();
                 let is_structural = name.starts_with("rdf:") || name == "x:xmpmeta";
 
                 for attr in e.attributes().flatten() {
-                    let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                    let key = attr.key.as_ref().to_string();
                     if key.starts_with("xmlns:") || key == "rdf:about" {
                         continue;
                     }
-                    let val = attr.unescape_value().unwrap_or_default().to_string();
+                    let val = attr
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .unwrap_or_default()
+                        .to_string();
                     if !val.is_empty() {
                         let path = if is_structural {
                             key
@@ -121,18 +127,14 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
                 }
             }
             Ok(Event::Text(e)) => {
-                let val = reader
-                    .decoder()
-                    .decode(e.as_ref())
-                    .unwrap_or_default()
-                    .to_string();
+                let val = e.as_ref().to_string();
                 if !val.is_empty() && !stack.is_empty() {
                     let path = stack.join(".");
                     result_map.insert(path, val);
                 }
             }
             Ok(Event::End(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let name = e.name().as_ref().to_string();
                 if !name.starts_with("rdf:") && name != "x:xmpmeta" {
                     stack.pop();
                 }

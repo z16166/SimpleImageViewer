@@ -96,7 +96,7 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
         );
     let hud_pos = hud_base_pos + app.music_hud_drag_offset;
 
-    let _area_resp = egui::Area::new(egui::Id::new("music_hud_foreground"))
+    let _area_resp = egui::Area::new(egui::Id::unique("music_hud_foreground"))
         .order(egui::Order::Foreground)
         .fixed_pos(hud_pos)
         .interactable(true)
@@ -131,7 +131,7 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
     // Handle seek
     if let Some(target_s) = ctx.memory_mut(|mem| {
         mem.data
-            .remove_temp::<f32>(egui::Id::new(crate::constants::ID_PENDING_SEEK))
+            .remove_temp::<f32>(egui::Id::unique(crate::constants::ID_PENDING_SEEK))
     }) {
         app.audio.seek(Duration::from_secs_f32(target_s));
         app.music_seeking_target_ms = Some((target_s * 1000.0) as u64);

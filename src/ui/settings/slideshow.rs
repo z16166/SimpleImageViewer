@@ -24,7 +24,7 @@ const TRANSITIONS_SLIDER_VALUE_WIDTH: f32 = 72.0;
 
 /// Persist slider/drag edits after the gesture ends (matches music volume + font size).
 ///
-/// Relies on egui 0.34 `Response` semantics (via eframe 0.34):
+/// Relies on egui 0.37 `Response` semantics (via eframe 0.37):
 /// - `drag_stopped()`: true on the frame a drag gesture ends
 /// - `changed() && !dragged()`: keyboard / click edits that never enter a drag
 ///

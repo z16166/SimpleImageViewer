@@ -712,7 +712,11 @@ fn hdr_to_sdr_rgba8_gpu(
                     });
                 wait_for_preview_readback(device, &rx)?;
 
-                let mapped = pool.readback_buffer.slice(..).get_mapped_range();
+                let mapped = pool
+                    .readback_buffer
+                    .slice(..)
+                    .get_mapped_range()
+                    .map_err(|err| err.to_string())?;
                 let mut pixels = Vec::with_capacity(expected_len as usize);
                 for row in mapped.chunks(padded_bytes_per_row as usize) {
                     pixels.extend_from_slice(&row[..unpadded_bytes_per_row as usize]);
