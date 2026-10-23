@@ -48,6 +48,7 @@ clipboard-rs = "0.3"
 wallpaper = "3.2.0"
 interprocess = "2.4.0"
 trash = "5"
+# Linux turns on libappindicator in the target table below. Defaults stay off so Windows does not pull GTK.
 tray-icon = { version = "0.26", default-features = false }
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 xmpkit = { version = "0.1", default-features = false, features = ["gif", "jpeg", "png", "psd", "tiff", "webp"] }
@@ -152,6 +153,9 @@ tiff = "0.11"
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# tray-icon 0.26 compile_errors on Linux unless libappindicator or ksni is enabled.
+# AlmaLinux CI already installs gtk3-devel and libappindicator-gtk3-devel for this backend.
+tray-icon = { version = "0.26", default-features = false, features = ["libappindicator"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 printpdf = { version = "0.12", features = ["images"] }
