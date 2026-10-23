@@ -20,8 +20,9 @@ rustflags = [
 # Install `lld` so `ld.lld` is on PATH. For bfd ld only: `export SIV_NO_LLD=1` (see wrapper script).
 # Do not set `CARGO_TARGET_*_LINKER` to plain `gcc`.
 #
-# Static libstdc++/libgcc: vcpkg C++ archives + `cc` bridges. Linux `-sys` crates use `cpp_link_stdlib(None)`;
-# `openexr-core-sys` adds `rustc-link-lib=static=stdc++` where needed.
+# Static libstdc++/libgcc: vcpkg C++ archives + `cc` bridges. Linux `-sys` crates use `cpp_link_stdlib(None)`.
+# The workspace build.rs passes `libstdc++.a` by absolute path. Do not `rustc-link-lib=static=stdc++`
+# from a library crate: rustc then bundles that archive and fails if it is not on an `-L` path.
 #
 # Alma CI strips bare "-lstdc++" from vcpkg *.pc where helpful and filters system pkg-config --libs.
 # Patched vcpkg-rs emits `static:-bundle=` on Linux so `.a` members are not packed into upstream rlibs.

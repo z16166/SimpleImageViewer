@@ -21,19 +21,16 @@ fn windows_openjph_link_name(lib_dir: &Path) -> String {
     println!("cargo:rerun-if-changed={}", lib_dir.display());
 
     let mut names: Vec<String> = std::fs::read_dir(lib_dir)
-        .unwrap_or_else(|e| {
-            panic!(
-                "openexr (windows): read lib dir {}: {e}",
-                lib_dir.display()
-            )
-        })
+        .unwrap_or_else(|e| panic!("openexr (windows): read lib dir {}: {e}", lib_dir.display()))
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "lib") {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if name.starts_with("openjph") {
-                    return path.file_stem().map(|stem| stem.to_string_lossy().into_owned());
+                    return path
+                        .file_stem()
+                        .map(|stem| stem.to_string_lossy().into_owned());
                 }
             }
             None
@@ -61,12 +58,7 @@ fn versioned_static_link_name(lib_dir: &Path, name: &str) -> String {
     println!("cargo:rerun-if-changed={}", lib_dir.display());
     let dash_prefix = format!("{name}-");
     let mut names: Vec<String> = std::fs::read_dir(lib_dir)
-        .unwrap_or_else(|e| {
-            panic!(
-                "openexr: read lib dir {}: {e}",
-                lib_dir.display()
-            )
-        })
+        .unwrap_or_else(|e| panic!("openexr: read lib dir {}: {e}", lib_dir.display()))
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let path = entry.path();
@@ -89,10 +81,7 @@ fn versioned_static_link_name(lib_dir: &Path, name: &str) -> String {
     names.dedup();
     match names.len() {
         1 => names.pop().unwrap(),
-        0 => panic!(
-            "openexr: no {name} static library in {}",
-            lib_dir.display()
-        ),
+        0 => panic!("openexr: no {name} static library in {}", lib_dir.display()),
         _ => panic!(
             "openexr: multiple {name} static libraries in {}: {names:?}",
             lib_dir.display()
@@ -122,59 +111,12 @@ fn emit_openexr_static_libs(lib_dir: &Path, target_os: &str) {
             println!("cargo:rustc-link-lib=dylib=c++");
         } else if target_os == "linux" {
             println!("cargo:rustc-link-lib=dylib=m");
-            link_linux_libstdcxx_static();
+            // Do not emit `static=stdc++`. rustc bundles that archive into this rlib and only
+            // searches `-L` paths, so a toolchain `libstdc++.a` becomes
+            // "could not find native static library `stdc++`". The final link uses
+            // `-static-libstdc++` plus the absolute `libstdc++.a` from the workspace build.rs.
         }
     }
-}
-
-/// `rustc-link-lib=static=stdc++` only resolves if `libstdc++.a` is on a `-L` path; it lives under
-/// the toolchain (not vcpkg). Query the same C++ driver as `.cargo/config.toml` (`linker = "g++"`).
-fn link_linux_libstdcxx_static() {
-    println!("cargo:rerun-if-env-changed=CXX");
-
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "g++".to_string());
-    let output = std::process::Command::new(&cxx)
-        .arg("-print-file-name=libstdc++.a")
-        .output()
-        .unwrap_or_else(|e| {
-            panic!(
-                "openexr-core-sys (linux): failed to run `{cxx} -print-file-name=libstdc++.a`: {e}"
-            )
-        });
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!(
-            "openexr-core-sys (linux): `{cxx} -print-file-name=libstdc++.a` failed with {}: {stderr}",
-            output.status
-        );
-    }
-
-    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path_str.is_empty() || path_str == "libstdc++.a" {
-        panic!(
-            "openexr-core-sys (linux): `{cxx}` did not resolve libstdc++.a (got {path_str:?}). \
-             Install the static libstdc++ package for your distro (e.g. libstdc++-static) or set CXX."
-        );
-    }
-
-    let libstd = Path::new(&path_str);
-    if !libstd.is_file() {
-        panic!(
-            "openexr-core-sys (linux): libstdc++.a not found at {} (from `{cxx} -print-file-name=libstdc++.a`)",
-            libstd.display()
-        );
-    }
-
-    let Some(dir) = libstd.parent() else {
-        panic!(
-            "openexr-core-sys (linux): no directory for libstdc++ path {}",
-            libstd.display()
-        );
-    };
-
-    println!("cargo:rustc-link-search=native={}", dir.display());
-    println!("cargo:rustc-link-lib=static=stdc++");
 }
 
 fn main() {
@@ -227,8 +169,8 @@ fn main() {
                     );
                 }
                 println!("cargo:rustc-link-search=native={}", lib_dir.display());
-                // `cpp_link_stdlib(None)` silences cc's dynamic stdc++; `emit_openexr_static_libs`
-                // adds the toolchain dir for `static=stdc++`.
+                // `cpp_link_stdlib(None)` silences cc's dynamic stdc++. The workspace
+                // build.rs links `libstdc++.a` by absolute path.
                 emit_openexr_static_libs(&lib_dir, &target_os);
             }
             lib.include_paths.clone()
@@ -252,8 +194,7 @@ fn main() {
     let mut build = cc::Build::new();
     build.cpp(true);
     build.warnings(false);
-    // Linux: `link_linux_libstdcxx_static()` adds toolchain `-L` + `static=stdc++`; pair with
-    // `-static-libstdc++` in `.cargo/config.toml` for the final artifact.
+    // Linux: do not let cc emit `dylib=stdc++`. The workspace build.rs links the static archive.
     if target_os == "linux" {
         build.cpp_link_stdlib(None);
     }
