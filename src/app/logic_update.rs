@@ -460,6 +460,22 @@ impl ImageViewerApp {
             main_window_outer_top_left,
             self.settings.window_spawn_top_left_for_hdr(),
         );
+        // Windows only. Linux `reference_luminance_nits` is the Wayland reference
+        // white, not an SDR slider. The value can be above 1.0 before the swap
+        // chain is float; only float scRGB targets consume it. Repeated failed
+        // reads on the same HDR monitor keep the last white on the selection.
+        // The frame just after leaving an HDR monitor also keeps it while the
+        // chain is still float.
+        let scrgb_scale = if cfg!(target_os = "windows") {
+            crate::hdr::monitor::scrgb_output_scale_for_presentation(
+                self.hdr_monitor_state.selection(),
+                self.frame_effective_hdr_monitor_selection.as_ref(),
+                self.hdr_target_format,
+            )
+        } else {
+            1.0
+        };
+        eframe::egui_wgpu::set_scrgb_output_scale(scrgb_scale);
         let previous_hdr_output_state = HdrOutputStateSnapshot::new(
             self.hdr_capabilities.output_mode,
             self.hdr_capabilities.native_presentation_enabled,

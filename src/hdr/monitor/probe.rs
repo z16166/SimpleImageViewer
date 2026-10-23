@@ -15,7 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #[cfg(target_os = "windows")]
-use super::windows::{dxgi_output_hdr_active, finite_positive_luminance, monitor_device_name};
+use super::windows::{
+    dxgi_output_hdr_active, finite_positive_luminance, log_sdr_white_level_if_changed,
+    monitor_device_name, sdr_white_level_nits_for_gdi_name,
+};
 #[derive(Debug, Clone)]
 pub struct SpawnMonitorHdrProbe {
     /// True when the monitor where we expect the window to appear advertises HDR
@@ -34,6 +37,9 @@ pub struct SpawnMonitorHdrProbe {
     pub max_luminance_nits: Option<f32>,
     /// DXGI reported max full-frame luminance in nits for the matched monitor.
     pub max_full_frame_luminance_nits: Option<f32>,
+    /// Windows HDR "SDR content brightness", in nits. `None` on SDR monitors,
+    /// when the query fails, and on non-Windows spawn probes.
+    pub reference_luminance_nits: Option<f32>,
 }
 
 /// Probe HDR support of the **monitor where the window is most likely to spawn**
@@ -143,6 +149,12 @@ pub fn spawn_monitor_hdr_status(
                     desc.DesktopCoordinates.bottom,
                 );
                 if matches {
+                    let reference_luminance_nits = if hdr_supported {
+                        sdr_white_level_nits_for_gdi_name(&desc.DeviceName)
+                    } else {
+                        None
+                    };
+                    log_sdr_white_level_if_changed(&label, hdr_supported, reference_luminance_nits);
                     return Ok(SpawnMonitorHdrProbe {
                         hdr_supported,
                         label,
@@ -151,6 +163,7 @@ pub fn spawn_monitor_hdr_status(
                         max_full_frame_luminance_nits: finite_positive_luminance(
                             desc.MaxFullFrameLuminance,
                         ),
+                        reference_luminance_nits,
                     });
                 }
             }

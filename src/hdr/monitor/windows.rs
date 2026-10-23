@@ -96,6 +96,16 @@ fn dxgi_hdr_selection_for_monitor_handle(
                     desc.ColorSpace,
                 );
                 if matches {
+                    let reference_luminance_nits = if hdr_supported {
+                        sdr_white_level_nits_for_gdi_name(&desc.DeviceName)
+                    } else {
+                        None
+                    };
+                    log_sdr_white_level_if_changed(
+                        &device_name,
+                        hdr_supported,
+                        reference_luminance_nits,
+                    );
                     return Ok(HdrMonitorSelection {
                         hdr_supported,
                         label: if device_name.is_empty() {
@@ -111,7 +121,7 @@ fn dxgi_hdr_selection_for_monitor_handle(
                         hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
                         native_surface_encoding: hdr_supported
                             .then_some(HdrNativeSurfaceEncoding::LinearScRgb),
-                        reference_luminance_nits: None,
+                        reference_luminance_nits,
                         linux_wp_transfer: None,
                         linux_wp_primaries: None,
                         linux_explicit_hdr_state: None,
@@ -290,8 +300,9 @@ pub(crate) fn plausible_main_viewport_outer_rect(
 #[cfg(all(test, target_os = "windows"))]
 mod viewport_probe_tests {
     use super::{
-        active_monitor_probe_log_should_emit, outer_top_left_to_physical_screen_px,
-        plausible_main_viewport_outer_rect, windows_active_monitor_hdr_status,
+        active_monitor_probe_log_should_emit, gdi_device_names_equal,
+        outer_top_left_to_physical_screen_px, plausible_main_viewport_outer_rect,
+        windows_active_monitor_hdr_status,
     };
 
     #[test]
@@ -321,6 +332,22 @@ mod viewport_probe_tests {
             plausible_main_viewport_outer_rect(Some([0, 0, 10, 10])),
             None
         );
+    }
+
+    #[test]
+    fn gdi_device_names_match_ignoring_ascii_case_and_trailing_nuls() {
+        let mut left = [0_u16; 32];
+        let mut right = [0_u16; 32];
+        for (index, unit) in r"\\.\DISPLAY1".encode_utf16().enumerate() {
+            left[index] = unit;
+            right[index] = unit;
+        }
+        assert!(gdi_device_names_equal(&left, &right));
+        // `\\.\DISPLAY1` : index 4 is `D`.
+        right[4] = u16::from(b'd');
+        assert!(gdi_device_names_equal(&left, &right));
+        right[4] = u16::from(b'E');
+        assert!(!gdi_device_names_equal(&left, &right));
     }
 
     #[test]
@@ -357,6 +384,205 @@ mod viewport_probe_tests {
             [3850, 360],
             0x10001,
         ));
+    }
+}
+
+/// How many times to retry `QueryDisplayConfig` after `ERROR_INSUFFICIENT_BUFFER`.
+const DISPLAYCONFIG_QUERY_ATTEMPTS: usize = 4;
+/// Reject absurd buffer sizes from a broken display-config query.
+const DISPLAYCONFIG_MAX_PATHS: u32 = 64;
+const DISPLAYCONFIG_MAX_MODES: u32 = 128;
+
+/// Windows HDR desktop: `SDRWhiteLevel` is the "SDR content brightness" slider.
+/// `device_name` is the DXGI GDI name (`\\.\DISPLAYn`), the same string as
+/// `DISPLAYCONFIG_SOURCE_DEVICE_NAME::viewGdiDeviceName`.
+#[cfg(target_os = "windows")]
+pub(crate) fn sdr_white_level_nits_for_gdi_name(device_name: &[u16; 32]) -> Option<f32> {
+    use windows::Win32::Devices::Display::{
+        QDC_ONLY_ACTIVE_PATHS, QDC_VIRTUAL_MODE_AWARE, QDC_VIRTUAL_REFRESH_RATE_AWARE,
+    };
+
+    // Mixed DPI needs virtual modes. Windows 11 dynamic refresh also needs
+    // `QDC_VIRTUAL_REFRESH_RATE_AWARE`; without it the first query returns
+    // `ERROR_INVALID_PARAMETER`. Dropping straight to `QDC_ONLY_ACTIVE_PATHS`
+    // then fails on the same mixed-DPI desktop. A successful query that does
+    // not match this GDI name tries the next flag set: virtual-mode paths can
+    // disagree with the DXGI device name.
+    let flag_sets = [
+        QDC_ONLY_ACTIVE_PATHS | QDC_VIRTUAL_MODE_AWARE | QDC_VIRTUAL_REFRESH_RATE_AWARE,
+        QDC_ONLY_ACTIVE_PATHS | QDC_VIRTUAL_MODE_AWARE,
+        QDC_ONLY_ACTIVE_PATHS,
+    ];
+    for (index, flags) in flag_sets.into_iter().enumerate() {
+        let last = index + 1 == flag_sets.len();
+        match query_active_display_paths(flags) {
+            ActivePathQuery::Paths(paths) => {
+                if let Some(nits) = sdr_white_level_nits_for_device(&paths, device_name) {
+                    return Some(nits);
+                }
+                if last {
+                    return None;
+                }
+            }
+            ActivePathQuery::UnsupportedFlags => continue,
+            ActivePathQuery::Failed if !last => continue,
+            ActivePathQuery::Failed => return None,
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+enum ActivePathQuery {
+    Paths(Vec<windows::Win32::Devices::Display::DISPLAYCONFIG_PATH_INFO>),
+    UnsupportedFlags,
+    Failed,
+}
+
+#[cfg(target_os = "windows")]
+fn query_active_display_paths(
+    flags: windows::Win32::Devices::Display::QUERY_DISPLAY_CONFIG_FLAGS,
+) -> ActivePathQuery {
+    use windows::Win32::Devices::Display::{
+        DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, GetDisplayConfigBufferSizes,
+        QueryDisplayConfig,
+    };
+    use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER};
+
+    for _attempt in 0..DISPLAYCONFIG_QUERY_ATTEMPTS {
+        let mut path_count = 0_u32;
+        let mut mode_count = 0_u32;
+        let size_status =
+            unsafe { GetDisplayConfigBufferSizes(flags, &mut path_count, &mut mode_count) };
+        if size_status == ERROR_INVALID_PARAMETER {
+            return ActivePathQuery::UnsupportedFlags;
+        }
+        if size_status.is_err()
+            || path_count == 0
+            || path_count > DISPLAYCONFIG_MAX_PATHS
+            || mode_count > DISPLAYCONFIG_MAX_MODES
+        {
+            return ActivePathQuery::Failed;
+        }
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
+        let mode_ptr = if mode_count == 0 {
+            std::ptr::null_mut()
+        } else {
+            modes.as_mut_ptr()
+        };
+        let query_status = unsafe {
+            QueryDisplayConfig(
+                flags,
+                &mut path_count,
+                paths.as_mut_ptr(),
+                &mut mode_count,
+                mode_ptr,
+                None,
+            )
+        };
+        if query_status.is_ok() {
+            paths.truncate(path_count as usize);
+            return ActivePathQuery::Paths(paths);
+        }
+        if query_status == ERROR_INVALID_PARAMETER {
+            return ActivePathQuery::UnsupportedFlags;
+        }
+        if query_status == ERROR_INSUFFICIENT_BUFFER {
+            continue;
+        }
+        return ActivePathQuery::Failed;
+    }
+    ActivePathQuery::Failed
+}
+
+#[cfg(target_os = "windows")]
+fn sdr_white_level_nits_for_device(
+    paths: &[windows::Win32::Devices::Display::DISPLAYCONFIG_PATH_INFO],
+    device_name: &[u16; 32],
+) -> Option<f32> {
+    use windows::Win32::Devices::Display::{
+        DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+        DISPLAYCONFIG_SDR_WHITE_LEVEL, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
+        DisplayConfigGetDeviceInfo,
+    };
+
+    for path in paths {
+        let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+        source.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        source.header.size = std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32;
+        source.header.adapterId = path.sourceInfo.adapterId;
+        source.header.id = path.sourceInfo.id;
+        if unsafe { DisplayConfigGetDeviceInfo(&mut source.header) } != 0 {
+            continue;
+        }
+        if !gdi_device_names_equal(&source.viewGdiDeviceName, device_name) {
+            continue;
+        }
+
+        let mut white = DISPLAYCONFIG_SDR_WHITE_LEVEL::default();
+        white.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+        white.header.size = std::mem::size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>() as u32;
+        white.header.adapterId = path.targetInfo.adapterId;
+        white.header.id = path.targetInfo.id;
+        if unsafe { DisplayConfigGetDeviceInfo(&mut white.header) } != 0 {
+            log::debug!(
+                "[HDR] DisplayConfigGetDeviceInfo(SDR white level) failed for {}",
+                monitor_device_name(device_name)
+            );
+            continue;
+        }
+        return super::sdr_white_level_raw_to_nits(white.SDRWhiteLevel);
+    }
+    log::debug!(
+        "[HDR] no display-config path matched GDI device {}",
+        monitor_device_name(device_name)
+    );
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn gdi_device_names_equal(left: &[u16; 32], right: &[u16; 32]) -> bool {
+    monitor_device_name(left).eq_ignore_ascii_case(&monitor_device_name(right))
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn log_sdr_white_level_if_changed(label: &str, hdr_supported: bool, nits: Option<f32>) {
+    struct LogKey {
+        label: String,
+        hdr_supported: bool,
+        nits_bits: u32,
+    }
+
+    static LAST: parking_lot::Mutex<Option<LogKey>> = parking_lot::Mutex::new(None);
+    let nits_bits = nits.map(f32::to_bits).unwrap_or(0);
+    let unchanged = {
+        let last = LAST.lock();
+        last.as_ref().is_some_and(|prev| {
+            prev.label == label
+                && prev.hdr_supported == hdr_supported
+                && prev.nits_bits == nits_bits
+        })
+    };
+    if unchanged {
+        return;
+    }
+    *LAST.lock() = Some(LogKey {
+        label: label.to_string(),
+        hdr_supported,
+        nits_bits,
+    });
+    let scale = super::scrgb_output_scale_from_reference_nits(nits);
+    if hdr_supported && nits.is_none() {
+        log::warn!(
+            "[HDR] Windows SDR white level unknown: monitor={label} hdr_supported=true \
+             sdr_white_nits=None scrgb_output_scale={scale:.3}"
+        );
+    } else {
+        log::info!(
+            "[HDR] Windows SDR white level: monitor={label} hdr_supported={hdr_supported} \
+             sdr_white_nits={nits:?} scrgb_output_scale={scale:.3}"
+        );
     }
 }
 

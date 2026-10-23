@@ -19,8 +19,9 @@ struct Locals {
     /// SDR white / panel peak scale for KWin gamma 2.2 HDR swap chains.
     gamma22_display_scale: f32,
 
-    /// WGSL struct size rounds to 24 bytes; ANGLE/D3D UBOs require 16-byte multiples.
-    _pad0: u32,
+    /// Windows scRGB: multiply linear output so 1.0 matches the SDR brightness
+    /// slider. 1.0 keeps the 80-nit reference. Ignored by gamma/PQ entry points.
+    scrgb_output_scale: f32,
     _ubo_align_pad: vec2<u32>,
 };
 @group(0) @binding(0) var<uniform> r_locals: Locals;
@@ -168,7 +169,8 @@ fn fs_main_linear_framebuffer(in: VertexOutput) -> @location(0) vec4<f32> {
         let out_color_gamma_rgb = dither_interleaved(out_color_gamma.rgb, 256.0, in.position);
         out_color_gamma = vec4<f32>(out_color_gamma_rgb, out_color_gamma.a);
     }
-    let out_color_linear = linear_from_gamma_rgb(out_color_gamma.rgb);
+    let out_color_linear = linear_from_gamma_rgb(out_color_gamma.rgb)
+        * max(r_locals.scrgb_output_scale, 1.0);
     return vec4<f32>(out_color_linear, out_color_gamma.a);
 }
 

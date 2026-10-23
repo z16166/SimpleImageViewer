@@ -127,7 +127,14 @@ pub struct HdrMonitorSelection {
     #[cfg(target_os = "macos")]
     pub current_edr_headroom: Option<f32>,
     pub native_surface_encoding: Option<HdrNativeSurfaceEncoding>,
-    /// Reference / mastering white from `wp_color_management` (Linux tone-map metadata).
+    /// SDR reference white, in nits. The two platforms do not mean the same thing.
+    ///
+    /// **Linux:** `wp_color_management` mastering / reference luminance. This is
+    /// not a compositor SDR slider and must not scale scRGB output.
+    /// **Windows:** the HDR desktop's "SDR content brightness"
+    /// (`DISPLAYCONFIG_SDR_WHITE_LEVEL`). scRGB treats 1.0 as 80 nits, so Windows
+    /// presentation multiplies SDR content by `reference_luminance_nits / 80`.
+    /// `None` means "unknown -- do not boost".
     pub reference_luminance_nits: Option<f32>,
     /// Raw Wayland transfer function; populated by the Linux Wayland probe.
     pub linux_wp_transfer: Option<LinuxWaylandTransferFunction>,

@@ -127,6 +127,18 @@ impl HdrMonitorState {
             settings_spawn_top_left,
         ) {
             Ok(selection) => {
+                // Windows only. A failed SDR-white read must not erase the last
+                // good value for this monitor; see
+                // `retain_windows_sdr_white_across_failed_read`.
+                #[cfg(target_os = "windows")]
+                let selection = {
+                    let mut selection = selection;
+                    super::retain_windows_sdr_white_across_failed_read(
+                        self.selection.as_ref(),
+                        &mut selection,
+                    );
+                    selection
+                };
                 self.selection = Some(selection);
             }
             Err(err) => {
