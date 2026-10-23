@@ -72,8 +72,18 @@ pub(crate) fn embedded_side_panel_clamped_width(
     )
 }
 
-pub(crate) fn should_restore_embedded_side_panel_state(resize_active: bool) -> bool {
-    !resize_active
+/// Keep the pre-show rect unless the user is dragging, or this frame is the
+/// one where egui persists the released size.
+///
+/// egui 0.37 skips `PanelState` writes while the handle is dragged. On the
+/// release frame it writes the new width, but the rect captured before
+/// `Panel::show` is still the pre-drag size. Restoring that rect snaps the
+/// splitter back.
+pub(crate) fn should_restore_embedded_side_panel_state(
+    resize_active: bool,
+    committing_released_size: bool,
+) -> bool {
+    !resize_active && !committing_released_size
 }
 
 /// Pre-seed embedded side-panel `PanelState` from persisted yaml width before the first paint.
