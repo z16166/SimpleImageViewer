@@ -262,8 +262,9 @@ features = [
 version = "0.30.8"
 features = ["android-native-activity"]
 
+# 0.2.2 removes trailing semicolons that nightly rejects in expression macros.
 [build-dependencies.cfg_aliases]
-version = "0.2.1"
+version = "0.2.2"
 
 [target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies.js-sys]
 version = "0.3.85"
