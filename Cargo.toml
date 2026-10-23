@@ -64,8 +64,12 @@ wgpu = { version = "30", default-features = false, features = [
 # Optional: enables patched wgpu-hal feature flags on the same crate graph as `wgpu`.
 wgpu-hal = { version = "30", default-features = false, optional = true }
 memmap2 = "0.9"
-mimalloc = { version = "=0.1.52", features = ["extended"], optional = true }
+# Do not enable mimalloc's own `extended` feature. Its StatsJson wrapper mixes
+# core::ffi::c_char with cty::c_char and fails on aarch64-pc-windows-msvc
+# (rustc 1.99: NonNull<i8> vs NonNull<u8>). Option tuning uses libmimalloc-sys.
+mimalloc = { version = "=0.1.52", optional = true }
 # Pin libmimalloc-sys to the 0.1.49 line (bundled mimalloc C 3.3.2; fixes Windows ARM64 #1277).
+# `extended` stays here so mi_option_set_default remains available.
 libmimalloc-sys = { version = "=0.1.49", features = ["extended"], optional = true }
 moka = { version = "0.12.15", features = ["sync"] }
 pollster = "0.4.0"
