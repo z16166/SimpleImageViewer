@@ -828,7 +828,8 @@ fn store_rgba_f32x4(dst: &mut [f32], x: usize, r: [f32; 4], g: [f32; 4], b: [f32
 }
 
 /// 4:2:0 AVX2 loads four chroma samples from `cb_row[xc..]` for an 8-luma step.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+/// NEON 4:2:0 uses `ycbcr420_chroma_load2_fits` instead.
+#[cfg(target_arch = "x86_64")]
 #[inline]
 fn ycbcr420_chroma_load4_fits(x: usize, chroma_len: usize) -> bool {
     x / 2 + 4 <= chroma_len

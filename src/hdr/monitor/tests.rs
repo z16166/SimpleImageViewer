@@ -306,6 +306,7 @@ fn linux_wayland_eligibility_gates_probe_error_message() {
     }
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 fn sdr_white_level_raw_converts_thousandths_of_the_80_nit_reference() {
     assert_eq!(sdr_white_level_raw_to_nits(0), None);
@@ -373,6 +374,7 @@ fn scrgb_presentation_scale_keeps_previous_white_while_float_chain_lags() {
     );
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 fn failed_sdr_white_read_keeps_last_nits_for_the_same_hdr_monitor() {
     let mut known = HdrMonitorSelection::new(r"\\.\DISPLAY1", true);

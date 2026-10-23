@@ -28,6 +28,7 @@ pub const ABSOLUTE_MAX_TEXTURE_SIDE: u32 = 8192;
 
 /// Hard ceiling for a single WIC frame side. Larger claims are treated as corrupt headers.
 /// Allows tiled wide/tall images beyond GPU texture side, but bounds DoS from absurd sizes.
+#[cfg(target_os = "windows")]
 pub const WIC_ABSOLUTE_MAX_SIDE: u32 = ABSOLUTE_MAX_TEXTURE_SIDE * 8;
 
 /// Maximum pixel count for static full-image decode into a contiguous RGBA buffer.
@@ -75,6 +76,8 @@ pub fn checked_rgba8_len_u32(width: u32, height: u32) -> Option<usize> {
 }
 
 /// RGBA8 row stride (`width * 4`); rejects overflow.
+/// WIC tiled decode is Windows-only (`src/wic`).
+#[cfg(target_os = "windows")]
 #[inline]
 pub fn checked_rgba8_stride_u32(width: u32) -> Option<u32> {
     width.checked_mul(RGBA_CHANNELS as u32)
