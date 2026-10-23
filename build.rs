@@ -84,6 +84,89 @@ fn linux_link_libstdcxx_a_last() {
     println!("cargo:rustc-link-arg={}", p);
 }
 
+/// Intel macOS links with `cc -nodefaultlibs`, so compiler-rt's x86 CPU dispatch
+/// (`___cpu_model`, `___cpu_indicator_init`) is not pulled in. OpenEXR zstd shuffle
+/// and libheif AVX init reference those symbols. Pass the archive by path so ld64
+/// extracts only the needed members and we do not `+bundle` all of compiler-rt
+/// (that duplicates `memcpy` with Rust's compiler_builtins).
+fn macos_x64_link_clang_rt_cpu_model() {
+    println!("cargo:rerun-if-env-changed=CC");
+    println!("cargo:rerun-if-env-changed=SDKROOT");
+    println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
+
+    let path = resolve_libclang_rt_osx().unwrap_or_else(|err| {
+        panic!("simple-image-viewer (macos x86_64): {err}");
+    });
+    println!("cargo:rustc-link-arg={}", path.display());
+}
+
+fn resolve_libclang_rt_osx() -> Result<PathBuf, String> {
+    let mut errors = Vec::new();
+    for command in clang_print_file_commands() {
+        match clang_print_file_name(&command, "libclang_rt.osx.a") {
+            Ok(path) if path.is_file() => return Ok(path),
+            Ok(path) => errors.push(format!(
+                "`{}` printed {} but that file is missing",
+                command.join(" "),
+                path.display()
+            )),
+            Err(err) => errors.push(err),
+        }
+    }
+    Err(format!(
+        "could not find libclang_rt.osx.a (defines ___cpu_model / ___cpu_indicator_init). {}",
+        errors.join("; ")
+    ))
+}
+
+fn clang_print_file_commands() -> Vec<Vec<String>> {
+    let mut commands = Vec::new();
+    if let Ok(cc) = std::env::var("CC") {
+        if !cc.is_empty() {
+            commands.push(split_command(&cc));
+        }
+    }
+    commands.push(vec!["clang".to_string()]);
+    commands.push(vec![
+        "xcrun".to_string(),
+        "--sdk".to_string(),
+        "macosx".to_string(),
+        "clang".to_string(),
+    ]);
+    commands
+}
+
+fn split_command(cc: &str) -> Vec<String> {
+    cc.split_whitespace()
+        .map(|part| part.to_string())
+        .collect()
+}
+
+fn clang_print_file_name(command: &[String], file_name: &str) -> Result<PathBuf, String> {
+    let (program, args) = command
+        .split_first()
+        .ok_or_else(|| "empty clang command".to_string())?;
+    let output = std::process::Command::new(program)
+        .args(args)
+        .arg(format!("-print-file-name={file_name}"))
+        .output()
+        .map_err(|err| format!("failed to run {program}: {err}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "`{program} -print-file-name={file_name}` failed with {}: {stderr}",
+            output.status
+        ));
+    }
+    let printed = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if printed.is_empty() || printed == file_name {
+        return Err(format!(
+            "`{program} -print-file-name={file_name}` did not resolve a path (got {printed:?})"
+        ));
+    }
+    Ok(PathBuf::from(printed))
+}
+
 /// When `SIV_CI_LINK_MAP` is set, write a link map (`-Map=`) for the **this package's** link only (not deps),
 /// so CI can grep what pulled `libstdc++.so.6`. Path is stable for Alma: `target/simple-image-viewer-final.link.map`.
 fn linux_ci_link_map(manifest_dir: &Path) {
@@ -154,6 +237,12 @@ fn main() {
         linux_ci_link_map(&manifest_dir);
 
         linux_link_libstdcxx_a_last();
+    }
+
+    if target_os == "macos"
+        && std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default() == "x86_64"
+    {
+        macos_x64_link_clang_rt_cpu_model();
     }
 
     let icon_png = manifest_dir.join("assets/icon.png");
