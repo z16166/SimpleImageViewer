@@ -4,8 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [3.1.6] - 2026-10-24
+
 ### Improved
-- **Cleaner upgrades**: GPU cache files left behind by older versions are removed automatically. The cache the current session is using stays in place on Windows, macOS, and Linux.
+- **Cleaner upgrades**: Old GPU pipeline cache files left by previous versions are removed automatically.
+- **Updated libraries**: vcpkg packages and Rust crates are upgraded.
 
 ## [3.1.5] - 2026-10-23
 
